@@ -29,3 +29,7 @@ xcode_build
 server/*.md_actual
 server/*.md_expected
 coverage.info
+
+# Rust / Cargo
+pg_orca_rs/target/
+pg_orca_rs/Cargo.lock
