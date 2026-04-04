@@ -173,12 +173,23 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
         work_mem: pg_sys::work_mem as usize * 1024,
     };
 
-    let catalog = CatalogSnapshot { tables, rte_to_table, cost_params };
+    let mut catalog = CatalogSnapshot { tables, rte_to_table, cost_params };
 
-    // 4. Build logical expression tree from jointree
-    let mut logical_expr = translate_from_expr(
-        query.jointree, query, &col_map, &partition_children, &catalog,
-    )?;
+    // 4. Build logical expression tree
+    let mut logical_expr = if !query.setOperations.is_null() {
+        // UNION / UNION ALL: walk the SetOperationStmt tree
+        translate_set_operations(
+            query.setOperations as *mut pg_sys::Node,
+            query,
+            &mut col_map,
+            &mut catalog,
+        )?
+    } else {
+        // Normal query: build from jointree
+        translate_from_expr(
+            query.jointree, query, &col_map, &partition_children, &catalog,
+        )?
+    };
 
     // 5. Wrap with aggregation if needed (GROUP BY / aggregates)
     if query.hasAggs || list_length(query.groupClause) > 0 {
@@ -206,6 +217,295 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
     }
 
     Ok(ConvertResult { logical_expr, catalog, col_map })
+}
+
+// ── UNION / set operation translation ────────────────────────────────────────
+
+/// Recursively translate a SetOperationStmt tree into LogicalExpr.
+///
+/// PG represents UNION as a binary tree of SetOperationStmt nodes.
+/// Leaf nodes are RangeTblRef pointing to RTE_SUBQUERY entries.
+/// Each sub-query is converted recursively via convert_subquery.
+unsafe fn translate_set_operations(
+    node: *mut pg_sys::Node,
+    parent_query: &pg_sys::Query,
+    col_map: &mut ColumnMapping,
+    catalog: &mut CatalogSnapshot,
+) -> Result<LogicalExpr, InboundError> {
+    if node.is_null() {
+        return Err(InboundError::TranslationError("null set operation node".into()));
+    }
+    let tag = (*node).type_;
+    match tag {
+        pg_sys::NodeTag::T_RangeTblRef => {
+            let rtref = node as *mut pg_sys::RangeTblRef;
+            let rte_index = (*rtref).rtindex as u32;
+            convert_union_arm(rte_index, parent_query, col_map, catalog)
+        }
+        pg_sys::NodeTag::T_SetOperationStmt => {
+            let stmt = node as *mut pg_sys::SetOperationStmt;
+            let left = translate_set_operations((*stmt).larg, parent_query, col_map, catalog)?;
+            let right = translate_set_operations((*stmt).rarg, parent_query, col_map, catalog)?;
+
+            let append = LogicalExpr {
+                op: LogicalOp::Append,
+                children: vec![left, right],
+            };
+
+            if (*stmt).all {
+                // UNION ALL — just Append
+                Ok(append)
+            } else {
+                // UNION (distinct) — Append + Sort + Distinct
+                // Build sort keys and distinct columns from the output column types.
+                // The UNION output has N columns matching colTypes list.
+                let col_types = list_iter_oid((*stmt).colTypes);
+                let num_cols = col_types.len();
+
+                // We need synthetic column IDs for the UNION output.
+                // Use the first arm's column IDs as the reference for sort/distinct.
+                let first_arm_rte_index = get_first_leaf_rte_index((*stmt).larg);
+                let mut union_col_ids = Vec::new();
+                for attno in 1..=(num_cols as i16) {
+                    if let Some(cid) = col_map.lookup_var(first_arm_rte_index, attno) {
+                        union_col_ids.push(cid);
+                    }
+                }
+
+                // Build sort keys for each column
+                let mut sort_keys = Vec::new();
+                for (i, &col_type_oid) in col_types.iter().enumerate() {
+                    let sort_op = pg_sys::get_ordering_op_for_equality_op(
+                        get_eq_operator_for_type(col_type_oid),
+                        false, // nulls_first = false
+                    );
+                    if let Some(&cid) = union_col_ids.get(i) {
+                        sort_keys.push(SortKey {
+                            column: cid,
+                            ascending: true,
+                            nulls_first: false,
+                            sort_op_oid: sort_op.to_u32(),
+                            collation_oid: 0,
+                        });
+                    }
+                }
+
+                let sorted = LogicalExpr {
+                    op: LogicalOp::Sort { keys: sort_keys },
+                    children: vec![append],
+                };
+
+                Ok(LogicalExpr {
+                    op: LogicalOp::Distinct { columns: union_col_ids },
+                    children: vec![sorted],
+                })
+            }
+        }
+        _ => Err(InboundError::UnsupportedFeature(
+            format!("unexpected set operation node {:?}", tag),
+        )),
+    }
+}
+
+/// Convert a single UNION arm (an RTE_SUBQUERY) into a LogicalExpr.
+///
+/// The sub-query's relation RTEs are copied into the parent query's rtable
+/// so the executor can find them. The sub-query is then converted using these
+/// new rte_indexes.
+unsafe fn convert_union_arm(
+    rte_index: u32,
+    parent_query: &pg_sys::Query,
+    col_map: &mut ColumnMapping,
+    catalog: &mut CatalogSnapshot,
+) -> Result<LogicalExpr, InboundError> {
+    // Get the RTE for this sub-query
+    let rtes = list_iter::<pg_sys::RangeTblEntry>(parent_query.rtable);
+    let rte_ptr = rtes.get((rte_index - 1) as usize)
+        .ok_or_else(|| InboundError::TranslationError(
+            format!("RTE index {} out of range", rte_index)
+        ))?;
+    let rte = &**rte_ptr;
+
+    if rte.rtekind != pg_sys::RTEKind::RTE_SUBQUERY {
+        return Err(InboundError::TranslationError(
+            format!("UNION arm RTE {} is not a subquery", rte_index)
+        ));
+    }
+
+    let subquery = rte.subquery;
+    if subquery.is_null() {
+        return Err(InboundError::TranslationError(
+            format!("UNION arm RTE {} has null subquery", rte_index)
+        ));
+    }
+
+    // The sub-query has its own rtable. We need to copy each RTE_RELATION
+    // from the sub-query into the parent's rtable, so the executor can find them.
+    // Build a mapping: sub-query rte_index → parent rte_index.
+    let sub_rtes = list_iter::<pg_sys::RangeTblEntry>((*subquery).rtable);
+    let mut rte_remap: HashMap<u32, u32> = HashMap::new();
+
+    for (sub_idx_0, sub_rte_ptr) in sub_rtes.iter().enumerate() {
+        let sub_rte = &**sub_rte_ptr;
+        let sub_rte_index = (sub_idx_0 + 1) as u32;
+
+        if sub_rte.rtekind == pg_sys::RTEKind::RTE_RELATION {
+            // Copy this RTE into the parent query's rtable
+            let query_mut = parent_query as *const pg_sys::Query as *mut pg_sys::Query;
+            (*query_mut).rtable = pg_sys::lappend(
+                (*query_mut).rtable,
+                *sub_rte_ptr as *mut std::ffi::c_void,
+            );
+            let new_index = pg_sys::list_length((*query_mut).rtable) as u32;
+            rte_remap.insert(sub_rte_index, new_index);
+        }
+    }
+
+    // Now process each relation RTE in the sub-query using the new parent rte_indexes
+    let mut table_id_counter = catalog.tables.len() as u32 + 1000 * rte_index;
+    let mut children = Vec::new();
+
+    for (sub_idx_0, sub_rte_ptr) in sub_rtes.iter().enumerate() {
+        let sub_rte = &**sub_rte_ptr;
+        let sub_rte_index = (sub_idx_0 + 1) as u32;
+
+        if sub_rte.rtekind != pg_sys::RTEKind::RTE_RELATION {
+            continue;
+        }
+
+        let parent_rte_index = *rte_remap.get(&sub_rte_index).unwrap();
+        table_id_counter += 1;
+        let table_id = TableId(table_id_counter);
+        catalog.rte_to_table.insert(parent_rte_index, table_id);
+
+        let rel = pg_sys::RelationIdGetRelation(sub_rte.relid);
+        if rel.is_null() {
+            return Err(InboundError::CatalogAccessError(
+                format!("cannot open relation OID {}", sub_rte.relid.to_u32())
+            ));
+        }
+        let col_ids = register_relation_columns(
+            rel, sub_rte.relid, parent_rte_index, table_id,
+            col_map, &mut catalog.tables,
+        )?;
+        pg_sys::RelationClose(rel);
+
+        // Build a Get node for this relation
+        children.push((parent_rte_index, table_id, col_ids));
+    }
+
+    // Build the logical expression from the sub-query
+    // For simple UNION arms (single table, possibly with WHERE), we build
+    // a scan + optional filter directly.
+    if children.len() == 1 {
+        let (parent_rte_index, table_id, col_ids) = &children[0];
+        let mut expr = LogicalExpr {
+            op: LogicalOp::Get {
+                table_id: *table_id,
+                columns: col_ids.clone(),
+                rte_index: *parent_rte_index,
+            },
+            children: vec![],
+        };
+
+        // Apply the sub-query's WHERE clause if any
+        if !(*subquery).jointree.is_null() && !(*(*subquery).jointree).quals.is_null() {
+            // Remap Vars in the qual from sub-query rte_indexes to parent rte_indexes
+            let qual_node = (*(*subquery).jointree).quals as *mut pg_sys::Node;
+            remap_var_indexes(qual_node, &rte_remap);
+            let predicate = convert_scalar(qual_node, col_map)?;
+            expr = LogicalExpr {
+                op: LogicalOp::Select { predicate },
+                children: vec![expr],
+            };
+        }
+
+        // Register aliases so parent query's Vars referencing this UNION arm
+        // (rte_index, attno) resolve to the actual columns.
+        let sub_tl = list_iter::<pg_sys::TargetEntry>((*subquery).targetList);
+        for (attno_0, te_ptr) in sub_tl.iter().enumerate() {
+            let te = &**te_ptr;
+            if te.resjunk { continue; }
+            let attno = (attno_0 + 1) as i16;
+
+            if !te.expr.is_null() && (*te.expr).type_ == pg_sys::NodeTag::T_Var {
+                let var = te.expr as *const pg_sys::Var;
+                let orig_varno = (*var).varno as u32;
+                let orig_attno = (*var).varattno;
+                // Remap the sub-query var to parent rte_index
+                let remapped_varno = rte_remap.get(&orig_varno).copied().unwrap_or(orig_varno);
+                if let Some(cid) = col_map.lookup_var(remapped_varno, orig_attno) {
+                    col_map.register_alias(rte_index, attno, cid);
+                }
+            }
+        }
+
+        Ok(expr)
+    } else {
+        // Multi-table sub-query (JOIN in UNION arm) — not yet supported
+        Err(InboundError::UnsupportedFeature(
+            "UNION arm with JOIN (multi-table)".into()
+        ))
+    }
+}
+
+/// Recursively remap Var.varno in a Node tree using the given mapping.
+unsafe fn remap_var_indexes(node: *mut pg_sys::Node, remap: &HashMap<u32, u32>) {
+    if node.is_null() { return; }
+    match (*node).type_ {
+        pg_sys::NodeTag::T_Var => {
+            let var = node as *mut pg_sys::Var;
+            let old_varno = (*var).varno as u32;
+            if let Some(&new_varno) = remap.get(&old_varno) {
+                (*var).varno = new_varno as i32;
+                (*var).varnosyn = new_varno;
+            }
+        }
+        pg_sys::NodeTag::T_OpExpr => {
+            let op = node as *mut pg_sys::OpExpr;
+            let args = list_iter::<pg_sys::Node>((*op).args);
+            for arg in &args {
+                remap_var_indexes(*arg, remap);
+            }
+        }
+        pg_sys::NodeTag::T_BoolExpr => {
+            let bool_expr = node as *mut pg_sys::BoolExpr;
+            let args = list_iter::<pg_sys::Node>((*bool_expr).args);
+            for arg in &args {
+                remap_var_indexes(*arg, remap);
+            }
+        }
+        pg_sys::NodeTag::T_FuncExpr => {
+            let func = node as *mut pg_sys::FuncExpr;
+            let args = list_iter::<pg_sys::Node>((*func).args);
+            for arg in &args {
+                remap_var_indexes(*arg, remap);
+            }
+        }
+        _ => {} // Constants, etc. don't need remapping
+    }
+}
+
+/// Get the RTE index of the leftmost leaf in a SetOperationStmt tree.
+unsafe fn get_first_leaf_rte_index(node: *mut pg_sys::Node) -> u32 {
+    if node.is_null() { return 0; }
+    match (*node).type_ {
+        pg_sys::NodeTag::T_RangeTblRef => {
+            let rtref = node as *mut pg_sys::RangeTblRef;
+            (*rtref).rtindex as u32
+        }
+        pg_sys::NodeTag::T_SetOperationStmt => {
+            let stmt = node as *mut pg_sys::SetOperationStmt;
+            get_first_leaf_rte_index((*stmt).larg)
+        }
+        _ => 0,
+    }
+}
+
+/// Look up the equality operator for a type OID.
+unsafe fn get_eq_operator_for_type(type_oid: pg_sys::Oid) -> pg_sys::Oid {
+    let cache = pg_sys::lookup_type_cache(type_oid, pg_sys::TYPECACHE_EQ_OPR as i32);
+    if cache.is_null() { pg_sys::Oid::from(0u32) } else { (*cache).eq_opr }
 }
 
 // ── FromExpr / JoinExpr translation ─────────────────────────────────────────

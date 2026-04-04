@@ -399,6 +399,63 @@ fn partitioned_table() {
     c.batch_execute("DROP TABLE IF EXISTS _test_part CASCADE;").unwrap();
 }
 
+// ── UNION / UNION ALL ──────────────────────────────────
+
+#[test]
+fn union_all() {
+    let mut c = connect();
+    setup(&mut c);
+
+    // UNION ALL should use pg_orca with Append
+    let plan = explain(&mut c, "SELECT a, b FROM _test_t WHERE a = 1 UNION ALL SELECT a, b FROM _test_t WHERE a = 2;");
+    assert!(
+        plan.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "expected pg_orca for UNION ALL, got: {:?}", plan,
+    );
+    assert!(
+        plan.iter().any(|l| l.contains("Append")),
+        "expected Append in UNION ALL plan, got: {:?}", plan,
+    );
+
+    // Verify correct results
+    let rows = query_strings(&mut c, "SELECT a, b FROM _test_t WHERE a = 1 UNION ALL SELECT a, b FROM _test_t WHERE a = 2;");
+    assert_eq!(rows.len(), 2, "expected 2 rows from UNION ALL");
+}
+
+#[test]
+fn union_distinct() {
+    let mut c = connect();
+    setup(&mut c);
+
+    // UNION (distinct) should use pg_orca with Append + Unique
+    let plan = explain(&mut c, "SELECT a FROM _test_t UNION SELECT a FROM _test_t;");
+    assert!(
+        plan.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "expected pg_orca for UNION, got: {:?}", plan,
+    );
+
+    // Verify correct results: UNION deduplicates, so 2 distinct values
+    let rows: Vec<_> = c.query("SELECT a FROM _test_t UNION SELECT a FROM _test_t ORDER BY a;", &[]).unwrap();
+    assert_eq!(rows.len(), 2, "expected 2 distinct rows from UNION");
+}
+
+#[test]
+fn union_all_three_way() {
+    let mut c = connect();
+    setup(&mut c);
+
+    // Three-way UNION ALL
+    let sql = "SELECT a, b FROM _test_t UNION ALL SELECT a, b FROM _test_t UNION ALL SELECT a, b FROM _test_t;";
+    let plan = explain(&mut c, sql);
+    assert!(
+        plan.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "expected pg_orca for 3-way UNION ALL, got: {:?}", plan,
+    );
+
+    let rows = query_strings(&mut c, sql);
+    assert_eq!(rows.len(), 6, "expected 6 rows from 3-way UNION ALL");
+}
+
 // ── Fallback: unsupported queries use PG planner ────────
 
 #[test]

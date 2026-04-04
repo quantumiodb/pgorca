@@ -15,7 +15,7 @@ pub unsafe fn is_supported_query(query: &pg_sys::Query) -> Result<(), InboundErr
         return Err(InboundError::UnsupportedFeature("recursive".into()));
     }
     if !query.setOperations.is_null() {
-        return Err(InboundError::UnsupportedFeature("set operations".into()));
+        check_set_operations(query.setOperations as *mut pg_sys::Node)?;
     }
     // CTEs: PG inlines non-recursive single-use CTEs before we see them.
     // Materialized/multi-use CTEs still have cteList entries — reject those.
@@ -47,11 +47,9 @@ unsafe fn check_range_table(rtable: *mut pg_sys::List) -> Result<(), InboundErro
             pg_sys::RTEKind::RTE_JOIN => {}
             pg_sys::RTEKind::RTE_RESULT => {}
             pg_sys::RTEKind::RTE_SUBQUERY => {
-                // Inlined CTEs appear as RTE_SUBQUERY — reject for now
-                // (full subquery support requires recursive planning)
-                return Err(InboundError::UnsupportedFeature(
-                    "subquery RTE".into()
-                ));
+                // RTE_SUBQUERY is used by UNION arms — allow it.
+                // Full standalone subquery support requires recursive planning,
+                // but UNION sub-queries are handled via translate_set_operations.
             }
             #[cfg(feature = "pg18")]
             pg_sys::RTEKind::RTE_GROUP => {}
@@ -61,4 +59,31 @@ unsafe fn check_range_table(rtable: *mut pg_sys::List) -> Result<(), InboundErro
         }
     }
     Ok(())
+}
+
+/// Validate that set operations are supported (only UNION / UNION ALL).
+unsafe fn check_set_operations(node: *mut pg_sys::Node) -> Result<(), InboundError> {
+    if node.is_null() {
+        return Err(InboundError::TranslationError("null set operation".into()));
+    }
+    let tag = (*node).type_;
+    match tag {
+        pg_sys::NodeTag::T_SetOperationStmt => {
+            let stmt = node as *mut pg_sys::SetOperationStmt;
+            let op = (*stmt).op;
+            if op != pg_sys::SetOperation::SETOP_UNION {
+                return Err(InboundError::UnsupportedFeature(
+                    format!("set operation {:?} (only UNION supported)", op),
+                ));
+            }
+            // Recursively check children (binary tree of SetOperationStmt / RangeTblRef)
+            check_set_operations((*stmt).larg)?;
+            check_set_operations((*stmt).rarg)?;
+            Ok(())
+        }
+        pg_sys::NodeTag::T_RangeTblRef => Ok(()),
+        _ => Err(InboundError::UnsupportedFeature(
+            format!("unexpected set operation node {:?}", tag),
+        )),
+    }
 }
