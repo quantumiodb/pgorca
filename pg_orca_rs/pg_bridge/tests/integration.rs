@@ -31,11 +31,15 @@ impl PgInstance {
         let lib_dir = cmd_output(&pg_config, &["--pkglibdir"]);
         let pg_bin = PathBuf::from(&bin_dir);
 
-        // Verify pg_bridge.so is installed
-        let so_path = PathBuf::from(&lib_dir).join("pg_bridge.so");
+        // Verify pg_bridge shared library is installed (.so on Linux, .dylib on macOS)
+        let so_path = if cfg!(target_os = "macos") {
+            PathBuf::from(&lib_dir).join("pg_bridge.dylib")
+        } else {
+            PathBuf::from(&lib_dir).join("pg_bridge.so")
+        };
         assert!(
             so_path.exists(),
-            "pg_bridge.so not found at {:?}. Run `cargo pgrx install` first.",
+            "pg_bridge shared library not found at {:?}. Run `cargo pgrx install` first.",
             so_path,
         );
 

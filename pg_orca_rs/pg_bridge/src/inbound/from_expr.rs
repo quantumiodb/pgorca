@@ -113,6 +113,27 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
         });
     }
 
+    // 2b. PG18: Register RTE_GROUP column aliases so Vars referencing the
+    //     GROUP RTE resolve to the underlying relation columns.
+    #[cfg(feature = "pg18")]
+    for (idx, rte_ptr) in rtes.iter().enumerate() {
+        let rte = &**rte_ptr;
+        if rte.rtekind != pg_sys::RTEKind::RTE_GROUP { continue; }
+        let group_varno = (idx + 1) as u32;
+        let group_exprs = list_iter::<pg_sys::Node>(rte.groupexprs);
+        for (attno_0, expr_ptr) in group_exprs.iter().enumerate() {
+            let expr = *expr_ptr;
+            if (*expr).type_ == pg_sys::NodeTag::T_Var {
+                let var = expr as *mut pg_sys::Var;
+                let orig_varno = (*var).varno as u32;
+                let orig_attno = (*var).varattno;
+                if let Some(cid) = col_map.lookup_var(orig_varno, orig_attno) {
+                    col_map.register_alias(group_varno, (attno_0 + 1) as i16, cid);
+                }
+            }
+        }
+    }
+
     // 3. Read PG cost GUCs
     let cost_params = CostParams {
         seq_page_cost: pg_sys::seq_page_cost,

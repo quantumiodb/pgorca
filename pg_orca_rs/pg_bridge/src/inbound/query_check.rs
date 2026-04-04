@@ -46,6 +46,8 @@ unsafe fn check_range_table(rtable: *mut pg_sys::List) -> Result<(), InboundErro
             pg_sys::RTEKind::RTE_RELATION => {}
             pg_sys::RTEKind::RTE_JOIN => {}
             pg_sys::RTEKind::RTE_RESULT => {}
+            #[cfg(feature = "pg18")]
+            pg_sys::RTEKind::RTE_GROUP => {}
             _ => return Err(InboundError::UnsupportedFeature(
                 format!("unsupported RTE kind: {:?}", kind)
             )),

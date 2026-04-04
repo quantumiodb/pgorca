@@ -40,5 +40,16 @@ pub unsafe fn build_planned_stmt(
         (*stmt).relationOids = oid_list;
     }
 
+    // PG18: Mark all RTEs as unprunable (not subject to runtime partition pruning)
+    #[cfg(feature = "pg18")]
+    {
+        let mut unprunable_relids: *mut pg_sys::Bitmapset = std::ptr::null_mut();
+        let rte_count = pg_sys::list_length((*stmt).rtable);
+        for i in 1..=rte_count {
+            unprunable_relids = pg_sys::bms_add_member(unprunable_relids, i);
+        }
+        (*stmt).unprunableRelids = unprunable_relids;
+    }
+
     Ok(stmt)
 }
