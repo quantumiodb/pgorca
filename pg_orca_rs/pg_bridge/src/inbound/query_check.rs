@@ -10,9 +10,7 @@ pub unsafe fn is_supported_query(query: &pg_sys::Query) -> Result<(), InboundErr
     if query.hasSubLinks {
         return Err(InboundError::UnsupportedFeature("sublinks".into()));
     }
-    if query.hasWindowFuncs {
-        return Err(InboundError::UnsupportedFeature("window functions".into()));
-    }
+    // Window functions: supported via WindowAgg node
     if query.hasRecursive {
         return Err(InboundError::UnsupportedFeature("recursive".into()));
     }

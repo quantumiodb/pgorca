@@ -79,9 +79,13 @@ unsafe fn apply_query_projection(
         | pg_sys::NodeTag::T_BitmapHeapScan => {
             (*pg_plan).targetlist = query.targetList;
         }
+        // WindowAgg: use query's targetlist (which contains WindowFunc expressions).
+        // Vars in it need OUTER_VAR remapping to reference the child plan.
+        pg_sys::NodeTag::T_WindowAgg => {
+            let proj_tl = rewrite_tl_for_projection(query.targetList, pg_plan);
+            (*pg_plan).targetlist = proj_tl;
+        }
         // Non-scan nodes (join, agg, sort, etc.): keep internal targetlist as-is.
-        // Projection for these requires Result node wrapping which is a larger refactor.
-        // Column order is deterministic (sorted by varattno in inbound).
         _ => {}
     }
     Ok(())
@@ -156,6 +160,26 @@ unsafe fn rewrite_tl_for_projection(
                 // Fallback: use original expression (may work for scan nodes)
                 (*new_te).expr = qte.expr;
             }
+        } else if !qte.expr.is_null() && (*qte.expr).type_ == pg_sys::NodeTag::T_WindowFunc {
+            // WindowFunc: need to remap Var nodes inside args to OUTER_VAR
+            // WindowFunc: need to remap Var nodes inside args to OUTER_VAR
+            // Copy the WindowFunc and remap its arg Vars
+            let wf = qte.expr as *mut pg_sys::WindowFunc;
+            let new_wf = crate::utils::palloc::palloc_node::<pg_sys::WindowFunc>(
+                pg_sys::NodeTag::T_WindowFunc,
+            );
+            (*new_wf).winfnoid = (*wf).winfnoid;
+            (*new_wf).wintype = (*wf).wintype;
+            (*new_wf).wincollid = (*wf).wincollid;
+            (*new_wf).inputcollid = (*wf).inputcollid;
+            (*new_wf).winref = (*wf).winref;
+            (*new_wf).winstar = (*wf).winstar;
+            (*new_wf).winagg = (*wf).winagg;
+            (*new_wf).location = (*wf).location;
+            (*new_wf).aggfilter = (*wf).aggfilter;
+            (*new_wf).runCondition = std::ptr::null_mut();
+            (*new_wf).args = remap_vars_in_list((*wf).args, &child_tes);
+            (*new_te).expr = new_wf as *mut pg_sys::Expr;
         } else {
             // Non-Var expression (e.g., Aggref, FuncExpr) — keep as-is
             (*new_te).expr = qte.expr;
@@ -165,6 +189,79 @@ unsafe fn rewrite_tl_for_projection(
     }
 
     new_list
+}
+
+/// Remap Var nodes in a List to use OUTER_VAR, matching against child target entries.
+unsafe fn remap_vars_in_list(
+    list: *mut pg_sys::List,
+    child_tes: &[*mut pg_sys::TargetEntry],
+) -> *mut pg_sys::List {
+    use crate::utils::pg_list::list_iter;
+    use expr_builders::{OUTER_VAR, INNER_VAR};
+
+    if list.is_null() {
+        return std::ptr::null_mut();
+    }
+    let items = list_iter::<pg_sys::Node>(list);
+    let mut new_list: *mut pg_sys::List = std::ptr::null_mut();
+    for item_ptr in &items {
+        let item = *item_ptr;
+        if !item.is_null() && (*item).type_ == pg_sys::NodeTag::T_TargetEntry {
+            // WindowFunc args are wrapped in TargetEntry
+            let te = item as *mut pg_sys::TargetEntry;
+            let new_te = crate::utils::palloc::palloc_node::<pg_sys::TargetEntry>(
+                pg_sys::NodeTag::T_TargetEntry,
+            );
+            std::ptr::copy_nonoverlapping(te, new_te, 1);
+            if !(*te).expr.is_null() && (*(*te).expr).type_ == pg_sys::NodeTag::T_Var {
+                (*new_te).expr = remap_single_var((*te).expr as *mut pg_sys::Var, child_tes);
+            }
+            new_list = pg_sys::lappend(new_list, new_te as *mut std::ffi::c_void);
+        } else if !item.is_null() && (*item).type_ == pg_sys::NodeTag::T_Var {
+            let new_var = remap_single_var(item as *mut pg_sys::Var, child_tes);
+            new_list = pg_sys::lappend(new_list, new_var as *mut std::ffi::c_void);
+        } else {
+            new_list = pg_sys::lappend(new_list, item as *mut std::ffi::c_void);
+        }
+    }
+    new_list
+}
+
+unsafe fn remap_single_var(
+    var: *mut pg_sys::Var,
+    child_tes: &[*mut pg_sys::TargetEntry],
+) -> *mut pg_sys::Expr {
+    use expr_builders::{OUTER_VAR, INNER_VAR};
+
+    let orig_varno = (*var).varno as u32;
+    let orig_attno = (*var).varattno;
+
+    for (i, cte_ptr) in child_tes.iter().enumerate() {
+        let cte = &**cte_ptr;
+        if !cte.expr.is_null() && (*cte.expr).type_ == pg_sys::NodeTag::T_Var {
+            let cv = cte.expr as *const pg_sys::Var;
+            if ((*cv).varno as u32 == orig_varno && (*cv).varattno == orig_attno)
+                || (((*cv).varno == OUTER_VAR || (*cv).varno == INNER_VAR)
+                    && (*cv).varnosyn == orig_varno
+                    && (*cv).varattnosyn == orig_attno)
+            {
+                let new_var = crate::utils::palloc::palloc_node::<pg_sys::Var>(
+                    pg_sys::NodeTag::T_Var,
+                );
+                (*new_var).varno = OUTER_VAR;
+                (*new_var).varattno = (i + 1) as i16;
+                (*new_var).vartype = (*var).vartype;
+                (*new_var).vartypmod = (*var).vartypmod;
+                (*new_var).varcollid = (*var).varcollid;
+                (*new_var).varnosyn = (*var).varnosyn;
+                (*new_var).varattnosyn = (*var).varattnosyn;
+                (*new_var).location = (*var).location;
+                return new_var as *mut pg_sys::Expr;
+            }
+        }
+    }
+    // Not found — return original
+    var as *mut pg_sys::Expr
 }
 
 unsafe fn build_plan_node(

@@ -751,6 +751,24 @@ pub unsafe fn build_unique(
     Ok(&mut (*uniq).plan as *mut pg_sys::Plan)
 }
 
+/// Find the 1-based position of (varno, varattno) in a plan's target list.
+unsafe fn find_col_pos_in_plan(varno: u32, varattno: i16, plan: *mut pg_sys::Plan) -> Option<i16> {
+    if plan.is_null() || (*plan).targetlist.is_null() {
+        return None;
+    }
+    let tes = crate::utils::pg_list::list_iter::<pg_sys::TargetEntry>((*plan).targetlist);
+    for (i, te_ptr) in tes.iter().enumerate() {
+        let te = &**te_ptr;
+        if !te.expr.is_null() && (*te.expr).type_ == pg_sys::NodeTag::T_Var {
+            let v = te.expr as *const pg_sys::Var;
+            if (*v).varno as u32 == varno && (*v).varattno == varattno {
+                return Some((i + 1) as i16);
+            }
+        }
+    }
+    None
+}
+
 // ── WindowAgg ────────────────────────────────────────────────────────────────
 
 pub unsafe fn build_window_agg(
@@ -783,12 +801,17 @@ pub unsafe fn build_window_agg(
             let part_colls = pg_sys::palloc0(n_part * std::mem::size_of::<pg_sys::Oid>())
                 as *mut pg_sys::Oid;
             for (i, cid) in wc.partition_by.iter().enumerate() {
-                *part_idx.add(i) = (i + 1) as pg_sys::AttrNumber;
-                let type_oid = col_map.get_column_ref(*cid)
-                    .map(|cr| pg_sys::Oid::from(cr.pg_vartype))
-                    .unwrap_or(pg_sys::Oid::from(0u32));
+                // Find this column's position in child plan's target list
+                let cr = col_map.get_column_ref(*cid);
+                let attno = cr.and_then(|c| {
+                    find_col_pos_in_plan(c.pg_varno, c.pg_varattno, child_plan)
+                }).unwrap_or((i + 1) as i16);
+                *part_idx.add(i) = attno as pg_sys::AttrNumber;
+                let (type_oid, collation) = cr
+                    .map(|cr| (pg_sys::Oid::from(cr.pg_vartype), pg_sys::Oid::from(cr.pg_varcollid)))
+                    .unwrap_or((pg_sys::Oid::from(0u32), pg_sys::Oid::from(0u32)));
                 *part_ops.add(i) = get_eq_operator(type_oid);
-                *part_colls.add(i) = pg_sys::Oid::from(0u32);
+                *part_colls.add(i) = collation;
             }
             (*wa).partColIdx = part_idx;
             (*wa).partOperators = part_ops;
@@ -806,7 +829,10 @@ pub unsafe fn build_window_agg(
             let ord_colls = pg_sys::palloc0(n_ord * std::mem::size_of::<pg_sys::Oid>())
                 as *mut pg_sys::Oid;
             for (i, key) in wc.order_by.iter().enumerate() {
-                *ord_idx.add(i) = (n_part + i + 1) as pg_sys::AttrNumber;
+                let attno = col_map.get_column_ref(key.column).and_then(|c| {
+                    find_col_pos_in_plan(c.pg_varno, c.pg_varattno, child_plan)
+                }).unwrap_or((n_part + i + 1) as i16);
+                *ord_idx.add(i) = attno as pg_sys::AttrNumber;
                 *ord_ops.add(i) = pg_sys::Oid::from(key.sort_op_oid);
                 *ord_colls.add(i) = pg_sys::Oid::from(key.collation_oid);
             }

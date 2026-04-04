@@ -66,6 +66,17 @@ pub enum ScalarExpr {
         scalar: Box<ScalarExpr>,
         array: Box<ScalarExpr>,
     },
+
+    WindowFunc {
+        winfnoid: u32,
+        wintype: u32,
+        wincollid: u32,
+        inputcollid: u32,
+        args: Vec<ScalarExpr>,
+        winref: u32,
+        winstar: bool,
+        winagg: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

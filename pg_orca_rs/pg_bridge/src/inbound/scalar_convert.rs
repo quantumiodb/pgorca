@@ -44,6 +44,9 @@ pub unsafe fn convert_scalar(
         pg_sys::NodeTag::T_ScalarArrayOpExpr => {
             convert_scalar_array_op(node as *mut pg_sys::ScalarArrayOpExpr, col_map)
         }
+        pg_sys::NodeTag::T_WindowFunc => {
+            convert_window_func(node as *mut pg_sys::WindowFunc, col_map)
+        }
         _ => Err(InboundError::UnsupportedFeature(
             format!("scalar node tag {:?}", tag)
         )),
@@ -206,4 +209,34 @@ unsafe fn convert_scalar_array_op(
     let array = Box::new(args.remove(1));
     let scalar = Box::new(args.remove(0));
     Ok(ScalarExpr::ScalarArrayOp { op_oid, use_or, scalar, array })
+}
+
+unsafe fn convert_window_func(
+    wf: *mut pg_sys::WindowFunc,
+    col_map: &ColumnMapping,
+) -> Result<ScalarExpr, InboundError> {
+    let winfnoid = (*wf).winfnoid.to_u32();
+    let wintype = (*wf).wintype.to_u32();
+    let wincollid = (*wf).wincollid.to_u32();
+    let inputcollid = (*wf).inputcollid.to_u32();
+    let winref = (*wf).winref;
+    let winstar = (*wf).winstar;
+    let winagg = (*wf).winagg;
+
+    let arg_nodes = crate::utils::pg_list::list_iter::<pg_sys::Node>((*wf).args);
+    let mut args = Vec::new();
+    for arg_node in &arg_nodes {
+        args.push(convert_scalar(*arg_node, col_map)?);
+    }
+
+    Ok(ScalarExpr::WindowFunc {
+        winfnoid,
+        wintype,
+        wincollid,
+        inputcollid,
+        args,
+        winref,
+        winstar,
+        winagg,
+    })
 }

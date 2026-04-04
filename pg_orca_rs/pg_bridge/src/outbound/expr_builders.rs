@@ -294,6 +294,30 @@ pub unsafe fn build_scalar_expr(
             Ok(sao as *mut pg_sys::Expr)
         }
 
+        ScalarExpr::WindowFunc {
+            winfnoid, wintype, wincollid, inputcollid,
+            args, winref, winstar, winagg,
+        } => {
+            let wf = palloc_node::<pg_sys::WindowFunc>(pg_sys::NodeTag::T_WindowFunc);
+            (*wf).winfnoid = pg_sys::Oid::from(*winfnoid);
+            (*wf).wintype = pg_sys::Oid::from(*wintype);
+            (*wf).wincollid = pg_sys::Oid::from(*wincollid);
+            (*wf).inputcollid = pg_sys::Oid::from(*inputcollid);
+            (*wf).winref = *winref;
+            (*wf).winstar = *winstar;
+            (*wf).winagg = *winagg;
+            (*wf).aggfilter = std::ptr::null_mut();
+            (*wf).location = -1;
+
+            let mut arg_list: *mut pg_sys::List = std::ptr::null_mut();
+            for arg in args {
+                let arg_expr = build_scalar_expr(arg, col_map)?;
+                arg_list = pg_sys::lappend(arg_list, arg_expr as *mut std::ffi::c_void);
+            }
+            (*wf).args = arg_list;
+            Ok(wf as *mut pg_sys::Expr)
+        }
+
         other => Err(OutboundError::PlanBuildError(
             format!("unsupported ScalarExpr variant: {:?}", std::mem::discriminant(other))
         )),

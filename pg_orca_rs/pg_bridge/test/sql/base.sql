@@ -72,12 +72,19 @@ EXPLAIN (COSTS OFF) SELECT DISTINCT a FROM orca_t;
 SELECT DISTINCT a FROM orca_t ORDER BY a;
 
 -- ================================================================
+-- M11: Window functions
+-- ================================================================
+
+EXPLAIN (COSTS OFF) SELECT a, row_number() OVER (ORDER BY a) FROM orca_t;
+SELECT a, row_number() OVER (ORDER BY a) FROM orca_t;
+SELECT a, rank() OVER (ORDER BY a) FROM orca_t;
+
+-- ================================================================
 -- Fallback (must not crash)
 -- ================================================================
 
 SELECT * FROM orca_t WHERE a IN (SELECT id FROM orca_cust) ORDER BY a;
 WITH cte AS (SELECT * FROM orca_t) SELECT * FROM cte ORDER BY a;
-SELECT a, row_number() OVER (ORDER BY a) FROM orca_t;
 
 -- ================================================================
 -- Combined
