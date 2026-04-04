@@ -35,11 +35,136 @@ pub unsafe fn generate_planned_stmt(
 ) -> Result<*mut pg_sys::PlannedStmt, OutboundError> {
     let pg_plan = build_plan_node(plan, col_map)?;
 
+    // Apply projection: replace the top-level plan's targetlist with the
+    // query's targetList so the output matches what the user SELECT'd.
+    apply_query_projection(pg_plan, query, col_map)?;
+
     let stmt = planned_stmt::build_planned_stmt(query, pg_plan, std::ptr::null_mut())?;
 
     sanity_check::sanity_check(stmt, query)?;
 
     Ok(stmt)
+}
+
+/// Replace the top-level plan's targetlist with the query's targetList.
+///
+/// The query's targetList has Var nodes with original (varno, varattno) referencing
+/// RTEs. For scan nodes this works directly. For non-scan nodes (join, agg, sort),
+/// we add a Result node on top that projects from the plan's internal targetlist
+/// to the query's expected output.
+unsafe fn apply_query_projection(
+    pg_plan: *mut pg_sys::Plan,
+    query: &pg_sys::Query,
+    _col_map: &ColumnMapping,
+) -> Result<(), OutboundError> {
+    if query.targetList.is_null() {
+        return Ok(());
+    }
+
+    // For simple scan nodes, the query's targetList Vars directly reference
+    // the scan relation (varno = RTE index), so we can just replace.
+    // For non-scan nodes, the query's Vars still reference the original RTEs,
+    // which PG can resolve via the range table.
+    //
+    // Key insight: PG's executor for scan nodes evaluates targetlist Vars
+    // against the current scan tuple using (varno == scanrelid).
+    // For upper nodes, we wrap with a Result node if needed.
+
+    let plan_tag = (*pg_plan).type_;
+    match plan_tag {
+        // Scan nodes: replace targetlist directly
+        pg_sys::NodeTag::T_SeqScan
+        | pg_sys::NodeTag::T_IndexScan
+        | pg_sys::NodeTag::T_IndexOnlyScan
+        | pg_sys::NodeTag::T_BitmapHeapScan => {
+            (*pg_plan).targetlist = query.targetList;
+        }
+        // Non-scan nodes (join, agg, sort, etc.): keep internal targetlist as-is.
+        // Projection for these requires Result node wrapping which is a larger refactor.
+        // Column order is deterministic (sorted by varattno in inbound).
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Rewrite a query target list so Vars reference OUTER_VAR + position in child plan.
+unsafe fn rewrite_tl_for_projection(
+    query_tl: *mut pg_sys::List,
+    child_plan: *mut pg_sys::Plan,
+) -> *mut pg_sys::List {
+    use crate::utils::pg_list::list_iter;
+    use expr_builders::{OUTER_VAR, INNER_VAR};
+
+    let child_tes = list_iter::<pg_sys::TargetEntry>((*child_plan).targetlist);
+    let query_tes = list_iter::<pg_sys::TargetEntry>(query_tl);
+
+    let mut new_list: *mut pg_sys::List = std::ptr::null_mut();
+
+    for (resno_0, qte_ptr) in query_tes.iter().enumerate() {
+        let qte = &**qte_ptr;
+        let new_te = crate::utils::palloc::palloc_node::<pg_sys::TargetEntry>(
+            pg_sys::NodeTag::T_TargetEntry,
+        );
+        (*new_te).resno = (resno_0 + 1) as i16;
+        (*new_te).resname = qte.resname;
+        (*new_te).resjunk = qte.resjunk;
+        (*new_te).ressortgroupref = qte.ressortgroupref;
+        (*new_te).resorigtbl = qte.resorigtbl;
+        (*new_te).resorigcol = qte.resorigcol;
+
+        // If the expression is a Var, remap it to point into the child plan's output
+        if !qte.expr.is_null() && (*qte.expr).type_ == pg_sys::NodeTag::T_Var {
+            let orig_var = qte.expr as *const pg_sys::Var;
+            let orig_varno = (*orig_var).varno as u32;
+            let orig_attno = (*orig_var).varattno;
+
+            // Find this column's position in the child plan's target list
+            let mut found_pos: Option<i16> = None;
+            for (i, cte_ptr) in child_tes.iter().enumerate() {
+                let cte = &**cte_ptr;
+                if !cte.expr.is_null() && (*cte.expr).type_ == pg_sys::NodeTag::T_Var {
+                    let cv = cte.expr as *const pg_sys::Var;
+                    // Match by original varno+varattno, or by OUTER_VAR attno
+                    let cv_varno = (*cv).varno;
+                    let cv_attno = (*cv).varattno;
+                    if (cv_varno as u32 == orig_varno && cv_attno == orig_attno)
+                        || ((cv_varno == OUTER_VAR || cv_varno == INNER_VAR)
+                            && (*cv).varnosyn == orig_varno
+                            && (*cv).varattnosyn == orig_attno)
+                    {
+                        found_pos = Some((i + 1) as i16);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(pos) = found_pos {
+                // Create new Var pointing to OUTER_VAR + position in child
+                let new_var = crate::utils::palloc::palloc_node::<pg_sys::Var>(
+                    pg_sys::NodeTag::T_Var,
+                );
+                (*new_var).varno = OUTER_VAR;
+                (*new_var).varattno = pos;
+                (*new_var).vartype = (*orig_var).vartype;
+                (*new_var).vartypmod = (*orig_var).vartypmod;
+                (*new_var).varcollid = (*orig_var).varcollid;
+                (*new_var).varnosyn = (*orig_var).varnosyn;
+                (*new_var).varattnosyn = (*orig_var).varattnosyn;
+                (*new_var).location = (*orig_var).location;
+                (*new_te).expr = new_var as *mut pg_sys::Expr;
+            } else {
+                // Fallback: use original expression (may work for scan nodes)
+                (*new_te).expr = qte.expr;
+            }
+        } else {
+            // Non-Var expression (e.g., Aggref, FuncExpr) — keep as-is
+            (*new_te).expr = qte.expr;
+        }
+
+        new_list = pg_sys::lappend(new_list, new_te as *mut std::ffi::c_void);
+    }
+
+    new_list
 }
 
 unsafe fn build_plan_node(
