@@ -2,7 +2,7 @@ use pgrx::pg_sys;
 use super::InboundError;
 use crate::utils::pg_list::list_length;
 
-/// Check if a query is within the supported scope (M1: simple SELECT only).
+/// Check if a query is within the supported scope.
 pub unsafe fn is_supported_query(query: &pg_sys::Query) -> Result<(), InboundError> {
     if query.commandType != pg_sys::CmdType::CMD_SELECT {
         return Err(InboundError::UnsupportedFeature("non-SELECT".into()));
@@ -25,37 +25,8 @@ pub unsafe fn is_supported_query(query: &pg_sys::Query) -> Result<(), InboundErr
     if !query.utilityStmt.is_null() {
         return Err(InboundError::UnsupportedFeature("utility".into()));
     }
-    if query.hasAggs {
-        return Err(InboundError::UnsupportedFeature("aggregates".into()));
-    }
     if query.hasTargetSRFs {
         return Err(InboundError::UnsupportedFeature("target SRFs".into()));
-    }
-    if list_length(query.sortClause) > 0 {
-        return Err(InboundError::UnsupportedFeature("ORDER BY".into()));
-    }
-    if !query.limitOffset.is_null() {
-        return Err(InboundError::UnsupportedFeature("OFFSET".into()));
-    }
-    if !query.limitCount.is_null() {
-        return Err(InboundError::UnsupportedFeature("LIMIT".into()));
-    }
-    if list_length(query.distinctClause) > 0 {
-        return Err(InboundError::UnsupportedFeature("DISTINCT".into()));
-    }
-    if list_length(query.groupClause) > 0 {
-        return Err(InboundError::UnsupportedFeature("GROUP BY".into()));
-    }
-    if !query.havingQual.is_null() {
-        return Err(InboundError::UnsupportedFeature("HAVING".into()));
-    }
-
-    // Reject WHERE clause (not supported until M3)
-    if !query.jointree.is_null() {
-        let jointree = &*query.jointree;
-        if !jointree.quals.is_null() {
-            return Err(InboundError::UnsupportedFeature("WHERE clause".into()));
-        }
     }
 
     // Check RTEs

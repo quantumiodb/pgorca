@@ -20,6 +20,21 @@ pub unsafe fn list_iter<T>(list: *mut pg_sys::List) -> Vec<*mut T> {
     result
 }
 
+/// Iterate over a PG OID List, yielding Oid values.
+pub unsafe fn list_iter_oid(list: *mut pg_sys::List) -> Vec<pg_sys::Oid> {
+    let mut result = Vec::new();
+    if list.is_null() {
+        return result;
+    }
+    let len = (*list).length as usize;
+    let elements = (*list).elements;
+    for i in 0..len {
+        let cell = *elements.add(i);
+        result.push(cell.oid_value);
+    }
+    result
+}
+
 /// Append a pointer to a PG List.
 pub unsafe fn lappend(list: *mut pg_sys::List, datum: *mut std::ffi::c_void) -> *mut pg_sys::List {
     pg_sys::lappend(list, datum)

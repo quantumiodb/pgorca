@@ -20,3 +20,4 @@ optimizer_core = { path = "../optimizer_core" }
 
 [dev-dependencies]
 pgrx-tests = "=0.17.0"
+postgres = "0.19"

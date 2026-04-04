@@ -191,3 +191,6 @@ pub unsafe extern "C-unwind" fn _PG_init() {
 
     pgrx::log!("pg_orca_rs: planner hook installed");
 }
+
+// Tests are in tests/integration.rs — run with:
+//   PG_TEST_PORT=28817 cargo test -p pg_bridge --test integration

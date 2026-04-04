@@ -21,8 +21,6 @@ pub enum PhysicalOp {
     },
     BitmapHeapScan {
         scanrelid: RteIndex,
-    },
-    BitmapIndexScan {
         index_oid: u32,
         index_quals: Vec<ScalarExpr>,
     },

@@ -1,9 +1,10 @@
 use crate::OptimizerError;
-use crate::cost::stats::CatalogSnapshot;
+use crate::cost::stats::{CatalogSnapshot, estimate_selectivity};
 use crate::cost::model::cost_physical_op;
 use crate::ir::logical::{LogicalExpr, LogicalOp};
 use crate::ir::operator::Operator;
-use crate::ir::types::Cost;
+use crate::ir::physical::PhysicalOp;
+use crate::ir::types::{ColumnId, Cost};
 use crate::memo::{Memo, GroupId};
 use crate::memo::group::Winner;
 use crate::plan::extract::{PhysicalPlan, extract_plan};
@@ -20,20 +21,14 @@ pub fn optimize(
     input: LogicalExpr,
     catalog: &CatalogSnapshot,
 ) -> Result<PhysicalPlan, OptimizerError> {
-    // 1. Pre-Cascades simplification
     let simplified = simplify_pass(input, catalog);
-
-    // 2. Create Memo and copy-in the expression tree
     let mut memo = Memo::new();
     let root = copy_in(&mut memo, &simplified);
     memo.set_root(root);
 
-    // 3. Run Cascades search
-    let rules = RuleSet::default_m1();
+    let rules = RuleSet::default();
     let required = RequiredProperties::none();
     optimize_group(&mut memo, root, &required, f64::INFINITY, &rules, catalog)?;
-
-    // 4. Extract physical plan from winners
     extract_plan(&memo, root, &required)
 }
 
@@ -42,7 +37,6 @@ fn copy_in(memo: &mut Memo, expr: &LogicalExpr) -> GroupId {
     let child_groups: Vec<GroupId> = expr.children.iter()
         .map(|child| copy_in(memo, child))
         .collect();
-
     let op = Operator::Logical(expr.op.clone());
     let (gid, _) = memo.insert_expr(op, child_groups, None);
     gid
@@ -67,10 +61,10 @@ fn optimize_group(
         }
     }
 
-    // 2. Derive logical properties
+    // 2. Derive logical properties (must come before costing)
     derive_logical_props(memo, group_id, catalog);
 
-    // 3. Explore — apply transformation rules (none in M1)
+    // 3. Explore — apply transformation rules
     if !memo.get_group(group_id).explored {
         let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
         for eid in &expr_ids {
@@ -88,9 +82,7 @@ fn optimize_group(
     if !memo.get_group(group_id).implemented {
         let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
         for eid in &expr_ids {
-            let is_logical = memo.get_expr(*eid).op.is_logical();
-            if is_logical {
-                // Collect matching rules first, then apply
+            if memo.get_expr(*eid).op.is_logical() {
                 let matching: Vec<usize> = rules.impl_rules.iter().enumerate()
                     .filter(|(_, rule)| rule.matches(memo.get_expr(*eid), memo))
                     .map(|(i, _)| i)
@@ -120,45 +112,46 @@ fn optimize_group(
         };
 
         // Recursively optimize children
-        let mut total_child_cost = 0.0;
+        let mut child_costs: Vec<f64> = Vec::new();
+        let mut child_rows: Vec<f64> = Vec::new();
         let mut feasible = true;
         for child_gid in &children {
-            let child_budget = upper_bound - total_child_cost;
+            let child_budget = upper_bound - child_costs.iter().sum::<f64>();
             if child_budget <= 0.0 { feasible = false; break; }
 
             match optimize_group(memo, *child_gid, &RequiredProperties::none(), child_budget, rules, catalog)? {
-                Some(child_cost) => total_child_cost += child_cost,
+                Some(child_cost) => {
+                    child_costs.push(child_cost);
+                    let child_rows_val = memo.get_group(*child_gid).logical_props.get()
+                        .map(|p| p.row_count)
+                        .unwrap_or(1000.0);
+                    child_rows.push(child_rows_val);
+                }
                 None => { feasible = false; break; }
             }
         }
-
         if !feasible { continue; }
 
-        // Get logical properties for cost computation
         let logical_props = memo.get_group(group_id).logical_props.get()
             .cloned()
-            .unwrap_or(LogicalProperties {
-                output_columns: vec![],
-                row_count: 0.0,
-                table_ids: vec![],
-                not_null_columns: vec![],
-                unique_keys: vec![],
-                avg_width: 0.0,
-            });
+            .unwrap_or_default();
 
-        // Get page count for this table (for scan operators)
+        let children_costs: Vec<Cost> = child_costs.iter()
+            .map(|&c| Cost { startup: 0.0, total: c })
+            .collect();
+
         let page_count = get_page_count(&phys_op, catalog);
 
         let local_cost = cost_physical_op(
             &phys_op,
             &logical_props,
             &catalog.cost_params,
-            &[], // children costs
-            &[], // children rows
+            &children_costs,
+            &child_rows,
             page_count,
         );
 
-        let total_cost = local_cost.total + total_child_cost;
+        let total_cost = local_cost.total;
 
         if total_cost < upper_bound {
             upper_bound = total_cost;
@@ -175,36 +168,50 @@ fn optimize_group(
     Ok(memo.get_group(group_id).winners.get(&key).map(|w| w.cost.total))
 }
 
-/// Derive logical properties for a group (using OnceLock).
+/// Derive logical properties for a group (using OnceLock — set once, then cached).
 fn derive_logical_props(memo: &mut Memo, group_id: GroupId, catalog: &CatalogSnapshot) {
     if memo.get_group(group_id).logical_props.get().is_some() {
         return;
     }
-
-    // Find the first logical expression in the group
     let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
     for eid in &expr_ids {
+        // Derive children first (bottom-up)
+        let children = memo.get_expr(*eid).children.clone();
+        for child_gid in &children {
+            derive_logical_props(memo, *child_gid, catalog);
+        }
+
         let expr = memo.get_expr(*eid);
         if let Operator::Logical(ref logical_op) = expr.op {
-            let props = derive_props_for_op(logical_op, catalog);
+            let children = expr.children.clone();
+            let props = derive_props(logical_op, &children, memo, catalog);
             let _ = memo.get_group(group_id).logical_props.set(props);
             return;
         }
     }
 }
 
-fn derive_props_for_op(op: &LogicalOp, catalog: &CatalogSnapshot) -> LogicalProperties {
+fn derive_props(
+    op: &LogicalOp,
+    children: &[GroupId],
+    memo: &Memo,
+    catalog: &CatalogSnapshot,
+) -> LogicalProperties {
+    let child_props = |idx: usize| -> LogicalProperties {
+        children.get(idx)
+            .and_then(|gid| memo.get_group(*gid).logical_props.get())
+            .cloned()
+            .unwrap_or_default()
+    };
+
     match op {
         LogicalOp::Get { table_id, columns, .. } => {
             let (row_count, avg_width) = catalog.tables.get(table_id)
                 .map(|ts| {
-                    let width: f64 = ts.columns.iter()
-                        .map(|c| c.avg_width as f64)
-                        .sum();
-                    (ts.row_count, width)
+                    let width: f64 = ts.columns.iter().map(|c| c.avg_width as f64).sum();
+                    (ts.row_count, width.max(1.0))
                 })
                 .unwrap_or((1000.0, 32.0));
-
             LogicalProperties {
                 output_columns: columns.clone(),
                 row_count,
@@ -214,25 +221,99 @@ fn derive_props_for_op(op: &LogicalOp, catalog: &CatalogSnapshot) -> LogicalProp
                 avg_width,
             }
         }
-        _ => LogicalProperties {
-            output_columns: vec![],
-            row_count: 1000.0,
-            table_ids: vec![],
-            not_null_columns: vec![],
-            unique_keys: vec![],
-            avg_width: 32.0,
-        },
+
+        LogicalOp::Select { predicate } => {
+            let base = child_props(0);
+            let sel = estimate_selectivity(predicate, catalog, &base.table_ids);
+            let row_count = (base.row_count * sel).max(1.0);
+            LogicalProperties { row_count, ..base }
+        }
+
+        LogicalOp::Project { projections } => {
+            let base = child_props(0);
+            let cols: Vec<ColumnId> = projections.iter().map(|(_, c)| *c).collect();
+            LogicalProperties { output_columns: cols, ..base }
+        }
+
+        LogicalOp::Join { join_type, predicate } => {
+            let left = child_props(0);
+            let right = child_props(1);
+            let join_sel = estimate_selectivity(predicate, catalog, &{
+                let mut t = left.table_ids.clone();
+                t.extend_from_slice(&right.table_ids);
+                t
+            });
+            let cross_product = left.row_count * right.row_count;
+            let row_count = (cross_product * join_sel).max(1.0);
+            let mut cols = left.output_columns.clone();
+            cols.extend_from_slice(&right.output_columns);
+            let mut table_ids = left.table_ids.clone();
+            table_ids.extend_from_slice(&right.table_ids);
+            LogicalProperties {
+                output_columns: cols,
+                row_count,
+                table_ids,
+                not_null_columns: vec![],
+                unique_keys: vec![],
+                avg_width: left.avg_width + right.avg_width,
+            }
+        }
+
+        LogicalOp::Aggregate { group_by, aggregates } => {
+            let base = child_props(0);
+            // Rough estimate: 10% of input rows after aggregation
+            let row_count = if group_by.is_empty() {
+                1.0 // scalar aggregate → 1 row
+            } else {
+                (base.row_count * 0.1).max(1.0)
+            };
+            LogicalProperties {
+                output_columns: group_by.clone(),
+                row_count,
+                table_ids: base.table_ids,
+                not_null_columns: vec![],
+                unique_keys: vec![],
+                avg_width: base.avg_width,
+            }
+        }
+
+        LogicalOp::Sort { .. } => child_props(0),
+
+        LogicalOp::Limit { count, .. } => {
+            let base = child_props(0);
+            let row_count = if count.is_some() {
+                (base.row_count * 0.01).max(1.0)
+            } else {
+                base.row_count
+            };
+            LogicalProperties { row_count, ..base }
+        }
+
+        LogicalOp::Distinct { .. } => {
+            let base = child_props(0);
+            let row_count = (base.row_count * 0.9).max(1.0);
+            LogicalProperties { row_count, ..base }
+        }
     }
 }
 
-fn get_page_count(op: &crate::ir::physical::PhysicalOp, catalog: &CatalogSnapshot) -> u64 {
-    use crate::ir::physical::PhysicalOp;
+fn get_page_count(op: &PhysicalOp, catalog: &CatalogSnapshot) -> u64 {
     match op {
-        PhysicalOp::SeqScan { .. } => {
-            // Use the first (and typically only) table's page count
-            catalog.tables.values().next()
+        PhysicalOp::SeqScan { scanrelid } => {
+            catalog.get_table_by_rte(*scanrelid)
                 .map(|ts| ts.page_count)
-                .unwrap_or(0)
+                .unwrap_or_else(|| {
+                    // fallback: first table
+                    catalog.tables.values().next().map(|ts| ts.page_count).unwrap_or(0)
+                })
+        }
+        PhysicalOp::IndexScan { scanrelid, index_oid, .. }
+        | PhysicalOp::IndexOnlyScan { scanrelid, index_oid, .. }
+        | PhysicalOp::BitmapHeapScan { scanrelid, index_oid, .. } => {
+            catalog.get_table_by_rte(*scanrelid)
+                .and_then(|ts| ts.indexes.iter().find(|idx| idx.oid == *index_oid))
+                .map(|idx| idx.pages)
+                .unwrap_or(1)
         }
         _ => 0,
     }
@@ -247,6 +328,7 @@ mod tests {
 
     fn make_test_catalog() -> CatalogSnapshot {
         let mut tables = HashMap::new();
+        let mut rte_to_table = HashMap::new();
         tables.insert(TableId(1), TableStats {
             oid: 16384,
             name: "t".into(),
@@ -257,11 +339,10 @@ mod tests {
                 ColumnStats { attnum: 2, name: "b".into(), avg_width: 32, ..Default::default() },
             ],
             indexes: vec![],
+            col_id_to_attnum: HashMap::new(),
         });
-        CatalogSnapshot {
-            tables,
-            cost_params: CostParams::default(),
-        }
+        rte_to_table.insert(1u32, TableId(1));
+        CatalogSnapshot { tables, rte_to_table, cost_params: CostParams::default() }
     }
 
     #[test]
@@ -275,14 +356,8 @@ mod tests {
             },
             children: vec![],
         };
-
         let plan = optimize(expr, &catalog).unwrap();
-        match &plan.op {
-            crate::ir::physical::PhysicalOp::SeqScan { scanrelid } => {
-                assert_eq!(*scanrelid, 1);
-            }
-            other => panic!("expected SeqScan, got {:?}", other),
-        }
+        assert!(matches!(plan.op, PhysicalOp::SeqScan { scanrelid: 1 }));
         assert_eq!(plan.output_columns.len(), 2);
         assert!(plan.cost.total > 0.0);
         assert_eq!(plan.rows, 1000.0);

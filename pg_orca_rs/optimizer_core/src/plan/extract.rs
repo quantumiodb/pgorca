@@ -1,4 +1,5 @@
 use crate::ir::types::{ColumnId, Cost};
+use crate::ir::logical::LogicalOp;
 use crate::ir::physical::PhysicalOp;
 use crate::ir::operator::Operator;
 use crate::ir::scalar::ScalarExpr;
@@ -13,6 +14,7 @@ pub struct PhysicalPlan {
     pub children: Vec<PhysicalPlan>,
     pub output_columns: Vec<ColumnId>,
     pub target_list: Vec<TargetEntry>,
+    /// Filter predicate(s) for this node (WHERE / HAVING)
     pub qual: Vec<ScalarExpr>,
     pub cost: Cost,
     pub rows: f64,
@@ -49,11 +51,12 @@ pub fn extract_plan(
 
     // Recursively extract child plans
     let children_plans: Vec<PhysicalPlan> = expr.children.iter()
-        .map(|child_gid| {
-            // For now, children use no required properties
-            extract_plan(memo, *child_gid, &RequiredProperties::none())
-        })
+        .map(|child_gid| extract_plan(memo, *child_gid, &RequiredProperties::none()))
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Extract any filter predicate from this group's logical Select expr.
+    // This populates qual for SeqScan/IndexScan that were promoted into the Select group.
+    let qual = extract_group_qual(memo, group_id);
 
     // Build output columns and target list from logical properties
     let (output_columns, target_list, rows, width) = if let Some(props) = group.logical_props.get() {
@@ -75,9 +78,20 @@ pub fn extract_plan(
         children: children_plans,
         output_columns,
         target_list,
-        qual: vec![],
+        qual,
         cost: winner.cost,
         rows,
         width,
     })
+}
+
+/// Return the filter predicate(s) from the group's logical Select expression.
+/// Used to propagate the WHERE clause qual onto the winning physical scan.
+fn extract_group_qual(memo: &Memo, group_id: GroupId) -> Vec<ScalarExpr> {
+    for &eid in &memo.get_group(group_id).exprs {
+        if let Operator::Logical(LogicalOp::Select { predicate }) = &memo.get_expr(eid).op {
+            return vec![predicate.clone()];
+        }
+    }
+    vec![]
 }

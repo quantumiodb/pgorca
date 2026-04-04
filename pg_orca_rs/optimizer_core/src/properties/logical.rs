@@ -9,3 +9,16 @@ pub struct LogicalProperties {
     pub unique_keys: Vec<Vec<ColumnId>>,
     pub avg_width: f64,
 }
+
+impl Default for LogicalProperties {
+    fn default() -> Self {
+        Self {
+            output_columns: vec![],
+            row_count: 1000.0,
+            table_ids: vec![],
+            not_null_columns: vec![],
+            unique_keys: vec![],
+            avg_width: 32.0,
+        }
+    }
+}

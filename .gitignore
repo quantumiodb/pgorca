@@ -33,3 +33,30 @@ coverage.info
 # Rust / Cargo
 pg_orca_rs/target/
 pg_orca_rs/Cargo.lock
+
+# pgrx working directories
+.pgrx/
+*.pgrx.work
+pg_orca_rs/.pgrx/
+
+# CMake intermediate products
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+_CPack_Packages/
+install_manifest.txt
+
+# Editor backup / swap files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.orig
+
+# Python
+__pycache__/
+*.pyc
+
+*.pyo
