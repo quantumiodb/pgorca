@@ -1,5 +1,6 @@
 use crate::OptimizerError;
-use crate::cost::stats::{CatalogSnapshot, estimate_selectivity};
+use crate::cost::stats::CatalogSnapshot;
+use crate::cost::cardinality::estimate_selectivity_v2;
 use crate::cost::model::cost_physical_op;
 use crate::ir::logical::{LogicalExpr, LogicalOp};
 use crate::ir::operator::Operator;
@@ -260,7 +261,7 @@ fn derive_props(
 
         LogicalOp::Select { predicate } => {
             let base = child_props(0);
-            let sel = estimate_selectivity(predicate, catalog, &base.table_ids);
+            let sel = estimate_selectivity_v2(predicate, catalog, &base.table_ids);
             let row_count = (base.row_count * sel).max(1.0);
             LogicalProperties { row_count, ..base }
         }
@@ -274,7 +275,7 @@ fn derive_props(
         LogicalOp::Join { join_type, predicate } => {
             let left = child_props(0);
             let right = child_props(1);
-            let join_sel = estimate_selectivity(predicate, catalog, &{
+            let join_sel = estimate_selectivity_v2(predicate, catalog, &{
                 let mut t = left.table_ids.clone();
                 t.extend_from_slice(&right.table_ids);
                 t
