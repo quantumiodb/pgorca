@@ -426,7 +426,10 @@ pub unsafe fn build_merge_join(
     // Allocate per-clause arrays
     let merge_families = pg_sys::palloc0(n * std::mem::size_of::<pg_sys::Oid>()) as *mut pg_sys::Oid;
     let merge_collations = pg_sys::palloc0(n * std::mem::size_of::<pg_sys::Oid>()) as *mut pg_sys::Oid;
+    #[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17"))]
     let merge_strategies = pg_sys::palloc0(n * std::mem::size_of::<i32>()) as *mut i32;
+    #[cfg(feature = "pg18")]
+    let merge_reversals = pg_sys::palloc0(n * std::mem::size_of::<bool>()) as *mut bool;
     let merge_nulls_first = pg_sys::palloc0(n * std::mem::size_of::<bool>()) as *mut bool;
     for (i, mc) in merge_clauses.iter().enumerate() {
         // Look up btree opfamily from the left key type
@@ -438,12 +441,18 @@ pub unsafe fn build_merge_join(
         };
         *merge_families.add(i) = get_btree_opfamily(left_typid);
         *merge_collations.add(i) = pg_sys::Oid::from(mc.collation);
-        *merge_strategies.add(i) = 1; // BTLessStrategyNumber
+        #[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17"))]
+        { *merge_strategies.add(i) = 1; } // BTLessStrategyNumber
+        #[cfg(feature = "pg18")]
+        { *merge_reversals.add(i) = false; } // not reversed = ASC
         *merge_nulls_first.add(i) = mc.nulls_first;
     }
     (*mj).mergeFamilies = merge_families;
     (*mj).mergeCollations = merge_collations;
-    (*mj).mergeStrategies = merge_strategies;
+    #[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17"))]
+    { (*mj).mergeStrategies = merge_strategies; }
+    #[cfg(feature = "pg18")]
+    { (*mj).mergeReversals = merge_reversals; }
     (*mj).mergeNullsFirst = merge_nulls_first;
 
     set_plan_fields(

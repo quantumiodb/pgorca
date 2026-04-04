@@ -66,7 +66,7 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
         let mut col_id_to_attnum: HashMap<ColumnId, i16> = HashMap::new();
 
         for i in 0..natts {
-            let att = *(*tupdesc).attrs.as_ptr().add(i);
+            let att = tupdesc_get_attr(tupdesc, natts, i);
             if att.attisdropped { continue; }
             let attnum = att.attnum;
             let attname = CStr::from_ptr(att.attname.data.as_ptr())
@@ -622,4 +622,30 @@ unsafe fn read_table_indexes(
 
     pg_sys::list_free(index_list);
     indexes
+}
+
+/// Access the i'th FormData_pg_attribute from a TupleDesc.
+/// In PG18 the `attrs` flexible array was replaced by `compact_attrs`,
+/// with FormData_pg_attribute stored immediately after the compact array.
+#[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17"))]
+unsafe fn tupdesc_get_attr(
+    tupdesc: *mut pg_sys::TupleDescData,
+    _natts: usize,
+    i: usize,
+) -> pg_sys::FormData_pg_attribute {
+    *(*tupdesc).attrs.as_ptr().add(i)
+}
+
+#[cfg(feature = "pg18")]
+unsafe fn tupdesc_get_attr(
+    tupdesc: *mut pg_sys::TupleDescData,
+    natts: usize,
+    i: usize,
+) -> pg_sys::FormData_pg_attribute {
+    let att_pointer = (*tupdesc)
+        .compact_attrs
+        .as_ptr()
+        .add(natts)
+        .cast::<pg_sys::FormData_pg_attribute>();
+    *att_pointer.add(i)
 }
