@@ -369,6 +369,30 @@ unsafe fn build_plan_node(
             )
         }
 
+        PhysicalOp::Append => {
+            if plan.children.is_empty() {
+                return Err(OutboundError::PlanBuildError("Append needs children".into()));
+            }
+            let mut child_plans = Vec::new();
+            for child in &plan.children {
+                let child_plan = build_plan_node(child, col_map)?;
+                child_plans.push(child_plan);
+            }
+            // Use the first child's target list as a template
+            let target_list = if !child_plans.is_empty() {
+                (*child_plans[0]).targetlist
+            } else {
+                std::ptr::null_mut()
+            };
+            plan_builders::build_append(
+                child_plans,
+                target_list,
+                plan.rows,
+                &plan.cost,
+                plan.width as i32,
+            )
+        }
+
         other => Err(OutboundError::UnsupportedPhysicalOp(format!("{:?}", other))),
     }
 }

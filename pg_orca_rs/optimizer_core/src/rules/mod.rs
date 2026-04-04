@@ -66,6 +66,8 @@ impl RuleSet {
                 Box::new(impl_rules::sort::Sort2Sort),
                 Box::new(impl_rules::sort::Limit2Limit),
                 Box::new(impl_rules::sort::Distinct2Unique),
+                // Append (partitioned tables)
+                Box::new(impl_rules::append::Append2Append),
             ],
         }
     }

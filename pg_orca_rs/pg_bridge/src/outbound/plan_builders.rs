@@ -711,6 +711,51 @@ pub unsafe fn build_bitmap_heap_scan(
     Ok(&mut (*bhs).scan.plan as *mut pg_sys::Plan)
 }
 
+// ── Append ───────────────────────────────────────────────────────────────────
+
+pub unsafe fn build_append(
+    child_plans: Vec<*mut pg_sys::Plan>,
+    target_list: *mut pg_sys::List,
+    rows: f64,
+    cost: &Cost,
+    width: i32,
+) -> Result<*mut pg_sys::Plan, OutboundError> {
+    let append = palloc_node::<pg_sys::Append>(pg_sys::NodeTag::T_Append);
+
+    // Build appendplans list from child plans
+    let mut plans_list: *mut pg_sys::List = std::ptr::null_mut();
+    let mut apprelids: *mut pg_sys::Bitmapset = std::ptr::null_mut();
+    for child in &child_plans {
+        plans_list = pg_sys::lappend(plans_list, *child as *mut std::ffi::c_void);
+        // Collect scan relids from child plans for apprelids
+        let child_tag = (**child).type_;
+        match child_tag {
+            pg_sys::NodeTag::T_SeqScan
+            | pg_sys::NodeTag::T_IndexScan
+            | pg_sys::NodeTag::T_IndexOnlyScan
+            | pg_sys::NodeTag::T_BitmapHeapScan => {
+                let scan = *child as *const pg_sys::Scan;
+                apprelids = pg_sys::bms_add_member(apprelids, (*scan).scanrelid as i32);
+            }
+            _ => {}
+        }
+    }
+
+    (*append).appendplans = plans_list;
+    (*append).apprelids = apprelids;
+    (*append).nasyncplans = 0;
+    (*append).first_partial_plan = child_plans.len() as i32;
+    (*append).part_prune_index = -1;
+
+    set_plan_fields(
+        &mut (*append).plan,
+        target_list, std::ptr::null_mut(),
+        std::ptr::null_mut(), std::ptr::null_mut(),
+        cost, rows, width,
+    );
+    Ok(&mut (*append).plan as *mut pg_sys::Plan)
+}
+
 // ── Unique ────────────────────────────────────────────────────────────────────
 
 pub unsafe fn build_unique(

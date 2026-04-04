@@ -342,6 +342,63 @@ fn m7_distinct() {
     assert_eq!(rows.len(), 2);
 }
 
+// ── Partitioned tables ──────────────────────────────────
+
+#[test]
+fn partitioned_table() {
+    let mut c = connect();
+    setup(&mut c);
+
+    // Create a range-partitioned table
+    c.batch_execute(
+        "DROP TABLE IF EXISTS _test_part CASCADE;
+         CREATE TABLE _test_part (id int, val text, created_at date)
+             PARTITION BY RANGE (created_at);
+         CREATE TABLE _test_part_2024 PARTITION OF _test_part
+             FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+         CREATE TABLE _test_part_2025 PARTITION OF _test_part
+             FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+         INSERT INTO _test_part VALUES
+             (1, 'a', '2024-06-15'),
+             (2, 'b', '2024-12-01'),
+             (3, 'c', '2025-03-20'),
+             (4, 'd', '2025-07-04');
+         ANALYZE _test_part;",
+    )
+    .unwrap();
+
+    // Query should succeed via pg_orca optimizer and return correct results
+    let rows = query_strings(&mut c, "SELECT * FROM _test_part ORDER BY id;");
+    assert_eq!(rows.len(), 4, "expected 4 rows from partitioned table");
+
+    // Should use pg_orca with Append plan
+    let plan = explain(&mut c, "SELECT * FROM _test_part;");
+    assert!(
+        plan.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "expected pg_orca for partitioned table, got: {:?}",
+        plan,
+    );
+    assert!(
+        plan.iter().any(|l| l.contains("Append")),
+        "expected Append in plan, got: {:?}",
+        plan,
+    );
+
+    // Simple scan on partitioned table
+    let rows = query_strings(&mut c, "SELECT * FROM _test_part;");
+    assert_eq!(rows.len(), 4, "expected 4 rows");
+
+    // Query on a specific partition directly should also use pg_orca
+    let plan = explain(&mut c, "SELECT * FROM _test_part_2024;");
+    assert!(
+        plan.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "expected pg_orca for direct partition scan, got: {:?}",
+        plan,
+    );
+
+    c.batch_execute("DROP TABLE IF EXISTS _test_part CASCADE;").unwrap();
+}
+
 // ── Fallback: unsupported queries use PG planner ────────
 
 #[test]
