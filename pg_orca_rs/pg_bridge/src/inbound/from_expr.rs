@@ -227,8 +227,11 @@ unsafe fn translate_from_item(
             let rte_index = (*rtref).rtindex as u32;
             // Find matching table_id from col_map
             // We get all column refs for this rte_index
-            let cols: Vec<ColumnId> = col_map.all_columns()
+            let mut cols: Vec<&optimizer_core::ir::types::ColumnRef> = col_map.all_columns()
                 .filter(|cr| cr.pg_varno == rte_index)
+                .collect();
+            cols.sort_by_key(|cr| cr.pg_varattno);
+            let cols: Vec<optimizer_core::ir::types::ColumnId> = cols.iter()
                 .map(|cr| cr.id)
                 .collect();
             let table_id = col_map.all_columns()

@@ -358,3 +358,85 @@ fn fallback_cte() {
     let rows = query_strings(&mut c, "WITH cte AS (SELECT * FROM _test_t) SELECT * FROM cte;");
     assert_eq!(rows.len(), 2);
 }
+
+// ── SQL regression tests (test/sql/*.sql vs test/expected/*.out) ─
+
+#[test]
+fn sql_regress_base() {
+    let inst = pg();
+    let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test");
+    let sql_file = test_dir.join("sql/base.sql");
+    assert!(sql_file.exists(), "missing {}", sql_file.display());
+
+    // Run SQL via psql (set LD_LIBRARY_PATH to PG's own libdir to avoid libpq conflicts)
+    let lib_dir = cmd_output(
+        &std::env::var("PGRX_PG_CONFIG_PATH").unwrap_or("pg_config".into()),
+        &["--libdir"],
+    );
+    let output = Command::new(inst.pg_bin.join("psql"))
+        .args([
+            "-h", "127.0.0.1",
+            "-p", &inst.port.to_string(),
+            "-U", &whoami(),
+            "-d", "postgres",
+            "-f", sql_file.to_str().unwrap(),
+        ])
+        .env("LD_LIBRARY_PATH", &lib_dir)
+        .output()
+        .expect("failed to run psql");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Save actual output for inspection
+    let actual_file = test_dir.join("results/base.out");
+    std::fs::create_dir_all(test_dir.join("results")).ok();
+    std::fs::write(&actual_file, stdout.as_bytes()).ok();
+
+    // Check no fatal errors (connection lost = crash)
+    assert!(
+        !stderr.contains("server closed the connection unexpectedly"),
+        "SQL regression test crashed!\nstderr: {}\nSee: {}",
+        stderr,
+        actual_file.display(),
+    );
+    assert!(
+        !stderr.contains("FATAL"),
+        "SQL regression test hit FATAL error!\nstderr: {}",
+        stderr,
+    );
+    // psql exit code 0 means all queries ran (even if some had ERRORs from fallback)
+    assert!(
+        output.status.success(),
+        "psql exited with {}.\nstderr: {}",
+        output.status,
+        stderr,
+    );
+
+    // Verify output is non-empty
+    assert!(!stdout.is_empty(), "psql produced no output");
+
+    // Compare against expected output (test/expected/base.out)
+    let expected_file = test_dir.join("expected/base.out");
+    if expected_file.exists() {
+        let expected = std::fs::read_to_string(&expected_file).unwrap();
+        if stdout != expected {
+            panic!(
+                "SQL regression output differs.\n\
+                 To update expected: cp {} {}\n\
+                 To review:  diff -u {} {}",
+                actual_file.display(), expected_file.display(),
+                expected_file.display(), actual_file.display(),
+            );
+        }
+    } else {
+        // First run: save as expected baseline
+        std::fs::create_dir_all(test_dir.join("expected")).ok();
+        std::fs::write(&expected_file, stdout.as_bytes()).unwrap();
+        eprintln!(
+            "  Saved initial expected output to {}\n  \
+             Commit this file to version control.",
+            expected_file.display(),
+        );
+    }
+}
