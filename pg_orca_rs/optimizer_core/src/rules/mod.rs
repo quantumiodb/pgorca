@@ -68,6 +68,8 @@ impl RuleSet {
                 Box::new(impl_rules::sort::Distinct2Unique),
                 // Window
                 Box::new(impl_rules::window::Window2WindowAgg),
+                // Append (partitioned tables)
+                Box::new(impl_rules::append::Append2Append),
             ],
         }
     }

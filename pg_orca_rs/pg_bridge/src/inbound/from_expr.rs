@@ -31,6 +31,8 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
     let mut tables: HashMap<TableId, TableStats> = HashMap::new();
     let mut rte_to_table: HashMap<u32, TableId> = HashMap::new();
     let mut table_id_counter = 0u32;
+    // Tracks partitioned parent rte_index → list of child rte_indexes
+    let mut partition_children: HashMap<u32, Vec<u32>> = HashMap::new();
 
     let rtes = list_iter::<pg_sys::RangeTblEntry>(query.rtable);
     for (rte_index_0, rte_ptr) in rtes.iter().enumerate() {
@@ -41,6 +43,87 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
             continue;
         }
 
+        // Check if this is a partitioned table
+        let relkind = rte.relkind as u8;
+        if relkind == pg_sys::RELKIND_PARTITIONED_TABLE {
+            // Expand partitioned table: get child partition OIDs
+            let parent_rel = pg_sys::RelationIdGetRelation(rte.relid);
+            if parent_rel.is_null() {
+                return Err(InboundError::CatalogAccessError(
+                    format!("cannot open partitioned relation OID {}", rte.relid.to_u32())
+                ));
+            }
+            let pdesc = pg_sys::RelationGetPartitionDesc(parent_rel, false);
+            if pdesc.is_null() || (*pdesc).nparts == 0 {
+                pg_sys::RelationClose(parent_rel);
+                return Err(InboundError::UnsupportedFeature(
+                    "partitioned table with no partitions".into()
+                ));
+            }
+            let nparts = (*pdesc).nparts as usize;
+            let child_oids: Vec<pg_sys::Oid> = (0..nparts)
+                .map(|i| *(*pdesc).oids.add(i))
+                .collect();
+
+            // Register columns for the parent so Vars referencing it can resolve.
+            // The parent's columns will be aliased to each child partition below.
+            table_id_counter += 1;
+            let parent_table_id = TableId(table_id_counter);
+            rte_to_table.insert(rte_index, parent_table_id);
+            let parent_col_ids = register_relation_columns(
+                parent_rel, rte.relid, rte_index, parent_table_id,
+                &mut col_map, &mut tables,
+            )?;
+            pg_sys::RelationClose(parent_rel);
+
+            let mut child_rte_indexes = Vec::new();
+            for child_oid in &child_oids {
+                // Acquire AccessShareLock on child partition so executor can open it with NoLock.
+                // PG asserts that the caller holds a lock before table_open(NoLock) in ExecGetRangeTableRelation.
+                pg_sys::LockRelationOid(*child_oid, pg_sys::AccessShareLock as i32);
+
+                // Add a new RTE for each child partition into query.rtable
+                let child_rte_index = add_child_rte(query as *const pg_sys::Query, *child_oid)?;
+
+                table_id_counter += 1;
+                let child_table_id = TableId(table_id_counter);
+                rte_to_table.insert(child_rte_index, child_table_id);
+
+                let child_rel = pg_sys::RelationIdGetRelation(*child_oid);
+                if child_rel.is_null() {
+                    return Err(InboundError::CatalogAccessError(
+                        format!("cannot open child partition OID {}", child_oid.to_u32())
+                    ));
+                }
+                register_relation_columns(
+                    child_rel, *child_oid, child_rte_index, child_table_id,
+                    &mut col_map, &mut tables,
+                )?;
+                // Register aliases: parent (rte_index, attno) → child column IDs
+                // so that Vars in the query's targetList/quals referencing the parent
+                // can also be resolved to child columns.
+                let child_cols: Vec<ColumnId> = col_map.all_columns()
+                    .filter(|cr| cr.pg_varno == child_rte_index)
+                    .map(|cr| (cr.pg_varattno, cr.id))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|(_, id)| id)
+                    .collect();
+                // Map parent attno → child column id (columns match by position)
+                for (parent_cid, child_cid) in parent_col_ids.iter().zip(child_cols.iter()) {
+                    let parent_cr = col_map.get_column_ref(*parent_cid).unwrap();
+                    let parent_attno = parent_cr.pg_varattno;
+                    col_map.register_alias(child_rte_index, parent_attno, *child_cid);
+                }
+
+                pg_sys::RelationClose(child_rel);
+                child_rte_indexes.push(child_rte_index);
+            }
+            partition_children.insert(rte_index, child_rte_indexes);
+            continue;
+        }
+
+        // Regular (non-partitioned) table
         table_id_counter += 1;
         let table_id = TableId(table_id_counter);
         rte_to_table.insert(rte_index, table_id);
@@ -51,66 +134,32 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
                 format!("cannot open relation OID {}", rte.relid.to_u32())
             ));
         }
-
-        let rd_rel = (*rel).rd_rel;
-        let row_count = (*rd_rel).reltuples as f64;
-        let page_count = (*rd_rel).relpages as u64;
-        let rel_name = CStr::from_ptr((*rd_rel).relname.data.as_ptr())
-            .to_string_lossy().to_string();
-
-        // Read attributes and build column mapping + stats
-        let tupdesc = (*rel).rd_att;
-        let natts = (*tupdesc).natts as usize;
-        let mut col_ids = Vec::new();
-        let mut col_stats = Vec::new();
-        let mut col_id_to_attnum: HashMap<ColumnId, i16> = HashMap::new();
-
-        for i in 0..natts {
-            let att = *(*tupdesc).attrs.as_ptr().add(i);
-            if att.attisdropped { continue; }
-            let attnum = att.attnum;
-            let attname = CStr::from_ptr(att.attname.data.as_ptr())
-                .to_string_lossy().to_string();
-
-            let cid = col_map.register_column(
-                table_id,
-                &attname,
-                rte_index,
-                attnum,
-                att.atttypid.to_u32(),
-                att.atttypmod,
-                att.attcollation.to_u32(),
-            );
-            col_ids.push(cid);
-            col_id_to_attnum.insert(cid, attnum);
-
-            // Read basic stats from pg_statistic if available
-            let (ndistinct, null_fraction) = read_column_stats(rte.relid, attnum);
-
-            col_stats.push(ColumnStats {
-                attnum,
-                name: attname,
-                ndistinct,
-                null_fraction,
-                avg_width: if att.attlen > 0 { att.attlen as i32 } else { 32 },
-                correlation: 0.0,
-            });
-        }
-
-        // Read indexes
-        let indexes = read_table_indexes(rel, &col_id_to_attnum);
-
+        register_relation_columns(
+            rel, rte.relid, rte_index, table_id,
+            &mut col_map, &mut tables,
+        )?;
         pg_sys::RelationClose(rel);
+    }
 
-        tables.insert(table_id, TableStats {
-            oid: rte.relid.to_u32(),
-            name: rel_name,
-            row_count: if row_count < 1.0 { 1000.0 } else { row_count },
-            page_count,
-            columns: col_stats,
-            indexes,
-            col_id_to_attnum,
-        });
+    // 2b. PG18: Register RTE_GROUP column aliases so Vars referencing the
+    //     GROUP RTE resolve to the underlying relation columns.
+    #[cfg(feature = "pg18")]
+    for (idx, rte_ptr) in rtes.iter().enumerate() {
+        let rte = &**rte_ptr;
+        if rte.rtekind != pg_sys::RTEKind::RTE_GROUP { continue; }
+        let group_varno = (idx + 1) as u32;
+        let group_exprs = list_iter::<pg_sys::Node>(rte.groupexprs);
+        for (attno_0, expr_ptr) in group_exprs.iter().enumerate() {
+            let expr = *expr_ptr;
+            if (*expr).type_ == pg_sys::NodeTag::T_Var {
+                let var = expr as *mut pg_sys::Var;
+                let orig_varno = (*var).varno as u32;
+                let orig_attno = (*var).varattno;
+                if let Some(cid) = col_map.lookup_var(orig_varno, orig_attno) {
+                    col_map.register_alias(group_varno, (attno_0 + 1) as i16, cid);
+                }
+            }
+        }
     }
 
     // 3. Read PG cost GUCs
@@ -127,7 +176,9 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
     let catalog = CatalogSnapshot { tables, rte_to_table, cost_params };
 
     // 4. Build logical expression tree from jointree
-    let mut logical_expr = translate_from_expr(query.jointree, query, &col_map)?;
+    let mut logical_expr = translate_from_expr(
+        query.jointree, query, &col_map, &partition_children, &catalog,
+    )?;
 
     // 5. Wrap with aggregation if needed (GROUP BY / aggregates)
     if query.hasAggs || list_length(query.groupClause) > 0 {
@@ -163,6 +214,8 @@ unsafe fn translate_from_expr(
     from_expr: *mut pg_sys::FromExpr,
     query: &pg_sys::Query,
     col_map: &ColumnMapping,
+    partition_children: &HashMap<u32, Vec<u32>>,
+    catalog: &CatalogSnapshot,
 ) -> Result<LogicalExpr, InboundError> {
     if from_expr.is_null() {
         return Err(InboundError::TranslationError("null FromExpr".into()));
@@ -176,9 +229,9 @@ unsafe fn translate_from_expr(
         return Err(InboundError::TranslationError("empty FROM clause".into()));
     }
 
-    let mut expr = translate_from_item(items[0], query, col_map)?;
+    let mut expr = translate_from_item(items[0], query, col_map, partition_children, catalog)?;
     for item in &items[1..] {
-        let right = translate_from_item(*item, query, col_map)?;
+        let right = translate_from_item(*item, query, col_map, partition_children, catalog)?;
         // Cross join — condition will be added from quals below
         expr = LogicalExpr {
             op: LogicalOp::Join {
@@ -221,6 +274,8 @@ unsafe fn translate_from_item(
     node: *mut pg_sys::Node,
     query: &pg_sys::Query,
     col_map: &ColumnMapping,
+    partition_children: &HashMap<u32, Vec<u32>>,
+    catalog: &CatalogSnapshot,
 ) -> Result<LogicalExpr, InboundError> {
     if node.is_null() {
         return Err(InboundError::TranslationError("null from item".into()));
@@ -230,8 +285,38 @@ unsafe fn translate_from_item(
         pg_sys::NodeTag::T_RangeTblRef => {
             let rtref = node as *mut pg_sys::RangeTblRef;
             let rte_index = (*rtref).rtindex as u32;
-            // Find matching table_id from col_map
-            // We get all column refs for this rte_index
+
+            // If this RTE is a partitioned table, expand into Append(Get, Get, ...)
+            if let Some(child_rte_indexes) = partition_children.get(&rte_index) {
+                let mut children = Vec::new();
+                for &child_rte in child_rte_indexes {
+                    let mut cols: Vec<&optimizer_core::ir::types::ColumnRef> = col_map.all_columns()
+                        .filter(|cr| cr.pg_varno == child_rte)
+                        .collect();
+                    cols.sort_by_key(|cr| cr.pg_varattno);
+                    let col_ids: Vec<ColumnId> = cols.iter().map(|cr| cr.id).collect();
+                    let child_table_id = col_map.all_columns()
+                        .find(|cr| cr.pg_varno == child_rte)
+                        .map(|cr| cr.table_id)
+                        .ok_or_else(|| InboundError::TranslationError(
+                            format!("no columns for child rte_index {}", child_rte)
+                        ))?;
+                    children.push(LogicalExpr {
+                        op: LogicalOp::Get {
+                            table_id: child_table_id,
+                            columns: col_ids,
+                            rte_index: child_rte,
+                        },
+                        children: vec![],
+                    });
+                }
+                return Ok(LogicalExpr {
+                    op: LogicalOp::Append,
+                    children,
+                });
+            }
+
+            // Regular table — build a Get node
             let mut cols: Vec<&optimizer_core::ir::types::ColumnRef> = col_map.all_columns()
                 .filter(|cr| cr.pg_varno == rte_index)
                 .collect();
@@ -252,7 +337,7 @@ unsafe fn translate_from_item(
         }
         pg_sys::NodeTag::T_JoinExpr => {
             let join_expr = node as *mut pg_sys::JoinExpr;
-            translate_join_expr(join_expr, query, col_map)
+            translate_join_expr(join_expr, query, col_map, partition_children, catalog)
         }
         _ => Err(InboundError::UnsupportedFeature(
             format!("from item type {:?}", tag)
@@ -264,6 +349,8 @@ unsafe fn translate_join_expr(
     join_expr: *mut pg_sys::JoinExpr,
     query: &pg_sys::Query,
     col_map: &ColumnMapping,
+    partition_children: &HashMap<u32, Vec<u32>>,
+    catalog: &CatalogSnapshot,
 ) -> Result<LogicalExpr, InboundError> {
     use optimizer_core::ir::types::JoinType;
 
@@ -277,8 +364,8 @@ unsafe fn translate_join_expr(
         _ => return Err(InboundError::UnsupportedFeature("join type".into())),
     };
 
-    let left = translate_from_item((*join_expr).larg as *mut pg_sys::Node, query, col_map)?;
-    let right = translate_from_item((*join_expr).rarg as *mut pg_sys::Node, query, col_map)?;
+    let left = translate_from_item((*join_expr).larg as *mut pg_sys::Node, query, col_map, partition_children, catalog)?;
+    let right = translate_from_item((*join_expr).rarg as *mut pg_sys::Node, query, col_map, partition_children, catalog)?;
 
     let predicate = if !(*join_expr).quals.is_null() {
         convert_scalar((*join_expr).quals as *mut pg_sys::Node, col_map)?
@@ -574,6 +661,143 @@ unsafe fn translate_window(
     })
 }
 
+// ── Partition expansion helpers ──────────────────────────────────────────────
+
+/// Register all columns of a relation into ColumnMapping and TableStats.
+/// Returns the list of ColumnIds registered (in attnum order).
+unsafe fn register_relation_columns(
+    rel: pg_sys::Relation,
+    relid: pg_sys::Oid,
+    rte_index: u32,
+    table_id: TableId,
+    col_map: &mut ColumnMapping,
+    tables: &mut HashMap<TableId, TableStats>,
+) -> Result<Vec<ColumnId>, InboundError> {
+    let rd_rel = (*rel).rd_rel;
+    let row_count = (*rd_rel).reltuples as f64;
+    let page_count = (*rd_rel).relpages as u64;
+    let rel_name = CStr::from_ptr((*rd_rel).relname.data.as_ptr())
+        .to_string_lossy().to_string();
+
+    let tupdesc = (*rel).rd_att;
+    let natts = (*tupdesc).natts as usize;
+    let mut col_ids = Vec::new();
+    let mut col_stats = Vec::new();
+    let mut col_id_to_attnum: HashMap<ColumnId, i16> = HashMap::new();
+
+    for i in 0..natts {
+        let att = tupdesc_get_attr(tupdesc, natts, i);
+        if att.attisdropped { continue; }
+        let attnum = att.attnum;
+        let attname = CStr::from_ptr(att.attname.data.as_ptr())
+            .to_string_lossy().to_string();
+
+        let cid = col_map.register_column(
+            table_id,
+            &attname,
+            rte_index,
+            attnum,
+            att.atttypid.to_u32(),
+            att.atttypmod,
+            att.attcollation.to_u32(),
+        );
+        col_ids.push(cid);
+        col_id_to_attnum.insert(cid, attnum);
+
+        let (ndistinct, null_fraction) = read_column_stats(relid, attnum);
+        col_stats.push(ColumnStats {
+            attnum,
+            name: attname,
+            ndistinct,
+            null_fraction,
+            avg_width: if att.attlen > 0 { att.attlen as i32 } else { 32 },
+            correlation: 0.0,
+        });
+    }
+
+    let indexes = read_table_indexes(rel, &col_id_to_attnum);
+
+    tables.insert(table_id, TableStats {
+        oid: relid.to_u32(),
+        name: rel_name,
+        row_count: if row_count < 1.0 { 1000.0 } else { row_count },
+        page_count,
+        columns: col_stats,
+        indexes,
+        col_id_to_attnum,
+    });
+
+    Ok(col_ids)
+}
+
+/// Add a new RTE for a child partition to the query's range table.
+/// Returns the 1-based rte_index of the new entry.
+///
+/// Safety: mutates query.rtable via raw pointer (PG convention during planning).
+unsafe fn add_child_rte(
+    query: *const pg_sys::Query,
+    child_oid: pg_sys::Oid,
+) -> Result<u32, InboundError> {
+    use crate::utils::palloc::palloc_node;
+
+    let child_rel = pg_sys::RelationIdGetRelation(child_oid);
+    if child_rel.is_null() {
+        return Err(InboundError::CatalogAccessError(
+            format!("cannot open child relation OID {}", child_oid.to_u32())
+        ));
+    }
+
+    let rte = palloc_node::<pg_sys::RangeTblEntry>(pg_sys::NodeTag::T_RangeTblEntry);
+    (*rte).rtekind = pg_sys::RTEKind::RTE_RELATION;
+    (*rte).relid = child_oid;
+    (*rte).relkind = (*(*child_rel).rd_rel).relkind;
+    (*rte).rellockmode = 1; // AccessShareLock
+    (*rte).inh = false;
+    (*rte).lateral = false;
+    (*rte).inFromCl = true;
+
+    // Build eref alias with column names from the child relation
+    let tupdesc = (*child_rel).rd_att;
+    let natts = (*tupdesc).natts as usize;
+    let rel_name = CStr::from_ptr((*(*child_rel).rd_rel).relname.data.as_ptr());
+    let alias = palloc_node::<pg_sys::Alias>(pg_sys::NodeTag::T_Alias);
+
+    // Copy relation name to palloc'd memory
+    let name_bytes = rel_name.to_bytes_with_nul();
+    let dst = pg_sys::palloc(name_bytes.len()) as *mut i8;
+    std::ptr::copy_nonoverlapping(name_bytes.as_ptr() as *const i8, dst, name_bytes.len());
+    (*alias).aliasname = dst;
+
+    // Build colnames list
+    let mut colnames: *mut pg_sys::List = std::ptr::null_mut();
+    for i in 0..natts {
+        let att = tupdesc_get_attr(tupdesc, natts, i);
+        if att.attisdropped {
+            // Add empty string for dropped columns to maintain position
+            let empty = pg_sys::makeString(b"\0".as_ptr() as *mut i8);
+            colnames = pg_sys::lappend(colnames, empty as *mut std::ffi::c_void);
+        } else {
+            let attname = CStr::from_ptr(att.attname.data.as_ptr());
+            let name_bytes = attname.to_bytes_with_nul();
+            let name_ptr = pg_sys::palloc(name_bytes.len()) as *mut i8;
+            std::ptr::copy_nonoverlapping(name_bytes.as_ptr() as *const i8, name_ptr, name_bytes.len());
+            let str_val = pg_sys::makeString(name_ptr);
+            colnames = pg_sys::lappend(colnames, str_val as *mut std::ffi::c_void);
+        }
+    }
+    (*alias).colnames = colnames;
+    (*rte).eref = alias;
+
+    pg_sys::RelationClose(child_rel);
+
+    // Append to the query's range table (mutating it via raw pointer)
+    let query_mut = query as *mut pg_sys::Query;
+    (*query_mut).rtable = pg_sys::lappend((*query_mut).rtable, rte as *mut std::ffi::c_void);
+
+    let new_index = pg_sys::list_length((*query_mut).rtable) as u32;
+    Ok(new_index)
+}
+
 // ── Catalog reading ──────────────────────────────────────────────────────────
 
 /// Read ndistinct and null_fraction from pg_statistic for one column.
@@ -690,4 +914,30 @@ unsafe fn read_table_indexes(
 
     pg_sys::list_free(index_list);
     indexes
+}
+
+/// Access the i'th FormData_pg_attribute from a TupleDesc.
+/// In PG18 the `attrs` flexible array was replaced by `compact_attrs`,
+/// with FormData_pg_attribute stored immediately after the compact array.
+#[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17"))]
+unsafe fn tupdesc_get_attr(
+    tupdesc: *mut pg_sys::TupleDescData,
+    _natts: usize,
+    i: usize,
+) -> pg_sys::FormData_pg_attribute {
+    *(*tupdesc).attrs.as_ptr().add(i)
+}
+
+#[cfg(feature = "pg18")]
+unsafe fn tupdesc_get_attr(
+    tupdesc: *mut pg_sys::TupleDescData,
+    natts: usize,
+    i: usize,
+) -> pg_sys::FormData_pg_attribute {
+    let att_pointer = (*tupdesc)
+        .compact_attrs
+        .as_ptr()
+        .add(natts)
+        .cast::<pg_sys::FormData_pg_attribute>();
+    *att_pointer.add(i)
 }

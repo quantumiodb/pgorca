@@ -53,6 +53,8 @@ unsafe fn check_range_table(rtable: *mut pg_sys::List) -> Result<(), InboundErro
                     "subquery RTE".into()
                 ));
             }
+            #[cfg(feature = "pg18")]
+            pg_sys::RTEKind::RTE_GROUP => {}
             _ => return Err(InboundError::UnsupportedFeature(
                 format!("unsupported RTE kind: {:?}", kind)
             )),

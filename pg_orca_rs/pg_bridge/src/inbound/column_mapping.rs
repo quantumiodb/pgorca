@@ -51,6 +51,13 @@ impl ColumnMapping {
         id
     }
 
+    /// Register an alias so that (alias_varno, alias_attno) resolves to an
+    /// existing ColumnId.  Used in PG18 to map RTE_GROUP Vars back to the
+    /// original relation column.
+    pub fn register_alias(&mut self, alias_varno: u32, alias_attno: i16, target: ColumnId) {
+        self.var_to_colid.insert((alias_varno, alias_attno), target);
+    }
+
     pub fn lookup_var(&self, varno: u32, varattno: i16) -> Option<ColumnId> {
         self.var_to_colid.get(&(varno, varattno)).copied()
     }

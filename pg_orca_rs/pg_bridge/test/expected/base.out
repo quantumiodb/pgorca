@@ -122,12 +122,13 @@ ANALYZE
  3 | foo
 (3 rows)
 
-        QUERY PLAN        
---------------------------
+         QUERY PLAN          
+-----------------------------
  WindowAgg
+   Window: w AS (ORDER BY a)
    ->  Seq Scan on orca_t
  Optimizer: pg_orca
-(3 rows)
+(4 rows)
 
  a | row_number 
 ---+------------

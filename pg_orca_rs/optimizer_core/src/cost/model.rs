@@ -157,6 +157,14 @@ pub fn cost_physical_op(
             }
         }
 
+        PhysicalOp::Append => {
+            // Sum of all children costs + small per-tuple overhead
+            let total: f64 = children_costs.iter().map(|c| c.total).sum::<f64>()
+                + params.cpu_tuple_cost * rows;
+            let startup = children_costs.first().map(|c| c.startup).unwrap_or(0.0);
+            Cost { startup, total }
+        }
+
         // Future operators
         _ => Cost { startup: 0.0, total: f64::MAX / 2.0 },
     }

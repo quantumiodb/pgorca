@@ -333,6 +333,31 @@ fn derive_props(
         }
 
         LogicalOp::Window { .. } => child_props(0), // same row count, adds window columns
+
+        LogicalOp::Append => {
+            // Sum row counts across all children; output columns from first child
+            let mut row_count = 0.0;
+            let mut output_columns = vec![];
+            let mut table_ids = vec![];
+            let mut avg_width = 0.0;
+            for i in 0..children.len() {
+                let cp = child_props(i);
+                row_count += cp.row_count;
+                table_ids.extend_from_slice(&cp.table_ids);
+                if i == 0 {
+                    output_columns = cp.output_columns.clone();
+                    avg_width = cp.avg_width;
+                }
+            }
+            LogicalProperties {
+                output_columns,
+                row_count: row_count.max(1.0),
+                table_ids,
+                not_null_columns: vec![],
+                unique_keys: vec![],
+                avg_width,
+            }
+        }
     }
 }
 

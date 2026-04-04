@@ -43,6 +43,10 @@ pub enum LogicalOp {
     Window {
         clauses: Vec<WindowClause>,
     },
+
+    /// Union of multiple child relations (e.g. partitions of a partitioned table).
+    /// Each child is a separate Get group in the memo.
+    Append,
 }
 
 /// Standalone logical expression tree (before Memo insertion)
