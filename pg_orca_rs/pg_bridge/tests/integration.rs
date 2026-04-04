@@ -456,6 +456,31 @@ fn union_all_three_way() {
     assert_eq!(rows.len(), 6, "expected 6 rows from 3-way UNION ALL");
 }
 
+#[test]
+fn union_mixed() {
+    let mut c = connect();
+    setup(&mut c);
+
+    // Mixed: UNION ALL + UNION (distinct)
+    // PG parses as: (SELECT a FROM _test_t UNION ALL SELECT a FROM _test_t) UNION SELECT a FROM _test_t
+    let sql = "SELECT a FROM _test_t UNION ALL SELECT a FROM _test_t UNION SELECT a FROM _test_t;";
+    let plan = explain(&mut c, sql);
+    eprintln!("mixed union plan: {:?}", plan);
+
+    let rows: Vec<_> = c.query(
+        "SELECT a FROM _test_t UNION ALL SELECT a FROM _test_t UNION SELECT a FROM _test_t ORDER BY a;",
+        &[],
+    ).unwrap();
+    eprintln!("mixed union rows: {}", rows.len());
+
+    assert!(
+        plan.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "expected pg_orca for mixed UNION, got: {:?}", plan,
+    );
+    // UNION dedup at the top: should get 2 distinct values
+    assert_eq!(rows.len(), 2, "expected 2 distinct rows from mixed UNION");
+}
+
 // ── Fallback: unsupported queries use PG planner ────────
 
 #[test]

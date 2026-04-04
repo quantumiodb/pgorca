@@ -178,6 +178,26 @@ ANALYZE
  3 | foo
 (3 rows)
 
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Unique
+   ->  Sort
+         Sort Key: orca_t.a
+         ->  Append
+               ->  Append
+                     ->  Seq Scan on orca_t
+                     ->  Seq Scan on orca_t orca_t_1
+               ->  Seq Scan on orca_t orca_t_2
+ Optimizer: pg_orca
+(9 rows)
+
+ a |   b   
+---+-------
+ 1 | hello
+ 2 | world
+ 3 | foo
+(3 rows)
+
                QUERY PLAN                
 -----------------------------------------
  Append
