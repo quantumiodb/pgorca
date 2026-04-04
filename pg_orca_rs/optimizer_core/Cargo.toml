@@ -7,3 +7,4 @@ edition = "2021"
 # Zero external dependencies — pure safe Rust optimizer core
 
 [dev-dependencies]
+proptest = "1"

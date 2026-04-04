@@ -15,20 +15,55 @@ use crate::rules::RuleSet;
 use crate::simplify::simplify_pass;
 
 const MAX_GROUPS: usize = 10000;
+const DEFAULT_TIMEOUT_MS: u64 = 5000;
+
+/// Search context shared across the recursive optimization.
+struct SearchCtx {
+    deadline: std::time::Instant,
+    rules: RuleSet,
+    timed_out: bool,
+}
+
+impl SearchCtx {
+    fn new(timeout_ms: u64) -> Self {
+        Self {
+            deadline: std::time::Instant::now()
+                + std::time::Duration::from_millis(timeout_ms),
+            rules: RuleSet::default(),
+            timed_out: false,
+        }
+    }
+
+    fn check_timeout(&mut self) -> bool {
+        if !self.timed_out && std::time::Instant::now() >= self.deadline {
+            self.timed_out = true;
+        }
+        self.timed_out
+    }
+}
 
 /// Main optimization entry point.
 pub fn optimize(
     input: LogicalExpr,
     catalog: &CatalogSnapshot,
 ) -> Result<PhysicalPlan, OptimizerError> {
+    optimize_with_timeout(input, catalog, DEFAULT_TIMEOUT_MS)
+}
+
+/// Optimize with explicit timeout in milliseconds.
+pub fn optimize_with_timeout(
+    input: LogicalExpr,
+    catalog: &CatalogSnapshot,
+    timeout_ms: u64,
+) -> Result<PhysicalPlan, OptimizerError> {
     let simplified = simplify_pass(input, catalog);
     let mut memo = Memo::new();
     let root = copy_in(&mut memo, &simplified);
     memo.set_root(root);
 
-    let rules = RuleSet::default();
+    let mut ctx = SearchCtx::new(timeout_ms);
     let required = RequiredProperties::none();
-    optimize_group(&mut memo, root, &required, f64::INFINITY, &rules, catalog)?;
+    optimize_group(&mut memo, root, &required, f64::INFINITY, &mut ctx, catalog)?;
     extract_plan(&memo, root, &required)
 }
 
@@ -48,7 +83,7 @@ fn optimize_group(
     group_id: GroupId,
     required: &RequiredProperties,
     mut upper_bound: f64,
-    rules: &RuleSet,
+    ctx: &mut SearchCtx,
     catalog: &CatalogSnapshot,
 ) -> Result<Option<f64>, OptimizerError> {
     let key = RequiredPropsKey::from(required);
@@ -64,11 +99,11 @@ fn optimize_group(
     // 2. Derive logical properties (must come before costing)
     derive_logical_props(memo, group_id, catalog);
 
-    // 3. Explore — apply transformation rules
-    if !memo.get_group(group_id).explored {
+    // 3. Explore — apply transformation rules (skip if timed out)
+    if !memo.get_group(group_id).explored && !ctx.check_timeout() {
         let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
         for eid in &expr_ids {
-            for rule in &rules.xform_rules {
+            for rule in &ctx.rules.xform_rules {
                 let expr = memo.get_expr(*eid);
                 if rule.matches(expr, memo) {
                     rule.apply(*eid, group_id, memo, catalog);
@@ -83,20 +118,21 @@ fn optimize_group(
         let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
         for eid in &expr_ids {
             if memo.get_expr(*eid).op.is_logical() {
-                let matching: Vec<usize> = rules.impl_rules.iter().enumerate()
+                let matching: Vec<usize> = ctx.rules.impl_rules.iter().enumerate()
                     .filter(|(_, rule)| rule.matches(memo.get_expr(*eid), memo))
                     .map(|(i, _)| i)
                     .collect();
                 for rule_idx in matching {
-                    rules.impl_rules[rule_idx].apply(*eid, group_id, memo, catalog);
+                    ctx.rules.impl_rules[rule_idx].apply(*eid, group_id, memo, catalog);
                 }
             }
         }
         memo.get_group_mut(group_id).implemented = true;
     }
 
+    // Graceful degradation: on group limit, stop exploring but still try to cost
     if memo.group_count() > MAX_GROUPS {
-        return Err(OptimizerError::GroupLimitExceeded);
+        ctx.timed_out = true; // stop further exploration
     }
 
     // 5. Cost all physical exprs, select winner
@@ -119,7 +155,7 @@ fn optimize_group(
             let child_budget = upper_bound - child_costs.iter().sum::<f64>();
             if child_budget <= 0.0 { feasible = false; break; }
 
-            match optimize_group(memo, *child_gid, &RequiredProperties::none(), child_budget, rules, catalog)? {
+            match optimize_group(memo, *child_gid, &RequiredProperties::none(), child_budget, ctx, catalog)? {
                 Some(child_cost) => {
                     child_costs.push(child_cost);
                     let child_rows_val = memo.get_group(*child_gid).logical_props.get()

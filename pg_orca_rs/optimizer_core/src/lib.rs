@@ -22,6 +22,15 @@ pub fn optimize(
     search::engine::optimize(input, catalog)
 }
 
+/// Optimize with explicit timeout in milliseconds.
+pub fn optimize_with_timeout(
+    input: LogicalExpr,
+    catalog: &CatalogSnapshot,
+    timeout_ms: u64,
+) -> Result<PhysicalPlan, OptimizerError> {
+    search::engine::optimize_with_timeout(input, catalog, timeout_ms)
+}
+
 /// Optimizer error types
 #[derive(Debug)]
 pub enum OptimizerError {
