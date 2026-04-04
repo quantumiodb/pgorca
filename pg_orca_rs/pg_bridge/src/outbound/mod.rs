@@ -369,6 +369,15 @@ unsafe fn build_plan_node(
             )
         }
 
+        PhysicalOp::WindowAgg { clauses } => {
+            if plan.children.is_empty() {
+                return Err(OutboundError::PlanBuildError("WindowAgg needs a child".into()));
+            }
+            let child_plan = build_plan_node(&plan.children[0], col_map)?;
+            let target_list = (*child_plan).targetlist;
+            build_window_agg(clauses, child_plan, target_list, col_map, plan.rows, &plan.cost, plan.width as i32)
+        }
+
         other => Err(OutboundError::UnsupportedPhysicalOp(format!("{:?}", other))),
     }
 }

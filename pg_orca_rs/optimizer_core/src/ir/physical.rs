@@ -67,6 +67,11 @@ pub enum PhysicalOp {
         count: Option<ScalarExpr>,
     },
 
+    // ── Window ──────────────────────────────
+    WindowAgg {
+        clauses: Vec<WindowClause>,
+    },
+
     // ── Auxiliary ────────────────────────────
     Material,
 }

@@ -6,7 +6,7 @@ use pgrx::pg_sys;
 use optimizer_core::cost::stats::*;
 use optimizer_core::ir::logical::{LogicalExpr, LogicalOp};
 use optimizer_core::ir::scalar::ScalarExpr;
-use optimizer_core::ir::types::{TableId, IndexAmType, SortKey, ColumnId, AggExpr};
+use optimizer_core::ir::types::{TableId, IndexAmType, SortKey, ColumnId, AggExpr, WindowClause};
 
 use super::InboundError;
 use super::column_mapping::ColumnMapping;
@@ -134,7 +134,12 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
         logical_expr = translate_aggregate(query, logical_expr, &col_map)?;
     }
 
-    // 6. Wrap with sort if ORDER BY present
+    // 6. Wrap with window function if present
+    if query.hasWindowFuncs && list_length(query.windowClause) > 0 {
+        logical_expr = translate_window(query, logical_expr, &col_map)?;
+    }
+
+    // 7. Wrap with sort if ORDER BY
     if list_length(query.sortClause) > 0 {
         logical_expr = translate_sort(query, logical_expr, &col_map)?;
     }
@@ -502,6 +507,69 @@ unsafe fn translate_limit(
     };
     Ok(LogicalExpr {
         op: LogicalOp::Limit { offset, count },
+        children: vec![child],
+    })
+}
+
+// ── Window translation ──────────────────────────────────────────────────────
+
+unsafe fn translate_window(
+    query: &pg_sys::Query,
+    child: LogicalExpr,
+    col_map: &ColumnMapping,
+) -> Result<LogicalExpr, InboundError> {
+    use optimizer_core::ir::types::WindowClause;
+
+    let wc_items = list_iter::<pg_sys::WindowClause>(query.windowClause);
+    let mut clauses = Vec::new();
+
+    for wc_ptr in &wc_items {
+        let wc = &**wc_ptr;
+
+        // Partition by columns
+        let mut partition_by = Vec::new();
+        let pk_items = list_iter::<pg_sys::SortGroupClause>(wc.partitionClause);
+        for sgc_ptr in &pk_items {
+            let sgc = &**sgc_ptr;
+            if let Some(te) = find_target_entry_by_sortgroup(query, sgc.tleSortGroupRef) {
+                if let Ok(ScalarExpr::ColumnRef(cid)) =
+                    convert_scalar((*te).expr as *mut pg_sys::Node, col_map)
+                {
+                    partition_by.push(cid);
+                }
+            }
+        }
+
+        // Order by keys
+        let mut order_by = Vec::new();
+        let ok_items = list_iter::<pg_sys::SortGroupClause>(wc.orderClause);
+        for sgc_ptr in &ok_items {
+            let sgc = &**sgc_ptr;
+            if let Some(te) = find_target_entry_by_sortgroup(query, sgc.tleSortGroupRef) {
+                if let Ok(ScalarExpr::ColumnRef(cid)) =
+                    convert_scalar((*te).expr as *mut pg_sys::Node, col_map)
+                {
+                    order_by.push(SortKey {
+                        column: cid,
+                        ascending: true,
+                        nulls_first: sgc.nulls_first,
+                        sort_op_oid: sgc.sortop.to_u32(),
+                        collation_oid: 0,
+                    });
+                }
+            }
+        }
+
+        clauses.push(WindowClause {
+            partition_by,
+            order_by,
+            frame_options: wc.frameOptions,
+            winref: wc.winref,
+        });
+    }
+
+    Ok(LogicalExpr {
+        op: LogicalOp::Window { clauses },
         children: vec![child],
     })
 }

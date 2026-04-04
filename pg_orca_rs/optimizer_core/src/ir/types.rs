@@ -58,6 +58,16 @@ pub struct AggExpr {
     pub result_type: u32,
 }
 
+// ── Window function clause ──────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct WindowClause {
+    pub partition_by: Vec<ColumnId>,
+    pub order_by: Vec<SortKey>,
+    pub frame_options: i32,  // PG's FRAMEOPTION_* flags
+    pub winref: u32,         // matches WindowFunc.winref
+}
+
 // ── Index AM type ───────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

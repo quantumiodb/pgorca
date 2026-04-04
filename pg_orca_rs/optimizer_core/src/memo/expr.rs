@@ -45,6 +45,7 @@ pub fn compute_fingerprint(op: &Operator, children: &[GroupId]) -> Fingerprint {
                 LogicalOp::Sort { .. } => "Sort".hash(&mut hasher),
                 LogicalOp::Limit { .. } => "Limit".hash(&mut hasher),
                 LogicalOp::Distinct { .. } => "Distinct".hash(&mut hasher),
+                LogicalOp::Window { .. } => "Window".hash(&mut hasher),
             }
         }
         Operator::Physical(physical) => {

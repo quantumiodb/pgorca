@@ -1,7 +1,7 @@
 use pgrx::pg_sys;
 
 use optimizer_core::ir::physical::{ScanDirection, AggStrategy};
-use optimizer_core::ir::types::{Cost, JoinType, SortKey, AggExpr, ColumnId};
+use optimizer_core::ir::types::{Cost, JoinType, SortKey, AggExpr, ColumnId, WindowClause};
 use optimizer_core::ir::physical::MergeClauseInfo;
 use optimizer_core::ir::scalar::ScalarExpr;
 use crate::inbound::column_mapping::ColumnMapping;
@@ -749,4 +749,85 @@ pub unsafe fn build_unique(
         cost, rows, width,
     );
     Ok(&mut (*uniq).plan as *mut pg_sys::Plan)
+}
+
+// ── WindowAgg ────────────────────────────────────────────────────────────────
+
+pub unsafe fn build_window_agg(
+    clauses: &[WindowClause],
+    child_plan: *mut pg_sys::Plan,
+    target_list: *mut pg_sys::List,
+    col_map: &ColumnMapping,
+    rows: f64,
+    cost: &Cost,
+    width: i32,
+) -> Result<*mut pg_sys::Plan, OutboundError> {
+    // WindowAgg in PG represents one window clause per node.
+    // Multiple clauses → stack of WindowAgg nodes.
+    let mut current_child = child_plan;
+
+    for wc in clauses {
+        let wa = palloc_node::<pg_sys::WindowAgg>(pg_sys::NodeTag::T_WindowAgg);
+
+        (*wa).winref = wc.winref;
+        (*wa).frameOptions = wc.frame_options;
+
+        // Partition by columns
+        let n_part = wc.partition_by.len();
+        (*wa).partNumCols = n_part as i32;
+        if n_part > 0 {
+            let part_idx = pg_sys::palloc0(n_part * std::mem::size_of::<pg_sys::AttrNumber>())
+                as *mut pg_sys::AttrNumber;
+            let part_ops = pg_sys::palloc0(n_part * std::mem::size_of::<pg_sys::Oid>())
+                as *mut pg_sys::Oid;
+            let part_colls = pg_sys::palloc0(n_part * std::mem::size_of::<pg_sys::Oid>())
+                as *mut pg_sys::Oid;
+            for (i, cid) in wc.partition_by.iter().enumerate() {
+                *part_idx.add(i) = (i + 1) as pg_sys::AttrNumber;
+                let type_oid = col_map.get_column_ref(*cid)
+                    .map(|cr| pg_sys::Oid::from(cr.pg_vartype))
+                    .unwrap_or(pg_sys::Oid::from(0u32));
+                *part_ops.add(i) = get_eq_operator(type_oid);
+                *part_colls.add(i) = pg_sys::Oid::from(0u32);
+            }
+            (*wa).partColIdx = part_idx;
+            (*wa).partOperators = part_ops;
+            (*wa).partCollations = part_colls;
+        }
+
+        // Order by columns
+        let n_ord = wc.order_by.len();
+        (*wa).ordNumCols = n_ord as i32;
+        if n_ord > 0 {
+            let ord_idx = pg_sys::palloc0(n_ord * std::mem::size_of::<pg_sys::AttrNumber>())
+                as *mut pg_sys::AttrNumber;
+            let ord_ops = pg_sys::palloc0(n_ord * std::mem::size_of::<pg_sys::Oid>())
+                as *mut pg_sys::Oid;
+            let ord_colls = pg_sys::palloc0(n_ord * std::mem::size_of::<pg_sys::Oid>())
+                as *mut pg_sys::Oid;
+            for (i, key) in wc.order_by.iter().enumerate() {
+                *ord_idx.add(i) = (n_part + i + 1) as pg_sys::AttrNumber;
+                *ord_ops.add(i) = pg_sys::Oid::from(key.sort_op_oid);
+                *ord_colls.add(i) = pg_sys::Oid::from(key.collation_oid);
+            }
+            (*wa).ordColIdx = ord_idx;
+            (*wa).ordOperators = ord_ops;
+            (*wa).ordCollations = ord_colls;
+        }
+
+        // Frame offsets (NULL = unbounded)
+        (*wa).startOffset = std::ptr::null_mut();
+        (*wa).endOffset = std::ptr::null_mut();
+
+        set_plan_fields(
+            &mut (*wa).plan,
+            target_list, std::ptr::null_mut(),
+            current_child, std::ptr::null_mut(),
+            cost, rows, width,
+        );
+
+        current_child = &mut (*wa).plan as *mut pg_sys::Plan;
+    }
+
+    Ok(current_child)
 }

@@ -39,6 +39,10 @@ pub enum LogicalOp {
     Distinct {
         columns: Vec<ColumnId>,
     },
+
+    Window {
+        clauses: Vec<WindowClause>,
+    },
 }
 
 /// Standalone logical expression tree (before Memo insertion)

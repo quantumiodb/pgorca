@@ -142,6 +142,21 @@ pub fn cost_physical_op(
             }
         }
 
+        PhysicalOp::WindowAgg { .. } => {
+            let child = children_costs.first().copied().unwrap_or(Cost::zero());
+            let child_rows = children_rows.first().copied().unwrap_or(1.0).max(1.0);
+            // WindowAgg: sort + per-row eval
+            let sort_cpu = if child_rows > 1.0 {
+                params.cpu_operator_cost * child_rows * child_rows.log2()
+            } else {
+                0.0
+            };
+            Cost {
+                startup: child.total + sort_cpu,
+                total: child.total + sort_cpu + params.cpu_tuple_cost * rows,
+            }
+        }
+
         // Future operators
         _ => Cost { startup: 0.0, total: f64::MAX / 2.0 },
     }

@@ -331,6 +331,8 @@ fn derive_props(
             let row_count = (base.row_count * 0.9).max(1.0);
             LogicalProperties { row_count, ..base }
         }
+
+        LogicalOp::Window { .. } => child_props(0), // same row count, adds window columns
     }
 }
 

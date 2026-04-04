@@ -66,6 +66,8 @@ impl RuleSet {
                 Box::new(impl_rules::sort::Sort2Sort),
                 Box::new(impl_rules::sort::Limit2Limit),
                 Box::new(impl_rules::sort::Distinct2Unique),
+                // Window
+                Box::new(impl_rules::window::Window2WindowAgg),
             ],
         }
     }

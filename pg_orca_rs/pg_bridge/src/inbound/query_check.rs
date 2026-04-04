@@ -19,8 +19,10 @@ pub unsafe fn is_supported_query(query: &pg_sys::Query) -> Result<(), InboundErr
     if !query.setOperations.is_null() {
         return Err(InboundError::UnsupportedFeature("set operations".into()));
     }
+    // CTEs: PG inlines non-recursive single-use CTEs before we see them.
+    // Materialized/multi-use CTEs still have cteList entries — reject those.
     if list_length(query.cteList) > 0 {
-        return Err(InboundError::UnsupportedFeature("CTE".into()));
+        return Err(InboundError::UnsupportedFeature("materialized CTE".into()));
     }
     if !query.utilityStmt.is_null() {
         return Err(InboundError::UnsupportedFeature("utility".into()));
@@ -46,6 +48,13 @@ unsafe fn check_range_table(rtable: *mut pg_sys::List) -> Result<(), InboundErro
             pg_sys::RTEKind::RTE_RELATION => {}
             pg_sys::RTEKind::RTE_JOIN => {}
             pg_sys::RTEKind::RTE_RESULT => {}
+            pg_sys::RTEKind::RTE_SUBQUERY => {
+                // Inlined CTEs appear as RTE_SUBQUERY — reject for now
+                // (full subquery support requires recursive planning)
+                return Err(InboundError::UnsupportedFeature(
+                    "subquery RTE".into()
+                ));
+            }
             _ => return Err(InboundError::UnsupportedFeature(
                 format!("unsupported RTE kind: {:?}", kind)
             )),
