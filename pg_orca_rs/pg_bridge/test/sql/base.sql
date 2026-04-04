@@ -80,6 +80,20 @@ SELECT a, row_number() OVER (ORDER BY a) FROM orca_t;
 SELECT a, rank() OVER (ORDER BY a) FROM orca_t;
 
 -- ================================================================
+-- UNION / UNION ALL
+-- ================================================================
+
+EXPLAIN (COSTS OFF) SELECT a, b FROM orca_t WHERE a = 1 UNION ALL SELECT a, b FROM orca_t WHERE a = 2;
+SELECT a, b FROM orca_t WHERE a = 1 UNION ALL SELECT a, b FROM orca_t WHERE a = 2 ORDER BY a;
+
+EXPLAIN (COSTS OFF) SELECT a FROM orca_t UNION SELECT a FROM orca_t;
+SELECT a FROM orca_t UNION SELECT a FROM orca_t ORDER BY a;
+
+-- Three-way UNION ALL
+EXPLAIN (COSTS OFF) SELECT a, b FROM orca_t UNION ALL SELECT a, b FROM orca_t UNION ALL SELECT a, b FROM orca_t;
+SELECT a, b FROM orca_t UNION ALL SELECT a, b FROM orca_t UNION ALL SELECT a, b FROM orca_t ORDER BY a, b;
+
+-- ================================================================
 -- Fallback (must not crash)
 -- ================================================================
 

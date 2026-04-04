@@ -144,6 +144,50 @@ ANALYZE
  3 |    3
 (3 rows)
 
+            QUERY PLAN             
+-----------------------------------
+ Append
+   ->  Seq Scan on orca_t
+         Filter: (a = 1)
+   ->  Seq Scan on orca_t orca_t_1
+         Filter: (a = 2)
+ Optimizer: pg_orca
+(6 rows)
+
+ a |   b   
+---+-------
+ 1 | hello
+ 2 | world
+(2 rows)
+
+                  QUERY PLAN                   
+-----------------------------------------------
+ Unique
+   ->  Sort
+         Sort Key: orca_t.a
+         ->  Append
+               ->  Seq Scan on orca_t
+               ->  Seq Scan on orca_t orca_t_1
+ Optimizer: pg_orca
+(7 rows)
+
+ a |   b   
+---+-------
+ 1 | hello
+ 2 | world
+ 3 | foo
+(3 rows)
+
+               QUERY PLAN                
+-----------------------------------------
+ Append
+   ->  Append
+         ->  Seq Scan on orca_t
+         ->  Seq Scan on orca_t orca_t_1
+   ->  Seq Scan on orca_t orca_t_2
+ Optimizer: pg_orca
+(6 rows)
+
  a |   b   
 ---+-------
  1 | hello
