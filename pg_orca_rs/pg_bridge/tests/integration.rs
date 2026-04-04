@@ -1,16 +1,179 @@
-//! Integration tests for pg_orca_rs.
+//! Self-contained integration tests for pg_orca_rs.
 //!
-//! Requires a running PostgreSQL 17 instance with pg_bridge loaded via
-//! shared_preload_libraries. Set PG_TEST_PORT env var (default: 28817).
+//! Automatically creates a temporary PostgreSQL instance with pg_bridge loaded,
+//! runs all tests, then tears everything down.
 //!
-//! Run:  PG_TEST_PORT=28817 cargo test -p pg_bridge --test integration
+//! Prerequisites: `cargo pgrx install` must have been run first to install
+//! pg_bridge.so into the PG installation.
+//!
+//! Run:  cargo test -p pg_bridge --test integration -- --test-threads=1
 
 use postgres::{Client, NoTls};
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::OnceLock;
+
+// ── Ephemeral PG instance ───────────────────────────────
+
+struct PgInstance {
+    pgdata: PathBuf,
+    port: u16,
+    pg_bin: PathBuf,
+}
+
+impl PgInstance {
+    fn start() -> Self {
+        let pg_config = std::env::var("PGRX_PG_CONFIG_PATH")
+            .unwrap_or_else(|_| "pg_config".into());
+
+        // Get bin dir and lib dir from pg_config
+        let bin_dir = cmd_output(&pg_config, &["--bindir"]);
+        let lib_dir = cmd_output(&pg_config, &["--pkglibdir"]);
+        let pg_bin = PathBuf::from(&bin_dir);
+
+        // Verify pg_bridge.so is installed
+        let so_path = PathBuf::from(&lib_dir).join("pg_bridge.so");
+        assert!(
+            so_path.exists(),
+            "pg_bridge.so not found at {:?}. Run `cargo pgrx install` first.",
+            so_path,
+        );
+
+        // Pick a random port in 10000-60000 range
+        let port = 10000 + (std::process::id() % 50000) as u16;
+
+        // Create temp data directory
+        let pgdata = std::env::temp_dir().join(format!("pg_orca_test_{}", port));
+        if pgdata.exists() {
+            std::fs::remove_dir_all(&pgdata).ok();
+        }
+
+        // initdb
+        let status = Command::new(pg_bin.join("initdb"))
+            .args(["-D", pgdata.to_str().unwrap(), "--no-locale", "-E", "UTF8"])
+            .env("LC_ALL", "C")
+            .output()
+            .expect("failed to run initdb");
+        assert!(status.status.success(), "initdb failed: {}", String::from_utf8_lossy(&status.stderr));
+
+        // Configure postgresql.conf
+        let conf = pgdata.join("postgresql.conf");
+        let extra = format!(
+            "\n\
+             listen_addresses = '127.0.0.1'\n\
+             port = {}\n\
+             shared_preload_libraries = 'pg_bridge'\n\
+             log_min_messages = 'warning'\n\
+             logging_collector = off\n",
+            port,
+        );
+        std::fs::write(&conf, {
+            let mut s = std::fs::read_to_string(&conf).unwrap();
+            s.push_str(&extra);
+            s
+        }).unwrap();
+
+        // pg_ctl start
+        let status = Command::new(pg_bin.join("pg_ctl"))
+            .args(["start", "-D", pgdata.to_str().unwrap(), "-w", "-l", pgdata.join("log").to_str().unwrap()])
+            .output()
+            .expect("failed to start postgres");
+        assert!(
+            status.status.success(),
+            "pg_ctl start failed: {}\nlog: {}",
+            String::from_utf8_lossy(&status.stderr),
+            std::fs::read_to_string(pgdata.join("log")).unwrap_or_default(),
+        );
+
+        eprintln!("  pg_orca test instance started on port {}", port);
+
+        PgInstance { pgdata, port, pg_bin }
+    }
+
+    fn connect(&self) -> Client {
+        let connstr = format!(
+            "host=127.0.0.1 port={} user={} dbname=postgres",
+            self.port,
+            whoami(),
+        );
+        Client::connect(&connstr, NoTls)
+            .unwrap_or_else(|e| panic!("connect to port {} failed: {}", self.port, e))
+    }
+}
+
+impl Drop for PgInstance {
+    fn drop(&mut self) {
+        // pg_ctl stop
+        let _ = Command::new(self.pg_bin.join("pg_ctl"))
+            .args(["stop", "-D", self.pgdata.to_str().unwrap(), "-m", "immediate"])
+            .output();
+        // Clean up data directory
+        let _ = std::fs::remove_dir_all(&self.pgdata);
+        eprintln!("  pg_orca test instance stopped and cleaned up");
+    }
+}
+
+fn cmd_output(program: &str, args: &[&str]) -> String {
+    let out = Command::new(program)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {}", program, e));
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+fn whoami() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| cmd_output("whoami", &[]))
+}
+
+// Singleton: one PG instance for all tests (requires --test-threads=1)
+static PG: OnceLock<PgInstance> = OnceLock::new();
+
+fn pg() -> &'static PgInstance {
+    PG.get_or_init(|| {
+        // Clean up any leftover instances from previous runs
+        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("pg_orca_test_") {
+                    let p = entry.path();
+                    if p.join("postmaster.pid").exists() {
+                        let bin = PathBuf::from(cmd_output(
+                            &std::env::var("PGRX_PG_CONFIG_PATH").unwrap_or("pg_config".into()),
+                            &["--bindir"],
+                        ));
+                        let _ = Command::new(bin.join("pg_ctl"))
+                            .args(["stop", "-D", p.to_str().unwrap(), "-m", "immediate"])
+                            .output();
+                    }
+                    let _ = std::fs::remove_dir_all(&p);
+                }
+            }
+        }
+
+        let inst = PgInstance::start();
+
+        // Register atexit cleanup (static OnceLock values are never dropped)
+        extern "C" fn cleanup() {
+            if let Some(inst) = PG.get() {
+                let _ = Command::new(inst.pg_bin.join("pg_ctl"))
+                    .args(["stop", "-D", inst.pgdata.to_str().unwrap(), "-m", "immediate"])
+                    .output();
+                let _ = std::fs::remove_dir_all(&inst.pgdata);
+                eprintln!("  pg_orca test instance cleaned up via atexit");
+            }
+        }
+        unsafe { libc::atexit(cleanup); }
+
+        inst
+    })
+}
+
+// ── Test helpers ────────────────────────────────────────
 
 fn connect() -> Client {
-    let port = std::env::var("PG_TEST_PORT").unwrap_or_else(|_| "28817".into());
-    let connstr = format!("host=127.0.0.1 port={} user=administrator dbname=postgres", port);
-    Client::connect(&connstr, NoTls).expect("failed to connect to PostgreSQL")
+    pg().connect()
 }
 
 fn setup(client: &mut Client) {
@@ -54,10 +217,7 @@ fn query_strings(client: &mut Client, sql: &str) -> Vec<Vec<Option<String>>> {
         .iter()
         .map(|row| {
             (0..row.len())
-                .map(|i| {
-                    // Try text representation for any type
-                    row.try_get::<_, String>(i).ok()
-                })
+                .map(|i| row.try_get::<_, String>(i).ok())
                 .collect()
         })
         .collect()
@@ -111,16 +271,7 @@ fn m4_join() {
     );
     assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "plan: {:?}", plan);
 
-    // Verify join produces correct results
-    // Note: orca currently returns all columns (no projection pruning), so use SELECT *
-    let rows: Vec<_> = c
-        .query(
-            "SELECT * FROM _test_t JOIN _test_cust ON _test_t.a = _test_cust.id ORDER BY _test_t.a;",
-            &[],
-        )
-        .unwrap();
-    assert_eq!(rows.len(), 2, "expected 2 join rows");
-    // Use text-mode query to avoid binary protocol issues
+    // Use row_to_json to verify data (avoids binary protocol column issues)
     let rows: Vec<_> = c
         .query(
             "SELECT row_to_json(sub)::text FROM ( \
