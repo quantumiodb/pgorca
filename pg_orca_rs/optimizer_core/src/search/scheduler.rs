@@ -2,6 +2,7 @@ use crate::OptimizerError;
 use crate::cost::model::cost_physical_op;
 use crate::cost::stats::CatalogSnapshot;
 use crate::ir::operator::Operator;
+use crate::ir::physical::PhysicalPropertyProvider;
 use crate::ir::types::Cost;
 use crate::memo::group::Winner;
 use crate::memo::{ExprId, GroupId, Memo};
@@ -197,10 +198,15 @@ impl Scheduler {
                         upper_bound,
                         vec![],
                         vec![],
+                        vec![],
                         memo,
                         catalog,
                     );
                 } else {
+                    let child_req = match &expr.op {
+                        Operator::Physical(p) => p.derive_child_required(0, &required),
+                        _ => RequiredProperties::none(),
+                    };
                     self.schedule(Task::OptimizeExpr {
                         group_id,
                         expr_id,
@@ -211,11 +217,12 @@ impl Scheduler {
                             accumulated_cost: 0.0,
                             child_costs: vec![],
                             child_rows: vec![],
+                            children_delivered: vec![],
                         },
                     });
                     self.schedule(Task::OptimizeGroup {
                         group_id: expr.children[0],
-                        required: RequiredProperties::none(),
+                        required: child_req,
                         upper_bound,
                         state: OptimizeGroupState::Init,
                     });
@@ -226,10 +233,16 @@ impl Scheduler {
                 accumulated_cost,
                 mut child_costs,
                 mut child_rows,
+                mut children_delivered,
             } => {
                 let expr = memo.get_expr(expr_id);
                 let child_gid = expr.children[child_idx];
-                let key = RequiredPropsKey::from(&RequiredProperties::none());
+                
+                let child_req = match &expr.op {
+                    Operator::Physical(p) => p.derive_child_required(child_idx, &required),
+                    _ => RequiredProperties::none(),
+                };
+                let key = RequiredPropsKey::from(&child_req);
 
                 if let Some(winner) = memo.get_group(child_gid).winners.get(&key) {
                     let cost = winner.cost.total;
@@ -238,6 +251,7 @@ impl Scheduler {
                         return;
                     }
                     child_costs.push(cost);
+                    children_delivered.push(winner.delivered_props.clone());
                     let rows = memo
                         .get_group(child_gid)
                         .logical_props
@@ -254,10 +268,15 @@ impl Scheduler {
                             upper_bound,
                             child_costs,
                             child_rows,
+                            children_delivered,
                             memo,
                             catalog,
                         );
                     } else {
+                        let next_child_req = match &expr.op {
+                            Operator::Physical(p) => p.derive_child_required(child_idx + 1, &required),
+                            _ => RequiredProperties::none(),
+                        };
                         self.schedule(Task::OptimizeExpr {
                             group_id,
                             expr_id,
@@ -268,11 +287,12 @@ impl Scheduler {
                                 accumulated_cost: accumulated_cost + cost,
                                 child_costs,
                                 child_rows,
+                                children_delivered,
                             },
                         });
                         self.schedule(Task::OptimizeGroup {
                             group_id: expr.children[child_idx + 1],
-                            required: RequiredProperties::none(),
+                            required: next_child_req,
                             upper_bound: upper_bound - accumulated_cost - cost,
                             state: OptimizeGroupState::Init,
                         });
@@ -353,6 +373,7 @@ impl Scheduler {
         upper_bound: f64,
         child_costs: Vec<f64>,
         child_rows: Vec<f64>,
+        children_delivered: Vec<DeliveredProperties>,
         memo: &mut Memo,
         catalog: &CatalogSnapshot,
     ) {
@@ -379,7 +400,7 @@ impl Scheduler {
 
         let page_count = get_page_count(&phys_op, catalog);
 
-        let local_cost = cost_physical_op(
+        let mut local_cost = cost_physical_op(
             &phys_op,
             &logical_props,
             &catalog.cost_model,
@@ -387,6 +408,21 @@ impl Scheduler {
             &child_rows,
             page_count,
         );
+
+        let delivered = phys_op.derive_delivered(&children_delivered);
+        let mut final_delivered = delivered.clone();
+        let mut needs_enforcer = false;
+
+        if !delivered.satisfies(&required, &logical_props) {
+            needs_enforcer = true;
+            // Add a simple penalty cost for sorting Enforcer for now.
+            // A more sophisticated implementation would cost a Sort operator properly.
+            // Using N * log2(N) * cpu_operator_cost approximation.
+            let rows = logical_props.row_count.max(1.0);
+            let sort_cost = rows * rows.log2() * catalog.cost_model.cpu_operator_cost;
+            local_cost.total += sort_cost;
+            final_delivered = DeliveredProperties { ordering: required.ordering.clone() };
+        }
 
         let total_cost = local_cost.total;
 
@@ -403,7 +439,8 @@ impl Scheduler {
                             startup: local_cost.startup,
                             total: total_cost,
                         },
-                        delivered_props: DeliveredProperties::none(),
+                        delivered_props: final_delivered,
+                        needs_enforcer,
                     },
                 );
             }

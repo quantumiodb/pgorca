@@ -46,4 +46,5 @@ pub struct Winner {
     pub expr_id: ExprId,
     pub cost: Cost,
     pub delivered_props: DeliveredProperties,
+    pub needs_enforcer: bool,
 }

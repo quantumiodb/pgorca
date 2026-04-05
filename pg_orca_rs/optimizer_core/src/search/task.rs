@@ -30,6 +30,8 @@ pub enum OptimizeGroupState {
     },
 }
 
+use crate::properties::delivered::DeliveredProperties;
+
 #[derive(Debug, Clone)]
 pub enum OptimizeExprState {
     Init,
@@ -38,6 +40,7 @@ pub enum OptimizeExprState {
         accumulated_cost: f64,
         child_costs: Vec<f64>,
         child_rows: Vec<f64>,
+        children_delivered: Vec<DeliveredProperties>,
     },
 }
 

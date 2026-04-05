@@ -114,6 +114,8 @@ pub(super) fn derive_props(
                 table_ids: vec![*table_id],
                 not_null_columns: vec![],
                 unique_keys: vec![],
+                fd_keys: vec![],
+                equivalence_classes: vec![],
                 avg_width,
             }
         }
@@ -151,6 +153,8 @@ pub(super) fn derive_props(
                 table_ids,
                 not_null_columns: vec![],
                 unique_keys: vec![],
+                fd_keys: vec![],
+                equivalence_classes: vec![],
                 avg_width: left.avg_width + right.avg_width,
             }
         }
@@ -169,6 +173,8 @@ pub(super) fn derive_props(
                 table_ids: base.table_ids,
                 not_null_columns: vec![],
                 unique_keys: vec![],
+                fd_keys: vec![],
+                equivalence_classes: vec![],
                 avg_width: base.avg_width,
             }
         }
@@ -214,6 +220,8 @@ pub(super) fn derive_props(
                 table_ids,
                 not_null_columns: vec![],
                 unique_keys: vec![],
+                fd_keys: vec![],
+                equivalence_classes: vec![],
                 avg_width,
             }
         }

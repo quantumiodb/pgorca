@@ -1,5 +1,65 @@
+use crate::properties::required::RequiredProperties;
+use crate::properties::delivered::DeliveredProperties;
 use super::types::*;
 use super::scalar::ScalarExpr;
+
+pub trait PhysicalPropertyProvider {
+    fn derive_child_required(
+        &self,
+        child_idx: usize,
+        req_props: &RequiredProperties,
+    ) -> RequiredProperties;
+
+    fn derive_delivered(
+        &self,
+        children_delivered: &[DeliveredProperties],
+    ) -> DeliveredProperties;
+}
+
+impl PhysicalPropertyProvider for PhysicalOp {
+    fn derive_child_required(
+        &self,
+        _child_idx: usize,
+        req_props: &RequiredProperties,
+    ) -> RequiredProperties {
+        match self {
+            PhysicalOp::MergeJoin { merge_clauses, .. } => {
+                // A robust implementation would map scalar exprs to SortKeys properly
+                for _clause in merge_clauses {
+                    // Extract column ids from the merge clause's left and right keys
+                    // For now, we return empty requirement (fallback to basic property framework logic)
+                }
+                RequiredProperties::none() 
+            }
+            PhysicalOp::Agg { strategy: AggStrategy::Sorted, .. } => {
+                // Group by columns should be requested as sorting keys.
+                RequiredProperties::none()
+            }
+            PhysicalOp::Sort { .. } => RequiredProperties::none(),
+            PhysicalOp::Limit { .. } | PhysicalOp::Unique { .. } => req_props.clone(),
+            _ => RequiredProperties::none(),
+        }
+    }
+
+    fn derive_delivered(
+        &self,
+        children_delivered: &[DeliveredProperties],
+    ) -> DeliveredProperties {
+        match self {
+            PhysicalOp::Sort { keys } => DeliveredProperties { ordering: keys.clone() },
+            PhysicalOp::IndexScan { index_order_keys, .. } => DeliveredProperties { ordering: index_order_keys.clone() },
+            PhysicalOp::Limit { .. } | PhysicalOp::Unique { .. } => {
+                if children_delivered.is_empty() {
+                    DeliveredProperties::none()
+                } else {
+                    children_delivered[0].clone()
+                }
+            }
+            _ => DeliveredProperties::none(),
+        }
+    }
+}
+
 
 #[derive(Debug, Clone)]
 pub enum PhysicalOp {

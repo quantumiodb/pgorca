@@ -51,7 +51,12 @@ pub fn extract_plan(
 
     // Recursively extract child plans
     let children_plans: Vec<PhysicalPlan> = expr.children.iter()
-        .map(|child_gid| extract_plan(memo, *child_gid, &RequiredProperties::none()))
+        .enumerate()
+        .map(|(i, child_gid)| {
+            use crate::ir::physical::PhysicalPropertyProvider;
+            let child_req = phys_op.derive_child_required(i, required);
+            extract_plan(memo, *child_gid, &child_req)
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     // Extract any filter predicate from this group's logical Select expr.
@@ -73,16 +78,31 @@ pub fn extract_plan(
         (vec![], vec![], 0.0, 0.0)
     };
 
-    Ok(PhysicalPlan {
+    let mut plan = PhysicalPlan {
         op: phys_op,
         children: children_plans,
-        output_columns,
-        target_list,
+        output_columns: output_columns.clone(),
+        target_list: target_list.clone(),
         qual,
-        cost: winner.cost,
+        cost: winner.cost.clone(),
         rows,
         width,
-    })
+    };
+
+    if winner.needs_enforcer {
+        plan = PhysicalPlan {
+            op: PhysicalOp::Sort { keys: required.ordering.clone() },
+            children: vec![plan],
+            output_columns,
+            target_list,
+            qual: vec![],
+            cost: winner.cost.clone(),
+            rows,
+            width,
+        };
+    }
+
+    Ok(plan)
 }
 
 /// Return the filter predicate(s) from the group's logical Select expression.

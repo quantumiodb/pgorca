@@ -173,17 +173,19 @@ pub fn cost_physical_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::types::*;
+    use crate::ir::types::TableId;
 
     #[test]
     fn test_seq_scan_cost() {
         let params = CostModel::default();
         let props = LogicalProperties {
-            output_columns: vec![ColumnId(1)],
+            output_columns: vec![],
             row_count: 1000.0,
-            table_ids: vec![TableId(1)],
+            table_ids: vec![],
             not_null_columns: vec![],
             unique_keys: vec![],
+            fd_keys: vec![],
+            equivalence_classes: vec![],
             avg_width: 32.0,
         };
         let cost = cost_physical_op(
