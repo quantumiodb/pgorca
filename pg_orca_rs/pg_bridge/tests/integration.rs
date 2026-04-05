@@ -580,6 +580,216 @@ fn fallback_cte() {
     assert_eq!(rows.len(), 2);
 }
 
+// ── Cost model: MCV / histogram / damping integration tests ───────
+
+/// Helper: EXPLAIN with costs to check cost estimates
+fn explain_costs(client: &mut Client, sql: &str) -> Vec<String> {
+    let q = format!("EXPLAIN (COSTS ON) {}", sql);
+    client
+        .query(&q, &[])
+        .unwrap()
+        .iter()
+        .map(|r| r.get::<_, String>(0))
+        .collect()
+}
+
+/// Enable pg_orca on a connection and show fallback notices.
+fn enable_orca(client: &mut Client) {
+    client.batch_execute(
+        "SET orca.enabled = on;
+         SET orca.log_failure = on;
+         SET client_min_messages = 'notice';"
+    ).unwrap();
+}
+
+/// Create a skewed table where column `val` has 80% value=1, 20% other values.
+/// This produces clear MCV entries after ANALYZE.
+fn setup_skewed_table(client: &mut Client) {
+    client
+        .batch_execute(
+            "DROP TABLE IF EXISTS _test_skew CASCADE;
+             CREATE TABLE _test_skew (val int, rng int);
+             -- 80% of rows have val=1
+             INSERT INTO _test_skew (val, rng)
+               SELECT 1, i FROM generate_series(1, 8000) i;
+             -- 20% spread across val=2..100
+             INSERT INTO _test_skew (val, rng)
+               SELECT 2 + (i % 99), i FROM generate_series(1, 2000) i;
+             ANALYZE _test_skew;",
+        )
+        .unwrap();
+}
+
+#[test]
+fn cost_model_mcv_equality() {
+    let mut c = connect();
+    enable_orca(&mut c);
+    setup_skewed_table(&mut c);
+
+    // val=1 has ~80% of rows → MCV should have high frequency.
+    // val=999 is rare/absent → much lower selectivity.
+    // If MCV is being used, the cost for val=1 should be HIGHER than val=999
+    // (more rows to process).
+    let plan_common = explain_costs(&mut c, "SELECT * FROM _test_skew WHERE val = 1;");
+    let plan_rare = explain_costs(&mut c, "SELECT * FROM _test_skew WHERE val = 999;");
+
+    eprintln!("MCV common (val=1): {:?}", plan_common);
+    eprintln!("MCV rare (val=999): {:?}", plan_rare);
+
+    assert!(
+        plan_common.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "plan_common: {:?}", plan_common,
+    );
+    assert!(
+        plan_rare.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "plan_rare: {:?}", plan_rare,
+    );
+
+    // Extract row estimates from EXPLAIN output (format: "rows=NNN")
+    let rows_common = extract_rows_estimate(&plan_common);
+    let rows_rare = extract_rows_estimate(&plan_rare);
+
+    eprintln!("  rows estimate common: {:?}, rare: {:?}", rows_common, rows_rare);
+
+    // val=1 should have significantly more estimated rows than val=999
+    if let (Some(rc), Some(rr)) = (rows_common, rows_rare) {
+        assert!(
+            rc > rr * 2.0,
+            "MCV not effective: common rows={} should be >> rare rows={}",
+            rc, rr,
+        );
+    }
+
+    // Verify correctness
+    let cnt: i64 = c
+        .query("SELECT count(*) FROM _test_skew WHERE val = 1;", &[])
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(cnt, 8000);
+
+    c.batch_execute("DROP TABLE IF EXISTS _test_skew CASCADE;").unwrap();
+}
+
+#[test]
+fn cost_model_histogram_range() {
+    let mut c = connect();
+    enable_orca(&mut c);
+
+    // Create a table with uniformly distributed values 1..10000
+    c.batch_execute(
+        "DROP TABLE IF EXISTS _test_hist CASCADE;
+         CREATE TABLE _test_hist (id int);
+         INSERT INTO _test_hist SELECT i FROM generate_series(1, 10000) i;
+         ANALYZE _test_hist;",
+    ).unwrap();
+
+    // id < 1000 should select ~10% of rows
+    // id < 5000 should select ~50% of rows
+    // If histogram is used, the cost for id < 5000 should be higher
+    let plan_10pct = explain_costs(&mut c, "SELECT * FROM _test_hist WHERE id < 1000;");
+    let plan_50pct = explain_costs(&mut c, "SELECT * FROM _test_hist WHERE id < 5000;");
+
+    eprintln!("histogram 10%: {:?}", plan_10pct);
+    eprintln!("histogram 50%: {:?}", plan_50pct);
+
+    assert!(
+        plan_10pct.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "plan_10pct: {:?}", plan_10pct,
+    );
+    assert!(
+        plan_50pct.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "plan_50pct: {:?}", plan_50pct,
+    );
+
+    let rows_10 = extract_rows_estimate(&plan_10pct);
+    let rows_50 = extract_rows_estimate(&plan_50pct);
+
+    eprintln!("  rows estimate 10%: {:?}, 50%: {:?}", rows_10, rows_50);
+
+    if let (Some(r10), Some(r50)) = (rows_10, rows_50) {
+        assert!(
+            r50 > r10 * 2.0,
+            "histogram not effective: 50%={} should be >> 10%={}",
+            r50, r10,
+        );
+    }
+
+    // Verify correctness
+    let cnt: i64 = c
+        .query("SELECT count(*) FROM _test_hist WHERE id < 5000;", &[])
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(cnt, 4999);
+
+    c.batch_execute("DROP TABLE IF EXISTS _test_hist CASCADE;").unwrap();
+}
+
+#[test]
+fn cost_model_damping_guc() {
+    let mut c = connect();
+    enable_orca(&mut c);
+
+    // Create table with two independent columns
+    c.batch_execute(
+        "DROP TABLE IF EXISTS _test_damp CASCADE;
+         CREATE TABLE _test_damp (a int, b int);
+         INSERT INTO _test_damp SELECT i % 100, i % 50 FROM generate_series(1, 10000) i;
+         ANALYZE _test_damp;",
+    ).unwrap();
+
+    let query = "SELECT * FROM _test_damp WHERE a < 10 AND b < 10;";
+
+    // With default damping (0.75) — selectivity is loosened
+    c.batch_execute("SET orca.damping_factor_filter = 0.75;").unwrap();
+    let plan_damped = explain_costs(&mut c, query);
+    let rows_damped = extract_rows_estimate(&plan_damped);
+
+    // With damping = 1.0 — no damping, naive product of selectivities
+    c.batch_execute("SET orca.damping_factor_filter = 1.0;").unwrap();
+    let plan_naive = explain_costs(&mut c, query);
+    let rows_naive = extract_rows_estimate(&plan_naive);
+
+    eprintln!("damped (0.75): {:?} -> rows {:?}", plan_damped, rows_damped);
+    eprintln!("naive  (1.0):  {:?} -> rows {:?}", plan_naive, rows_naive);
+
+    assert!(
+        plan_damped.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "plan_damped: {:?}", plan_damped,
+    );
+    assert!(
+        plan_naive.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "plan_naive: {:?}", plan_naive,
+    );
+
+    // Damped should estimate more rows than naive (since damping loosens the selectivity)
+    if let (Some(rd), Some(rn)) = (rows_damped, rows_naive) {
+        assert!(
+            rd >= rn,
+            "damping not effective: damped rows={} should be >= naive rows={}",
+            rd, rn,
+        );
+    }
+
+    // Reset GUC
+    c.batch_execute("SET orca.damping_factor_filter = 0.75;").unwrap();
+    c.batch_execute("DROP TABLE IF EXISTS _test_damp CASCADE;").unwrap();
+}
+
+/// Extract the first "rows=NNN" estimate from EXPLAIN output lines.
+fn extract_rows_estimate(plan: &[String]) -> Option<f64> {
+    for line in plan {
+        // EXPLAIN format: "... rows=1234 ..."
+        if let Some(pos) = line.find("rows=") {
+            let after = &line[pos + 5..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            if let Ok(v) = num_str.parse::<f64>() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 // ── SQL regression tests (test/sql/*.sql vs test/expected/*.out) ─
 
 #[test]

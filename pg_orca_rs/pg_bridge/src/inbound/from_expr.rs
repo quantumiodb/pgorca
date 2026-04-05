@@ -171,7 +171,9 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
         cpu_operator_cost: pg_sys::cpu_operator_cost,
         effective_cache_size: pg_sys::effective_cache_size as f64,
         work_mem: pg_sys::work_mem as usize * 1024,
-        ..CostModel::default()
+        damping_factor_filter: crate::ORCA_DAMPING_FILTER.get(),
+        damping_factor_join: crate::ORCA_DAMPING_JOIN.get(),
+        damping_factor_groupby: crate::ORCA_DAMPING_GROUPBY.get(),
     };
 
     let mut catalog = CatalogSnapshot { tables, rte_to_table, cost_model };
@@ -1013,14 +1015,12 @@ unsafe fn register_relation_columns(
         col_ids.push(cid);
         col_id_to_attnum.insert(cid, attnum);
 
-        let (ndistinct, null_fraction) = read_column_stats(relid, attnum);
+        let avg_width = if att.attlen > 0 { att.attlen as i32 } else { 32 };
+        let cs = read_column_stats(relid, attnum, att.atttypid, avg_width);
         col_stats.push(ColumnStats {
             attnum,
             name: attname,
-            ndistinct,
-            null_fraction,
-            avg_width: if att.attlen > 0 { att.attlen as i32 } else { 32 },
-            correlation: 0.0,
+            ..cs
         });
     }
 
@@ -1109,25 +1109,36 @@ unsafe fn add_child_rte(
 
 // ── Catalog reading ──────────────────────────────────────────────────────────
 
-/// Read ndistinct and null_fraction from pg_statistic for one column.
-unsafe fn read_column_stats(relid: pg_sys::Oid, attnum: i16) -> (f64, f64) {
-    // Use SysCache to look up pg_statistic (3-key cache in PG17: relid, attnum, stainherit)
+/// Read full column statistics from pg_statistic: ndistinct, null_fraction,
+/// correlation, MCV (most common values + frequencies), and histogram bounds.
+unsafe fn read_column_stats(
+    relid: pg_sys::Oid,
+    attnum: i16,
+    type_oid: pg_sys::Oid,
+    avg_width: i32,
+) -> ColumnStats {
+    let cache_id = pg_sys::SysCacheIdentifier::STATRELATTINH as i32;
+
     let tup = pg_sys::SearchSysCache3(
-        pg_sys::SysCacheIdentifier::STATRELATTINH as i32,
+        cache_id,
         relid.into(),
         (attnum as i32).into(),
         pg_sys::Datum::from(0i32), // stainherit = false
     );
     if tup.is_null() {
-        return (-1.0, 0.0); // no stats
+        return ColumnStats {
+            attnum,
+            ndistinct: -1.0,
+            avg_width,
+            ..Default::default()
+        };
     }
 
     let mut isnull = false;
 
-    // stanullfrac (attr 5 in pg_statistic)
+    // stanullfrac
     let null_frac_datum = pg_sys::SysCacheGetAttr(
-        pg_sys::SysCacheIdentifier::STATRELATTINH as i32,
-        tup,
+        cache_id, tup,
         pg_sys::Anum_pg_statistic_stanullfrac as i16,
         &mut isnull,
     );
@@ -1135,10 +1146,9 @@ unsafe fn read_column_stats(relid: pg_sys::Oid, attnum: i16) -> (f64, f64) {
         f32::from_bits(null_frac_datum.value() as u32) as f64
     };
 
-    // stadistinct (attr 7)
+    // stadistinct
     let ndist_datum = pg_sys::SysCacheGetAttr(
-        pg_sys::SysCacheIdentifier::STATRELATTINH as i32,
-        tup,
+        cache_id, tup,
         pg_sys::Anum_pg_statistic_stadistinct as i16,
         &mut isnull,
     );
@@ -1146,8 +1156,126 @@ unsafe fn read_column_stats(relid: pg_sys::Oid, attnum: i16) -> (f64, f64) {
         f32::from_bits(ndist_datum.value() as u32) as f64
     };
 
+    // Use PG's get_attstatsslot API to read extended statistics.
+    // It handles slot scanning, detoasting, and array deconstruction properly.
+
+    // Read correlation
+    let correlation = read_stats_slot(tup,
+            pg_sys::STATISTIC_KIND_CORRELATION as i32,
+            type_oid,
+            pg_sys::ATTSTATSSLOT_NUMBERS)
+        .and_then(|(_, nums)| nums.into_iter().next())
+        .map(|v| v as f64)
+        .unwrap_or(0.0);
+
+    // Read MCV: values + frequencies
+    let most_common_vals = read_stats_slot(tup,
+            pg_sys::STATISTIC_KIND_MCV as i32,
+            type_oid,
+            pg_sys::ATTSTATSSLOT_VALUES | pg_sys::ATTSTATSSLOT_NUMBERS)
+        .and_then(|(values, freqs)| {
+            if values.len() != freqs.len() || values.is_empty() { return None; }
+            Some(values.into_iter().zip(freqs.into_iter())
+                .map(|(value, frequency)| McvEntry { value, frequency })
+                .collect())
+        });
+
+    // Read histogram bounds
+    let histogram_bounds = read_stats_slot(tup,
+            pg_sys::STATISTIC_KIND_HISTOGRAM as i32,
+            type_oid,
+            pg_sys::ATTSTATSSLOT_VALUES)
+        .and_then(|(values, _)| {
+            if values.len() < 2 { return None; }
+            Some(values.into_iter()
+                .map(|value| HistogramBound { value })
+                .collect())
+        });
+
     pg_sys::ReleaseSysCache(tup);
-    (ndistinct, null_fraction)
+
+    ColumnStats {
+        attnum,
+        name: String::new(), // filled by caller
+        ndistinct,
+        null_fraction,
+        avg_width,
+        correlation,
+        histogram_bounds,
+        most_common_vals,
+    }
+}
+
+/// Read a stats slot using PG's get_attstatsslot API.
+/// Returns (values as ConstValue, numbers as f32) for the given stakind.
+unsafe fn read_stats_slot(
+    tup: pg_sys::HeapTuple,
+    reqkind: i32,
+    type_oid: pg_sys::Oid,
+    flags: u32,
+) -> Option<(Vec<optimizer_core::ir::scalar::ConstValue>, Vec<f32>)> {
+    use optimizer_core::ir::scalar::ConstValue;
+
+    let mut sslot = pg_sys::AttStatsSlot::default();
+    let ok = pg_sys::get_attstatsslot(
+        &mut sslot,
+        tup,
+        reqkind,
+        pg_sys::InvalidOid, // reqop: any operator
+        flags as i32,
+    );
+    if !ok {
+        return None;
+    }
+
+    // Extract values
+    let values: Vec<ConstValue> = if !sslot.values.is_null() && sslot.nvalues > 0 {
+        (0..sslot.nvalues as usize)
+            .map(|i| datum_to_const_value(*sslot.values.add(i), type_oid))
+            .collect()
+    } else {
+        vec![]
+    };
+
+    // Extract numbers (float4 array)
+    let numbers: Vec<f32> = if !sslot.numbers.is_null() && sslot.nnumbers > 0 {
+        (0..sslot.nnumbers as usize)
+            .map(|i| *sslot.numbers.add(i))
+            .collect()
+    } else {
+        vec![]
+    };
+
+    pg_sys::free_attstatsslot(&mut sslot);
+    Some((values, numbers))
+}
+
+/// Convert a single Datum to ConstValue based on PG type OID.
+unsafe fn datum_to_const_value(
+    datum: pg_sys::Datum,
+    type_oid: pg_sys::Oid,
+) -> optimizer_core::ir::scalar::ConstValue {
+    use optimizer_core::ir::scalar::ConstValue;
+
+    match type_oid {
+        pg_sys::INT2OID => ConstValue::Int16(pg_sys::DatumGetInt16(datum)),
+        pg_sys::INT4OID => ConstValue::Int32(pg_sys::DatumGetInt32(datum)),
+        pg_sys::INT8OID => ConstValue::Int64(pg_sys::DatumGetInt64(datum)),
+        pg_sys::FLOAT4OID => ConstValue::Float32(pg_sys::DatumGetFloat4(datum)),
+        pg_sys::FLOAT8OID => ConstValue::Float64(pg_sys::DatumGetFloat8(datum)),
+        pg_sys::BOOLOID => ConstValue::Bool(datum.value() != 0),
+        pg_sys::TEXTOID | pg_sys::VARCHAROID | pg_sys::BPCHAROID | pg_sys::NAMEOID => {
+            let cstr = pg_sys::text_to_cstring(datum.value() as *const pg_sys::text);
+            let s = CStr::from_ptr(cstr).to_string_lossy().to_string();
+            pg_sys::pfree(cstr as *mut std::ffi::c_void);
+            ConstValue::Text(s)
+        }
+        _ => {
+            // Unsupported type: convert via output function to text as fallback
+            // For now, store as Int64 to preserve ordering for numeric-like types
+            ConstValue::Int64(datum.value() as i64)
+        }
+    }
 }
 
 /// Read index metadata for a relation.

@@ -17,6 +17,11 @@ static ORCA_ENABLED: GucSetting<bool> = GucSetting::<bool>::new(false);
 static ORCA_LOG_FAILURE: GucSetting<bool> = GucSetting::<bool>::new(true);
 static ORCA_LOG_PLAN: GucSetting<bool> = GucSetting::<bool>::new(false);
 
+// GPORCA-style damping factors for multi-predicate selectivity estimation
+static ORCA_DAMPING_FILTER: GucSetting<f64> = GucSetting::<f64>::new(0.75);
+static ORCA_DAMPING_JOIN: GucSetting<f64> = GucSetting::<f64>::new(0.75);
+static ORCA_DAMPING_GROUPBY: GucSetting<f64> = GucSetting::<f64>::new(0.75);
+
 // ── Previous hooks ──────────────────────────────────────
 
 static mut PREV_PLANNER_HOOK: pg_sys::planner_hook_type = None;
@@ -177,6 +182,37 @@ pub unsafe extern "C-unwind" fn _PG_init() {
         c"Log when pg_orca_rs generates a plan",
         c"",
         &ORCA_LOG_PLAN,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_float_guc(
+        c"orca.damping_factor_filter",
+        c"Damping factor for multi-predicate AND selectivity",
+        c"Reduces over-underestimation from independence assumption (0.0-1.0)",
+        &ORCA_DAMPING_FILTER,
+        0.0,
+        1.0,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_float_guc(
+        c"orca.damping_factor_join",
+        c"Damping factor for multi-predicate join selectivity",
+        c"",
+        &ORCA_DAMPING_JOIN,
+        0.0,
+        1.0,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_float_guc(
+        c"orca.damping_factor_groupby",
+        c"Damping factor for GROUP BY ndistinct estimation",
+        c"",
+        &ORCA_DAMPING_GROUPBY,
+        0.0,
+        1.0,
         GucContext::Userset,
         GucFlags::default(),
     );
