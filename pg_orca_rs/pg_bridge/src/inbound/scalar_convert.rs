@@ -103,6 +103,10 @@ unsafe fn convert_const(c: *mut pg_sys::Const) -> Result<ScalarExpr, InboundErro
                 // PG timestamptz is 8 bytes
                 ConstValue::TimestampTz(i64::from_datum(datum, false).unwrap())
             }
+            pg_sys::MONEYOID => {
+                // money is 8 bytes
+                ConstValue::Money(i64::from_datum(datum, false).unwrap())
+            }
             _ => {
                 // Fallback for unknown types: treat as 64-bit value if possible
                 ConstValue::Int64(datum.value() as i64)

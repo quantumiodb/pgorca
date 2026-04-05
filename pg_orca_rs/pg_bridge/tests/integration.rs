@@ -286,7 +286,15 @@ fn test_extended_types() {
     let rows = c.query("SELECT id FROM _test_types WHERE val_tstz = '2024-01-01 12:00:00+00'::timestamptz;", &[]).unwrap();
     assert_eq!(rows.len(), 1);
 
-    // 5. Large text (TOAST test)
+    // 5. Money test
+    c.batch_execute("ALTER TABLE _test_types ADD COLUMN val_money money;").unwrap();
+    c.execute("UPDATE _test_types SET val_money = '123.45'::money WHERE id = 1;", &[]).unwrap();
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_money = '123.45'::money;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Money failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_money = '123.45'::money;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 6. Large text (TOAST test)
     let large_text = "A".repeat(100000); // 100KB text should be enough to trigger TOAST
     c.execute("INSERT INTO _test_types (id, val_text) VALUES (2, $1);", &[&large_text]).unwrap();
 

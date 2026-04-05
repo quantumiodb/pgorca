@@ -364,6 +364,7 @@ unsafe fn build_const(
         ConstValue::Date(v) => (true, 4, pg_sys::Datum::from(*v)),
         ConstValue::Timestamp(v) => (true, 8, pg_sys::Datum::from(*v)),
         ConstValue::TimestampTz(v) => (true, 8, pg_sys::Datum::from(*v)),
+        ConstValue::Money(v) => (true, 8, pg_sys::Datum::from(*v)),
         ConstValue::Null => (true, -1, pg_sys::Datum::from(0usize)),
         ConstValue::Bytea(b) => {
             let total_len = 4 + b.len();

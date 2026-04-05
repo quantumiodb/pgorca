@@ -99,5 +99,6 @@ pub enum ConstValue {
     Date(i32),
     Timestamp(i64),
     TimestampTz(i64),
+    Money(i64),
     Null,
 }
