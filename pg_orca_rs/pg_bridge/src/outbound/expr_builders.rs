@@ -382,6 +382,31 @@ unsafe fn build_const(
             std::ptr::copy_nonoverlapping(b.as_ptr(), buf.add(4), b.len());
             (false, -1, pg_sys::Datum::from(buf as usize))
         }
+        ConstValue::Time(micros) => (true, 8, pg_sys::Datum::from(*micros)),
+        ConstValue::TimeTz { micros, offset } => {
+            // TimeTzADT is a pass-by-reference struct { time: i64, zone: i32 }
+            let buf = pg_sys::palloc(std::mem::size_of::<pg_sys::TimeTzADT>()) as *mut pg_sys::TimeTzADT;
+            (*buf).time = *micros;
+            (*buf).zone = *offset;
+            (false, std::mem::size_of::<pg_sys::TimeTzADT>() as i32, pg_sys::Datum::from(buf as usize))
+        }
+        ConstValue::Interval { months, days, micros } => {
+            // pg_sys::Interval is { time: i64, day: i32, month: i32 }
+            let buf = pg_sys::palloc(std::mem::size_of::<pg_sys::Interval>()) as *mut pg_sys::Interval;
+            (*buf).time = *micros;
+            (*buf).day = *days;
+            (*buf).month = *months;
+            (false, std::mem::size_of::<pg_sys::Interval>() as i32, pg_sys::Datum::from(buf as usize))
+        }
+        ConstValue::Bit(s) | ConstValue::Json(s) | ConstValue::Jsonb(s) => {
+            // Use PG input function to reconstruct the datum from text representation
+            let mut input_fn = pg_sys::Oid::INVALID;
+            let mut ioparam = pg_sys::Oid::INVALID;
+            pg_sys::getTypeInputInfo(pg_sys::Oid::from(type_oid), &mut input_fn, &mut ioparam);
+            let cstr = std::ffi::CString::new(s.as_str()).unwrap_or_default();
+            let d = pg_sys::OidInputFunctionCall(input_fn, cstr.as_ptr() as *mut _, ioparam, typmod);
+            (false, -1, d)
+        }
     };
 
     (*c).constbyval = byval;

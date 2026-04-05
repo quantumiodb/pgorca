@@ -121,9 +121,49 @@ unsafe fn convert_const(c: *mut pg_sys::Const) -> Result<ScalarExpr, InboundErro
                 // LSN is stored as u64, but we can use i64::from_datum
                 ConstValue::Lsn(i64::from_datum(datum, false).unwrap() as u64)
             }
+            pg_sys::BYTEAOID => {
+                // Detoast then copy raw bytes
+                let vl = pg_sys::pg_detoast_datum_packed(datum.cast_mut_ptr::<pg_sys::varlena>());
+                let len = pgrx::varsize_any_exhdr(vl);
+                let ptr = pgrx::vardata_any(vl) as *const u8;
+                let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                ConstValue::Bytea(bytes)
+            }
+            pg_sys::TIMEOID => {
+                // time is stored as i64 microseconds since midnight
+                ConstValue::Time(i64::from_datum(datum, false).unwrap())
+            }
+            pg_sys::TIMETZOID => {
+                // TimeTzADT = { time: i64, zone: i32 } passed by pointer
+                let timetz = pg_sys::DatumGetTimeTzADTP(datum);
+                ConstValue::TimeTz { micros: (*timetz).time, offset: (*timetz).zone }
+            }
+            pg_sys::INTERVALOID => {
+                let iv = pgrx::datetime::Interval::from_datum(datum, false).unwrap();
+                ConstValue::Interval { months: iv.months(), days: iv.days(), micros: iv.micros() }
+            }
+            pg_sys::JSONOID => {
+                let j = pgrx::Json::from_datum(datum, false).unwrap();
+                ConstValue::Json(j.0.to_string())
+            }
+            pg_sys::JSONBOID => {
+                let j = pgrx::JsonB::from_datum(datum, false).unwrap();
+                ConstValue::Jsonb(j.0.to_string())
+            }
+            pg_sys::BITOID | pg_sys::VARBITOID => {
+                // bit/varbit: use PG output function to get string representation (e.g. "10110101")
+                let text = datum_to_text_via_output((*c).consttype, datum);
+                ConstValue::Bit(String::from_utf8_lossy(&text).into_owned())
+            }
             _ => {
-                // Fallback for unknown types: treat as 64-bit value if possible
-                ConstValue::Int64(datum.value() as i64)
+                // For enum, range, and other unknown types: use PG output function
+                // to get a text representation that preserves the value.
+                // The type_oid in ScalarExpr::Const still carries the real type.
+                let text = datum_to_text_via_output((*c).consttype, datum);
+                match std::str::from_utf8(&text) {
+                    Ok(s) => ConstValue::Text(s.to_string()),
+                    Err(_) => ConstValue::Int64(datum.value() as i64),
+                }
             }
         }
     };
@@ -266,4 +306,21 @@ unsafe fn convert_window_func(
         winstar,
         winagg,
     })
+}
+
+/// Convert an arbitrary datum to its text representation using the type's output function.
+/// Returns the raw bytes of the C string (without null terminator).
+unsafe fn datum_to_text_via_output(type_oid: pg_sys::Oid, datum: pg_sys::Datum) -> Vec<u8> {
+    let mut output_fn = pg_sys::Oid::INVALID;
+    let mut is_varlena = false;
+    pg_sys::getTypeOutputInfo(type_oid, &mut output_fn, &mut is_varlena);
+    if output_fn == pg_sys::Oid::INVALID {
+        return Vec::new();
+    }
+    let cstr = pg_sys::OidOutputFunctionCall(output_fn, datum);
+    if cstr.is_null() {
+        return Vec::new();
+    }
+    let s = std::ffi::CStr::from_ptr(cstr);
+    s.to_bytes().to_vec()
 }

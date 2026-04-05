@@ -104,5 +104,15 @@ pub enum ConstValue {
     Uuid([u8; 16]),
     Oid(u32),
     Lsn(u64),
+    // Time types (stored as microseconds since midnight)
+    Time(i64),
+    TimeTz { micros: i64, offset: i32 },
+    // Interval (months, days, microseconds)
+    Interval { months: i32, days: i32, micros: i64 },
+    // Bit strings (stored as text representation, e.g. "10110101")
+    Bit(String),
+    // JSON/JSONB (stored as text)
+    Json(String),
+    Jsonb(String),
     Null,
 }

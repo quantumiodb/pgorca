@@ -337,6 +337,106 @@ fn test_extended_types() {
     assert_eq!(len, 100000);
 }
 
+// ── Special types: time, interval, bytea, bit, json, enum, range ────────────
+
+#[test]
+fn test_special_types() {
+    let mut c = connect();
+    setup(&mut c);
+    enable_orca(&mut c);
+    c.batch_execute("
+        DROP TABLE IF EXISTS _test_special CASCADE;
+        DROP TYPE IF EXISTS mood CASCADE;
+        CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral');
+        CREATE TABLE _test_special (
+            id int,
+            val_time time,
+            val_timetz timetz,
+            val_interval interval,
+            val_bytea bytea,
+            val_bit bit(8),
+            val_varbit varbit,
+            val_json json,
+            val_jsonb jsonb,
+            val_mood mood,
+            val_int4range int4range
+        );
+        INSERT INTO _test_special VALUES (
+            1,
+            '12:30:00'::time,
+            '12:30:00+05:30'::timetz,
+            '1 year 2 months 3 days'::interval,
+            '\\xDEADBEEF'::bytea,
+            B'10110101',
+            B'101'::varbit,
+            '{\"key\": \"value\"}'::json,
+            '{\"key\": \"value\"}'::jsonb,
+            'happy'::mood,
+            '[1,10)'::int4range
+        );
+    ").unwrap();
+
+    // 1. time
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_time = '12:30:00'::time;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "time failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_time = '12:30:00'::time;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 2. timetz
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_timetz = '12:30:00+05:30'::timetz;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "timetz failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_timetz = '12:30:00+05:30'::timetz;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 3. interval
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_interval = '1 year 2 months 3 days'::interval;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "interval failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_interval = '1 year 2 months 3 days'::interval;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 4. bytea
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_bytea = '\\xDEADBEEF'::bytea;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "bytea failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_bytea = '\\xDEADBEEF'::bytea;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 5. bit
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_bit = B'10110101';");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "bit failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_bit = B'10110101';", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 6. varbit
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_varbit = B'101'::varbit;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "varbit failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_varbit = B'101'::varbit;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 7. json (no equality operator in PG — cast to text for comparison)
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_json::text = '{\"key\": \"value\"}';");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "json cast failed orca: {:?}", plan);
+
+    // 8. jsonb
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_jsonb = '{\"key\": \"value\"}'::jsonb;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "jsonb failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_jsonb = '{\"key\": \"value\"}'::jsonb;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 9. enum
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_mood = 'happy'::mood;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "enum failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_mood = 'happy'::mood;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 10. range
+    let plan = explain(&mut c, "SELECT * FROM _test_special WHERE val_int4range = '[1,10)'::int4range;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "int4range failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_special WHERE val_int4range = '[1,10)'::int4range;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    c.batch_execute("DROP TABLE IF EXISTS _test_special CASCADE; DROP TYPE IF EXISTS mood CASCADE;").unwrap();
+}
+
 // ── M3: WHERE clause filter ─────────────────────────────
 
 #[test]
