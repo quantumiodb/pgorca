@@ -35,9 +35,9 @@ pub unsafe fn generate_planned_stmt(
 ) -> Result<*mut pg_sys::PlannedStmt, OutboundError> {
     let pg_plan = build_plan_node(plan, col_map)?;
 
-    // Apply projection: replace the top-level plan's targetlist with the
-    // query's targetList so the output matches what the user SELECT'd.
-    apply_query_projection(pg_plan, query, col_map)?;
+    // Apply projection: ensure the top-level plan's output matches the
+    // query's targetList. May wrap with a Result node for pass-through plans.
+    let pg_plan = apply_query_projection(pg_plan, query, col_map)?;
 
     let stmt = planned_stmt::build_planned_stmt(query, pg_plan, std::ptr::null_mut())?;
 
@@ -46,49 +46,186 @@ pub unsafe fn generate_planned_stmt(
     Ok(stmt)
 }
 
-/// Replace the top-level plan's targetlist with the query's targetList.
+/// Returns true if the plan node is a pass-through node that doesn't
+/// evaluate its targetlist (Sort, Limit, Unique, LockRows, etc.).
+/// These nodes just pass child tuples through unchanged.
+unsafe fn is_passthrough_node(plan: *mut pg_sys::Plan) -> bool {
+    matches!(
+        (*plan).type_,
+        pg_sys::NodeTag::T_Sort
+        | pg_sys::NodeTag::T_Limit
+        | pg_sys::NodeTag::T_Unique
+        | pg_sys::NodeTag::T_LockRows
+    )
+}
+
+unsafe fn is_join_node(plan: *mut pg_sys::Plan) -> bool {
+    matches!(
+        (*plan).type_,
+        pg_sys::NodeTag::T_HashJoin
+        | pg_sys::NodeTag::T_MergeJoin
+        | pg_sys::NodeTag::T_NestLoop
+    )
+}
+
+/// Ensure the top-level plan's output matches the query's targetList.
 ///
-/// The query's targetList has Var nodes with original (varno, varattno) referencing
-/// RTEs. For scan nodes this works directly. For non-scan nodes (join, agg, sort),
-/// we add a Result node on top that projects from the plan's internal targetlist
-/// to the query's expected output.
+/// For scan nodes, we replace the targetlist directly.
+/// For join nodes, we rewrite Vars to OUTER_VAR/INNER_VAR.
+/// For pass-through nodes (Sort, Limit, Unique) on top of a join, we apply
+/// the join projection on the join node, then propagate up through the
+/// pass-through chain so their targetlists stay in sync with their child.
+/// For other upper nodes (Agg, WindowAgg), we rewrite to OUTER_VAR + position.
 unsafe fn apply_query_projection(
     pg_plan: *mut pg_sys::Plan,
     query: &pg_sys::Query,
     _col_map: &ColumnMapping,
-) -> Result<(), OutboundError> {
+) -> Result<*mut pg_sys::Plan, OutboundError> {
     if query.targetList.is_null() {
-        return Ok(());
+        return Ok(pg_plan);
     }
-
-    // For simple scan nodes, the query's targetList Vars directly reference
-    // the scan relation (varno = RTE index), so we can just replace.
-    // For non-scan nodes, the query's Vars still reference the original RTEs,
-    // which PG can resolve via the range table.
-    //
-    // Key insight: PG's executor for scan nodes evaluates targetlist Vars
-    // against the current scan tuple using (varno == scanrelid).
-    // For upper nodes, we wrap with a Result node if needed.
 
     let plan_tag = (*pg_plan).type_;
     match plan_tag {
-        // Scan nodes: replace targetlist directly
+        // Scan nodes: replace targetlist directly.
         pg_sys::NodeTag::T_SeqScan
         | pg_sys::NodeTag::T_IndexScan
         | pg_sys::NodeTag::T_IndexOnlyScan
         | pg_sys::NodeTag::T_BitmapHeapScan => {
             (*pg_plan).targetlist = query.targetList;
+            Ok(pg_plan)
         }
-        // WindowAgg: use query's targetlist (which contains WindowFunc expressions).
-        // Vars in it need OUTER_VAR remapping to reference the child plan.
+        // Append: keep internal targetlist (built from first child).
+        pg_sys::NodeTag::T_Append => Ok(pg_plan),
+        // WindowAgg: rewrite Vars to reference child plan output.
         pg_sys::NodeTag::T_WindowAgg => {
             let proj_tl = rewrite_tl_for_projection(query.targetList, pg_plan);
             (*pg_plan).targetlist = proj_tl;
+            Ok(pg_plan)
         }
-        // Non-scan nodes (join, agg, sort, etc.): keep internal targetlist as-is.
-        _ => {}
+        // Join nodes: rewrite to OUTER_VAR/INNER_VAR preserving which side.
+        pg_sys::NodeTag::T_HashJoin
+        | pg_sys::NodeTag::T_MergeJoin
+        | pg_sys::NodeTag::T_NestLoop => {
+            let proj_tl = rewrite_tl_for_join_projection(query.targetList, pg_plan);
+            (*pg_plan).targetlist = proj_tl;
+            Ok(pg_plan)
+        }
+        // Pass-through nodes on top of a join: apply join projection at
+        // the join level, then propagate the updated targetlist up.
+        // Pass-through nodes don't evaluate their own targetlist, so their
+        // targetlist must match their child's exactly.
+        _ if is_passthrough_node(pg_plan) => {
+            // Walk down through pass-through chain to find the child.
+            let mut bottom = pg_plan;
+            while is_passthrough_node(bottom) && !(*bottom).lefttree.is_null() {
+                bottom = (*bottom).lefttree;
+            }
+            if is_join_node(bottom) {
+                // Apply join projection at the join level.
+                let proj_tl = rewrite_tl_for_join_projection(query.targetList, bottom);
+                (*bottom).targetlist = proj_tl;
+                // Propagate up: each pass-through node copies child's targetlist.
+                let mut cur = pg_plan;
+                while is_passthrough_node(cur) && !(*cur).lefttree.is_null() {
+                    (*cur).targetlist = (*(*cur).lefttree).targetlist;
+                    cur = (*cur).lefttree;
+                }
+            } else {
+                // Non-join child: use original approach — rewrite at top level.
+                let proj_tl = rewrite_tl_for_projection(query.targetList, pg_plan);
+                (*pg_plan).targetlist = proj_tl;
+            }
+            Ok(pg_plan)
+        }
+        // Other upper nodes (Agg, HashAggregate): rewrite to
+        // OUTER_VAR + position in child's output.
+        _ => {
+            let proj_tl = rewrite_tl_for_projection(query.targetList, pg_plan);
+            (*pg_plan).targetlist = proj_tl;
+            Ok(pg_plan)
+        }
     }
-    Ok(())
+}
+
+/// Rewrite a query target list for a join plan node.
+///
+/// For each Var in the query's targetList, find the matching entry in the join's
+/// internal targetlist (by varnosyn/varattnosyn) and create a new Var that
+/// references the SAME (varno, varattno) as the matched entry. This preserves
+/// OUTER_VAR/INNER_VAR correctly.
+///
+/// Non-Var expressions (Aggref, Cast, etc.) are kept as-is.
+unsafe fn rewrite_tl_for_join_projection(
+    query_tl: *mut pg_sys::List,
+    plan: *mut pg_sys::Plan,
+) -> *mut pg_sys::List {
+    use crate::utils::pg_list::list_iter;
+    use expr_builders::{OUTER_VAR, INNER_VAR};
+
+    let plan_tes = list_iter::<pg_sys::TargetEntry>((*plan).targetlist);
+    let query_tes = list_iter::<pg_sys::TargetEntry>(query_tl);
+
+    let mut new_list: *mut pg_sys::List = std::ptr::null_mut();
+
+    for (resno_0, qte_ptr) in query_tes.iter().enumerate() {
+        let qte = &**qte_ptr;
+        let new_te = crate::utils::palloc::palloc_node::<pg_sys::TargetEntry>(
+            pg_sys::NodeTag::T_TargetEntry,
+        );
+        (*new_te).resno = (resno_0 + 1) as i16;
+        (*new_te).resname = qte.resname;
+        (*new_te).resjunk = qte.resjunk;
+        (*new_te).ressortgroupref = qte.ressortgroupref;
+        (*new_te).resorigtbl = qte.resorigtbl;
+        (*new_te).resorigcol = qte.resorigcol;
+
+        if !qte.expr.is_null() && (*qte.expr).type_ == pg_sys::NodeTag::T_Var {
+            let orig_var = qte.expr as *const pg_sys::Var;
+            let orig_varno = (*orig_var).varno as u32;
+            let orig_attno = (*orig_var).varattno;
+
+            // Find matching entry in plan's internal targetlist
+            let mut found = false;
+            for (_i, pte_ptr) in plan_tes.iter().enumerate() {
+                let pte = &**pte_ptr;
+                if !pte.expr.is_null() && (*pte.expr).type_ == pg_sys::NodeTag::T_Var {
+                    let pv = pte.expr as *const pg_sys::Var;
+                    // Match by original (varnosyn, varattnosyn) or direct (varno, varattno)
+                    let matches = ((*pv).varnosyn == orig_varno && (*pv).varattnosyn == orig_attno)
+                        || ((*pv).varno as u32 == orig_varno && (*pv).varattno == orig_attno);
+                    if matches {
+                        // Create a Var with the same varno/varattno as the plan entry
+                        let new_var = crate::utils::palloc::palloc_node::<pg_sys::Var>(
+                            pg_sys::NodeTag::T_Var,
+                        );
+                        (*new_var).varno = (*pv).varno;
+                        (*new_var).varattno = (*pv).varattno;
+                        (*new_var).vartype = (*orig_var).vartype;
+                        (*new_var).vartypmod = (*orig_var).vartypmod;
+                        (*new_var).varcollid = (*orig_var).varcollid;
+                        (*new_var).varnosyn = (*orig_var).varnosyn;
+                        (*new_var).varattnosyn = (*orig_var).varattnosyn;
+                        (*new_var).location = (*orig_var).location;
+                        (*new_te).expr = new_var as *mut pg_sys::Expr;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                // Fallback: keep original expression
+                (*new_te).expr = qte.expr;
+            }
+        } else {
+            // Non-Var expression (Aggref, FuncExpr, etc.) — keep as-is
+            (*new_te).expr = qte.expr;
+        }
+
+        new_list = pg_sys::lappend(new_list, new_te as *mut std::ffi::c_void);
+    }
+
+    new_list
 }
 
 /// Rewrite a query target list so Vars reference OUTER_VAR + position in child plan.

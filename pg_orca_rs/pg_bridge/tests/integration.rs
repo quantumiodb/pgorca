@@ -291,6 +291,84 @@ fn m4_join() {
     assert!(r1.contains("Bob"), "row1: {}", r1);
 }
 
+// ── M4b: LEFT/RIGHT JOIN ───────────────────────────────
+
+#[test]
+fn m4_left_join() {
+    let mut c = connect();
+    setup(&mut c);
+
+    // _test_t has a=1,2; _test_cust has id=1,2. Add a=3 to _test_t for unmatched row.
+    c.batch_execute("INSERT INTO _test_t VALUES (3, 'extra');").unwrap();
+
+    let plan = explain(
+        &mut c,
+        "SELECT _test_t.a, _test_cust.name FROM _test_t LEFT JOIN _test_cust ON _test_t.a = _test_cust.id;",
+    );
+    eprintln!("left join plan: {:?}", plan);
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "plan: {:?}", plan);
+
+    // First: test SELECT * to see all columns
+    let rows_all: Vec<_> = c.query(
+        "SELECT * FROM _test_t LEFT JOIN _test_cust ON _test_t.a = _test_cust.id ORDER BY _test_t.a;",
+        &[],
+    ).unwrap();
+    eprintln!("LEFT JOIN SELECT * columns: {}", rows_all[0].len());
+    for (i, row) in rows_all.iter().enumerate() {
+        let vals: Vec<String> = (0..row.len()).map(|j| {
+            format!("{:?}", row.try_get::<_, String>(j).ok())
+        }).collect();
+        eprintln!("  row {}: {:?}", i, vals);
+    }
+
+    // Test specific columns
+    let rows: Vec<_> = c.query(
+        "SELECT _test_t.a, _test_cust.name FROM _test_t LEFT JOIN _test_cust ON _test_t.a = _test_cust.id ORDER BY _test_t.a;",
+        &[],
+    ).unwrap();
+    eprintln!("LEFT JOIN SELECT a, name columns: {}", rows[0].len());
+    for (i, row) in rows.iter().enumerate() {
+        let vals: Vec<String> = (0..row.len()).map(|j| {
+            format!("{:?}", row.try_get::<_, String>(j).ok())
+        }).collect();
+        eprintln!("  row {}: {:?}", i, vals);
+    }
+    assert_eq!(rows.len(), 3, "expected 3 rows from LEFT JOIN");
+    // a=3 should have NULL name
+    let name: Option<String> = rows[2].get(1);
+    assert_eq!(name, None, "expected NULL for unmatched row, got {:?}", name);
+
+    c.batch_execute("DELETE FROM _test_t WHERE a = 3;").unwrap();
+}
+
+#[test]
+fn m4_right_join() {
+    let mut c = connect();
+    setup(&mut c);
+
+    // _test_cust has id=1,2; _test_t has a=1,2.
+    // Add id=3 to _test_cust for unmatched row.
+    c.batch_execute("INSERT INTO _test_cust VALUES (3, 'Carol');").unwrap();
+
+    let plan = explain(
+        &mut c,
+        "SELECT _test_t.a, _test_cust.name FROM _test_t RIGHT JOIN _test_cust ON _test_t.a = _test_cust.id;",
+    );
+    eprintln!("right join plan: {:?}", plan);
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "plan: {:?}", plan);
+
+    let rows: Vec<_> = c.query(
+        "SELECT _test_t.a, _test_cust.name FROM _test_t RIGHT JOIN _test_cust ON _test_t.a = _test_cust.id ORDER BY _test_cust.id;",
+        &[],
+    ).unwrap();
+    assert_eq!(rows.len(), 3, "expected 3 rows from RIGHT JOIN");
+    // id=3 (Carol) should have NULL a
+    let a_val: Option<i32> = rows[2].get(0);
+    assert_eq!(a_val, None, "expected NULL for unmatched row, got {:?}", a_val);
+
+    c.batch_execute("DELETE FROM _test_cust WHERE id = 3;").unwrap();
+}
+
 // ── M6: Aggregation ─────────────────────────────────────
 
 #[test]
