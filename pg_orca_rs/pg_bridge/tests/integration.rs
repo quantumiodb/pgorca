@@ -908,6 +908,7 @@ fn run_pg_regress(test_names: &[&str], inputdir: &str) {
         "--dbname=regression",
         &format!("--bindir={}", bindir),
         &format!("--inputdir={}", inputdir),
+        &format!("--expecteddir={}/expected", inputdir),
         &format!("--outputdir={}", outputdir.display()),
     ]);
     cmd.args(test_names);
