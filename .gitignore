@@ -38,6 +38,8 @@ pg_orca_rs/Cargo.lock
 .pgrx/
 *.pgrx.work
 pg_orca_rs/.pgrx/
+pg_orca_rs/claude
+pg_orca_rs/.claude
 
 # CMake intermediate products
 CMakeCache.txt
@@ -60,3 +62,4 @@ __pycache__/
 *.pyc
 
 *.pyo
+
