@@ -846,6 +846,104 @@ fn extract_rows_estimate(plan: &[String]) -> Option<f64> {
     None
 }
 
+// ── pg_regress: run official PG tests against our instance ───────
+
+/// Run a set of PG regression tests via `pg_regress --use-existing`.
+///
+/// `test_names` – names matching files in `<inputdir>/sql/*.sql`.
+/// `inputdir`   – directory containing `sql/` and `expected/` (e.g. PG source tree).
+/// Results land in `pg_bridge/test/results/pg_regress/`.
+fn run_pg_regress(test_names: &[&str], inputdir: &str) {
+    let inst = pg();
+
+    // Locate pg_regress binary: prefer installed pgxs copy, fall back to PATH.
+    let pg_config = std::env::var("PGRX_PG_CONFIG_PATH").unwrap_or("pg_config".into());
+    let pkglibdir = cmd_output(&pg_config, &["--pkglibdir"]);
+    // pkglibdir is e.g. /foo/lib/postgresql; pgxs regress is at
+    // /foo/lib/postgresql/pgxs/src/test/regress/pg_regress
+    let pg_regress_path = PathBuf::from(&pkglibdir)
+        .join("pgxs/src/test/regress/pg_regress");
+    let pg_regress = if pg_regress_path.exists() {
+        pg_regress_path
+    } else {
+        PathBuf::from("pg_regress")  // hope it is on PATH
+    };
+
+    let bindir = cmd_output(&pg_config, &["--bindir"]);
+    let outputdir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("test/results/pg_regress");
+    std::fs::create_dir_all(&outputdir).unwrap();
+
+    // Ensure the "regression" database exists (pg_regress --use-existing won't create it).
+    Command::new(inst.pg_bin.join("createdb"))
+        .args(["-h", "127.0.0.1", "-p", &inst.port.to_string(), "-U", &whoami(), "regression"])
+        .output()
+        .ok(); // ignore error if it already exists
+
+    // Run test_setup first so that shared fixtures (INT4_TBL, etc.) are in place.
+    // Pass required env vars that test_setup.sql reads via \getenv.
+    let libdir = cmd_output(&pg_config, &["--pkglibdir"]);
+    let dlsuffix = if cfg!(target_os = "macos") { ".dylib" } else { ".so" };
+    Command::new(inst.pg_bin.join("psql"))
+        .args([
+            "-h", "127.0.0.1",
+            "-p", &inst.port.to_string(),
+            "-U", &whoami(),
+            "-d", "regression",
+            "-f", &format!("{}/sql/test_setup.sql", inputdir),
+        ])
+        .env("PGOPTIONS", "-c orca.enabled=on -c orca.log_failure=off")
+        .env("PG_ABS_SRCDIR", inputdir)
+        .env("PG_LIBDIR", &libdir)
+        .env("PG_DLSUFFIX", dlsuffix)
+        .output()
+        .expect("failed to run test_setup.sql");
+
+    let mut cmd = Command::new(&pg_regress);
+    cmd.args([
+        "--use-existing",
+        "--host=127.0.0.1",
+        &format!("--port={}", inst.port),
+        &format!("--user={}", whoami()),
+        "--dbname=regression",
+        &format!("--bindir={}", bindir),
+        &format!("--inputdir={}", inputdir),
+        &format!("--outputdir={}", outputdir.display()),
+    ]);
+    cmd.args(test_names);
+    // PGOPTIONS is forwarded by libpq to the server on every connection,
+    // equivalent to issuing SET for each option before the session begins.
+    cmd.env("PGOPTIONS", "-c orca.enabled=on -c orca.log_failure=off");
+
+    let output = cmd.output().expect("failed to run pg_regress");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // pg_regress writes a regression.diffs file when tests fail
+    let diffs_file = outputdir.join("regression.diffs");
+    let diffs = if diffs_file.exists() {
+        std::fs::read_to_string(&diffs_file).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    assert!(
+        output.status.success(),
+        "pg_regress failed (exit {}).\nstdout:\n{}\nstderr:\n{}\ndiffs:\n{}",
+        output.status,
+        stdout,
+        stderr,
+        diffs,
+    );
+}
+
+#[test]
+fn pg_regress_int4() {
+    let inputdir = std::env::var("PG_REGRESS_INPUTDIR")
+        .unwrap_or_else(|_| "/Users/jianghua/code/postgresql/src/test/regress".into());
+    run_pg_regress(&["int4"], &inputdir);
+}
+
 // ── SQL regression tests (test/sql/*.sql vs test/expected/*.out) ─
 
 #[test]
