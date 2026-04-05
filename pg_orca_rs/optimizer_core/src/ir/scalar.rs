@@ -100,5 +100,9 @@ pub enum ConstValue {
     Timestamp(i64),
     TimestampTz(i64),
     Money(i64),
+    Char(u8),
+    Uuid([u8; 16]),
+    Oid(u32),
+    Lsn(u64),
     Null,
 }

@@ -365,6 +365,14 @@ unsafe fn build_const(
         ConstValue::Timestamp(v) => (true, 8, pg_sys::Datum::from(*v)),
         ConstValue::TimestampTz(v) => (true, 8, pg_sys::Datum::from(*v)),
         ConstValue::Money(v) => (true, 8, pg_sys::Datum::from(*v)),
+        ConstValue::Char(v) => (true, 1, pg_sys::Datum::from(*v as usize)),
+        ConstValue::Oid(v) => (true, 4, pg_sys::Datum::from(*v as usize)),
+        ConstValue::Uuid(bytes) => {
+            let uuid = pgrx::Uuid::from_bytes(*bytes);
+            let datum = uuid.into_datum().expect("failed to convert Uuid to datum");
+            (false, 16, datum)
+        }
+        ConstValue::Lsn(v) => (true, 8, pg_sys::Datum::from(*v as usize)),
         ConstValue::Null => (true, -1, pg_sys::Datum::from(0usize)),
         ConstValue::Bytea(b) => {
             let total_len = 4 + b.len();

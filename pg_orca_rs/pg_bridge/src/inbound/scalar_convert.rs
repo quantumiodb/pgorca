@@ -107,6 +107,20 @@ unsafe fn convert_const(c: *mut pg_sys::Const) -> Result<ScalarExpr, InboundErro
                 // money is 8 bytes
                 ConstValue::Money(i64::from_datum(datum, false).unwrap())
             }
+            pg_sys::CHAROID => {
+                ConstValue::Char(i8::from_datum(datum, false).unwrap() as u8)
+            }
+            pg_sys::OIDOID => {
+                ConstValue::Oid(pg_sys::Oid::from_datum(datum, false).unwrap().to_u32())
+            }
+            pg_sys::UUIDOID => {
+                let uuid = pgrx::Uuid::from_datum(datum, false).unwrap();
+                ConstValue::Uuid(*uuid.as_bytes())
+            }
+            pg_sys::PG_LSNOID => {
+                // LSN is stored as u64, but we can use i64::from_datum
+                ConstValue::Lsn(i64::from_datum(datum, false).unwrap() as u64)
+            }
             _ => {
                 // Fallback for unknown types: treat as 64-bit value if possible
                 ConstValue::Int64(datum.value() as i64)

@@ -294,7 +294,39 @@ fn test_extended_types() {
     let rows = c.query("SELECT id FROM _test_types WHERE val_money = '123.45'::money;", &[]).unwrap();
     assert_eq!(rows.len(), 1);
 
-    // 6. Large text (TOAST test)
+    // 6. Char (internal) test
+    c.batch_execute("ALTER TABLE _test_types ADD COLUMN val_char \"char\";").unwrap();
+    c.execute("UPDATE _test_types SET val_char = 'A'::\"char\" WHERE id = 1;", &[]).unwrap();
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_char = 'A'::\"char\";");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Char failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_char = 'A'::\"char\";", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 7. Oid test
+    c.batch_execute("ALTER TABLE _test_types ADD COLUMN val_oid oid;").unwrap();
+    c.execute("UPDATE _test_types SET val_oid = 12345::oid WHERE id = 1;", &[]).unwrap();
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_oid = 12345::oid;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Oid failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_oid = 12345::oid;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 8. Uuid test
+    c.batch_execute("ALTER TABLE _test_types ADD COLUMN val_uuid uuid;").unwrap();
+    c.execute("UPDATE _test_types SET val_uuid = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid WHERE id = 1;", &[]).unwrap();
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_uuid = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Uuid failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_uuid = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 9. Lsn test
+    c.batch_execute("ALTER TABLE _test_types ADD COLUMN val_lsn pg_lsn;").unwrap();
+    c.execute("UPDATE _test_types SET val_lsn = '0/16B6688'::pg_lsn WHERE id = 1;", &[]).unwrap();
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_lsn = '0/16B6688'::pg_lsn;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Lsn failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_lsn = '0/16B6688'::pg_lsn;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 10. Large text (TOAST test)
     let large_text = "A".repeat(100000); // 100KB text should be enough to trigger TOAST
     c.execute("INSERT INTO _test_types (id, val_text) VALUES (2, $1);", &[&large_text]).unwrap();
 
