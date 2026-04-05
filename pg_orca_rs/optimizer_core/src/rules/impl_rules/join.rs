@@ -133,7 +133,7 @@ fn extract_equality_clauses(pred: &crate::ir::scalar::ScalarExpr)
 {
     use crate::ir::scalar::{ScalarExpr, BoolExprType};
     match pred {
-        ScalarExpr::OpExpr { op_oid, args, .. } => {
+        ScalarExpr::OpExpr { op_oid: _, args, .. } => {
             // Assume any binary OpExpr between two ColumnRefs is a hash clause
             if args.len() == 2 {
                 if matches!(&args[0], ScalarExpr::ColumnRef(_))

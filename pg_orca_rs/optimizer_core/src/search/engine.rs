@@ -1,32 +1,31 @@
 use crate::OptimizerError;
 use crate::cost::stats::CatalogSnapshot;
 use crate::cost::cardinality::estimate_selectivity_v2;
-use crate::cost::model::cost_physical_op;
 use crate::ir::logical::{LogicalExpr, LogicalOp};
 use crate::ir::operator::Operator;
 use crate::ir::physical::PhysicalOp;
-use crate::ir::types::{ColumnId, Cost};
+use crate::ir::types::ColumnId;
 use crate::memo::{Memo, GroupId};
-use crate::memo::group::Winner;
 use crate::plan::extract::{PhysicalPlan, extract_plan};
-use crate::properties::delivered::DeliveredProperties;
 use crate::properties::logical::LogicalProperties;
-use crate::properties::required::{RequiredProperties, RequiredPropsKey};
+use crate::properties::required::RequiredProperties;
 use crate::rules::RuleSet;
 use crate::simplify::simplify_pass;
+use super::scheduler::Scheduler;
+use super::task::{Task, OptimizeGroupState};
 
-const MAX_GROUPS: usize = 10000;
+pub(super) const MAX_GROUPS: usize = 10000;
 const DEFAULT_TIMEOUT_MS: u64 = 5000;
 
 /// Search context shared across the recursive optimization.
-struct SearchCtx {
+pub(super) struct SearchCtx {
     deadline: std::time::Instant,
-    rules: RuleSet,
-    timed_out: bool,
+    pub rules: RuleSet,
+    pub timed_out: bool,
 }
 
 impl SearchCtx {
-    fn new(timeout_ms: u64) -> Self {
+    pub(super) fn new(timeout_ms: u64) -> Self {
         Self {
             deadline: std::time::Instant::now()
                 + std::time::Duration::from_millis(timeout_ms),
@@ -35,7 +34,7 @@ impl SearchCtx {
         }
     }
 
-    fn check_timeout(&mut self) -> bool {
+    pub(super) fn check_timeout(&mut self) -> bool {
         if !self.timed_out && std::time::Instant::now() >= self.deadline {
             self.timed_out = true;
         }
@@ -64,7 +63,17 @@ pub fn optimize_with_timeout(
 
     let mut ctx = SearchCtx::new(timeout_ms);
     let required = RequiredProperties::none();
-    optimize_group(&mut memo, root, &required, f64::INFINITY, &mut ctx, catalog)?;
+    
+    let mut scheduler = Scheduler::new();
+    scheduler.schedule(Task::OptimizeGroup {
+        group_id: root,
+        required: required.clone(),
+        upper_bound: f64::INFINITY,
+        state: OptimizeGroupState::Init,
+    });
+    
+    scheduler.run(&mut memo, catalog, &mut ctx)?;
+    
     extract_plan(&memo, root, &required)
 }
 
@@ -78,157 +87,7 @@ fn copy_in(memo: &mut Memo, expr: &LogicalExpr) -> GroupId {
     gid
 }
 
-/// Top-down Cascades search with branch-and-bound.
-fn optimize_group(
-    memo: &mut Memo,
-    group_id: GroupId,
-    required: &RequiredProperties,
-    mut upper_bound: f64,
-    ctx: &mut SearchCtx,
-    catalog: &CatalogSnapshot,
-) -> Result<Option<f64>, OptimizerError> {
-    let key = RequiredPropsKey::from(required);
-
-    // 1. Check winner cache
-    if let Some(winner) = memo.get_group(group_id).winners.get(&key) {
-        let cost = winner.cost.total;
-        if cost <= upper_bound {
-            return Ok(Some(cost));
-        }
-    }
-
-    // 2. Derive logical properties (must come before costing)
-    derive_logical_props(memo, group_id, catalog);
-
-    // 3. Explore — apply transformation rules (skip if timed out)
-    if !memo.get_group(group_id).explored && !ctx.check_timeout() {
-        let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
-        for eid in &expr_ids {
-            for rule in &ctx.rules.xform_rules {
-                let expr = memo.get_expr(*eid);
-                if rule.matches(expr, memo) {
-                    rule.apply(*eid, group_id, memo, catalog);
-                }
-            }
-        }
-        memo.get_group_mut(group_id).explored = true;
-    }
-
-    // 4. Implement — apply implementation rules
-    if !memo.get_group(group_id).implemented {
-        let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
-        for eid in &expr_ids {
-            if memo.get_expr(*eid).op.is_logical() {
-                let matching: Vec<usize> = ctx.rules.impl_rules.iter().enumerate()
-                    .filter(|(_, rule)| rule.matches(memo.get_expr(*eid), memo))
-                    .map(|(i, _)| i)
-                    .collect();
-                for rule_idx in matching {
-                    ctx.rules.impl_rules[rule_idx].apply(*eid, group_id, memo, catalog);
-                }
-            }
-        }
-        memo.get_group_mut(group_id).implemented = true;
-    }
-
-    // Graceful degradation: on group limit, stop exploring but still try to cost
-    if memo.group_count() > MAX_GROUPS {
-        ctx.timed_out = true; // stop further exploration
-    }
-
-    // 5. Cost all physical exprs, select winner
-    let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
-    for eid in &expr_ids {
-        let expr = memo.get_expr(*eid);
-        if !expr.op.is_physical() { continue; }
-
-        let children = expr.children.clone();
-        let phys_op = match &expr.op {
-            Operator::Physical(p) => p.clone(),
-            _ => continue,
-        };
-
-        // Recursively optimize children
-        let mut child_costs: Vec<f64> = Vec::new();
-        let mut child_rows: Vec<f64> = Vec::new();
-        let mut feasible = true;
-        for child_gid in &children {
-            let child_budget = upper_bound - child_costs.iter().sum::<f64>();
-            if child_budget <= 0.0 { feasible = false; break; }
-
-            match optimize_group(memo, *child_gid, &RequiredProperties::none(), child_budget, ctx, catalog)? {
-                Some(child_cost) => {
-                    child_costs.push(child_cost);
-                    let child_rows_val = memo.get_group(*child_gid).logical_props.get()
-                        .map(|p| p.row_count)
-                        .unwrap_or(1000.0);
-                    child_rows.push(child_rows_val);
-                }
-                None => { feasible = false; break; }
-            }
-        }
-        if !feasible { continue; }
-
-        let logical_props = memo.get_group(group_id).logical_props.get()
-            .cloned()
-            .unwrap_or_default();
-
-        let children_costs: Vec<Cost> = child_costs.iter()
-            .map(|&c| Cost { startup: 0.0, total: c })
-            .collect();
-
-        let page_count = get_page_count(&phys_op, catalog);
-
-        let local_cost = cost_physical_op(
-            &phys_op,
-            &logical_props,
-            &catalog.cost_params,
-            &children_costs,
-            &child_rows,
-            page_count,
-        );
-
-        let total_cost = local_cost.total;
-
-        if total_cost < upper_bound {
-            upper_bound = total_cost;
-            let key = RequiredPropsKey::from(required);
-            memo.get_group_mut(group_id).winners.insert(key, Winner {
-                expr_id: *eid,
-                cost: Cost { startup: local_cost.startup, total: total_cost },
-                delivered_props: DeliveredProperties::none(),
-            });
-        }
-    }
-
-    let key = RequiredPropsKey::from(required);
-    Ok(memo.get_group(group_id).winners.get(&key).map(|w| w.cost.total))
-}
-
-/// Derive logical properties for a group (using OnceLock — set once, then cached).
-fn derive_logical_props(memo: &mut Memo, group_id: GroupId, catalog: &CatalogSnapshot) {
-    if memo.get_group(group_id).logical_props.get().is_some() {
-        return;
-    }
-    let expr_ids: Vec<_> = memo.get_group(group_id).exprs.clone();
-    for eid in &expr_ids {
-        // Derive children first (bottom-up)
-        let children = memo.get_expr(*eid).children.clone();
-        for child_gid in &children {
-            derive_logical_props(memo, *child_gid, catalog);
-        }
-
-        let expr = memo.get_expr(*eid);
-        if let Operator::Logical(ref logical_op) = expr.op {
-            let children = expr.children.clone();
-            let props = derive_props(logical_op, &children, memo, catalog);
-            let _ = memo.get_group(group_id).logical_props.set(props);
-            return;
-        }
-    }
-}
-
-fn derive_props(
+pub(super) fn derive_props(
     op: &LogicalOp,
     children: &[GroupId],
     memo: &Memo,
@@ -272,7 +131,7 @@ fn derive_props(
             LogicalProperties { output_columns: cols, ..base }
         }
 
-        LogicalOp::Join { join_type, predicate } => {
+        LogicalOp::Join { join_type: _, predicate } => {
             let left = child_props(0);
             let right = child_props(1);
             let join_sel = estimate_selectivity_v2(predicate, catalog, &{
@@ -296,7 +155,7 @@ fn derive_props(
             }
         }
 
-        LogicalOp::Aggregate { group_by, aggregates } => {
+        LogicalOp::Aggregate { group_by, aggregates: _ } => {
             let base = child_props(0);
             // Rough estimate: 10% of input rows after aggregation
             let row_count = if group_by.is_empty() {
@@ -361,7 +220,7 @@ fn derive_props(
     }
 }
 
-fn get_page_count(op: &PhysicalOp, catalog: &CatalogSnapshot) -> u64 {
+pub(super) fn get_page_count(op: &PhysicalOp, catalog: &CatalogSnapshot) -> u64 {
     match op {
         PhysicalOp::SeqScan { scanrelid } => {
             catalog.get_table_by_rte(*scanrelid)

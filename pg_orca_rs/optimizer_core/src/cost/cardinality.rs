@@ -211,7 +211,7 @@ fn const_to_f64(value: &ConstValue) -> Option<f64> {
 
 // ── Improved Selectivity Estimator ──────────────────────
 
-use super::stats::{CatalogSnapshot, TableStats};
+use super::stats::CatalogSnapshot;
 use crate::ir::types::TableId;
 
 /// Enhanced selectivity estimation using:
