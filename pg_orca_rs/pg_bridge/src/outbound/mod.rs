@@ -59,6 +59,16 @@ unsafe fn is_passthrough_node(plan: *mut pg_sys::Plan) -> bool {
     )
 }
 
+unsafe fn is_scan_node(plan: *mut pg_sys::Plan) -> bool {
+    matches!(
+        (*plan).type_,
+        pg_sys::NodeTag::T_SeqScan
+        | pg_sys::NodeTag::T_IndexScan
+        | pg_sys::NodeTag::T_IndexOnlyScan
+        | pg_sys::NodeTag::T_BitmapHeapScan
+    )
+}
+
 unsafe fn is_join_node(plan: *mut pg_sys::Plan) -> bool {
     matches!(
         (*plan).type_,
@@ -97,6 +107,9 @@ unsafe fn apply_query_projection(
         }
         // Append: keep internal targetlist (built from first child).
         pg_sys::NodeTag::T_Append => Ok(pg_plan),
+        // Agg: keep internal targetlist (built by build_agg_target_list with
+        // OUTER_VAR group-by Vars and Aggref nodes matched to Agg internal state).
+        pg_sys::NodeTag::T_Agg => Ok(pg_plan),
         // WindowAgg: rewrite Vars to reference child plan output.
         pg_sys::NodeTag::T_WindowAgg => {
             let proj_tl = rewrite_tl_for_projection(query.targetList, pg_plan);
@@ -125,16 +138,19 @@ unsafe fn apply_query_projection(
                 // Apply join projection at the join level.
                 let proj_tl = rewrite_tl_for_join_projection(query.targetList, bottom);
                 (*bottom).targetlist = proj_tl;
-                // Propagate up: each pass-through node copies child's targetlist.
-                let mut cur = pg_plan;
-                while is_passthrough_node(cur) && !(*cur).lefttree.is_null() {
-                    (*cur).targetlist = (*(*cur).lefttree).targetlist;
-                    cur = (*cur).lefttree;
-                }
-            } else {
-                // Non-join child: use original approach — rewrite at top level.
-                let proj_tl = rewrite_tl_for_projection(query.targetList, pg_plan);
-                (*pg_plan).targetlist = proj_tl;
+            } else if is_scan_node(bottom) {
+                // Scan node: replace with query's targetlist directly.
+                (*bottom).targetlist = query.targetList;
+            }
+            // For Agg, Append, WindowAgg etc., keep their internal targetlist.
+            // Propagate bottom's targetlist up through all pass-through nodes
+            // (bottom-up so each node sees the updated child targetlist).
+            let bottom_tl = (*bottom).targetlist;
+            let mut cur = pg_plan;
+            while !cur.is_null() {
+                (*cur).targetlist = bottom_tl;
+                if cur == bottom { break; }
+                cur = (*cur).lefttree;
             }
             Ok(pg_plan)
         }

@@ -37,9 +37,9 @@ ANALYZE
  3 | foo
 (2 rows)
 
-      count      
------------------
- 130154688937987
+    
+----
+ 10
 (1 row)
 
  a |   b   | name  
@@ -56,9 +56,14 @@ ANALYZE
  Optimizer: pg_orca
 (3 rows)
 
-      count      
------------------
- 130154688937987
+   
+---
+ 3
+(1 row)
+
+     
+-----
+ 100
 (1 row)
 
         QUERY PLAN        
@@ -69,11 +74,11 @@ ANALYZE
  Optimizer: pg_orca
 (4 rows)
 
- a | count 
----+-------
- 1 |     1
- 2 |     1
- 3 |     1
+ a |   
+---+---
+ 1 | 1
+ 2 | 1
+ 3 | 1
 (3 rows)
 
  a |   b   
@@ -166,11 +171,11 @@ ANALYZE
  Optimizer: pg_orca
 (7 rows)
 
- a 
----
- 1
- 2
- 3
+ a |   b   
+---+-------
+ 1 | hello
+ 2 | world
+ 3 | foo
 (3 rows)
 
                      QUERY PLAN                      
@@ -186,11 +191,11 @@ ANALYZE
  Optimizer: pg_orca
 (9 rows)
 
- a 
----
- 1
- 2
- 3
+ a |   b   
+---+-------
+ 1 | hello
+ 2 | world
+ 3 | foo
 (3 rows)
 
                QUERY PLAN                
@@ -217,16 +222,16 @@ ANALYZE
  3 | foo
 (3 rows)
 
-      count      
------------------
- 134140418588675
+     
+-----
+ 101
 (1 row)
 
- a | count 
----+-------
- 1 |     1
- 2 |     1
- 3 |     1
+ a |   
+---+---
+ 1 | 1
+ 2 | 1
+ 3 | 1
 (3 rows)
 
 DROP TABLE

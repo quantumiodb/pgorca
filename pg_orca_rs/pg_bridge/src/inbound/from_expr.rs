@@ -350,11 +350,19 @@ unsafe fn convert_union_arm(
         let sub_rte_index = (sub_idx_0 + 1) as u32;
 
         if sub_rte.rtekind == pg_sys::RTEKind::RTE_RELATION {
+            // Acquire lock so executor can open with NoLock
+            pg_sys::LockRelationOid(sub_rte.relid, pg_sys::AccessShareLock as i32);
+
+            // Reset perminfoindex: the sub-query's index is invalid in the
+            // parent's rteperminfos. Zero means "skip permission check".
+            let sub_rte_mut = *sub_rte_ptr as *mut pg_sys::RangeTblEntry;
+            (*sub_rte_mut).perminfoindex = 0;
+
             // Copy this RTE into the parent query's rtable
             let query_mut = parent_query as *const pg_sys::Query as *mut pg_sys::Query;
             (*query_mut).rtable = pg_sys::lappend(
                 (*query_mut).rtable,
-                *sub_rte_ptr as *mut std::ffi::c_void,
+                sub_rte_mut as *mut std::ffi::c_void,
             );
             let new_index = pg_sys::list_length((*query_mut).rtable) as u32;
             rte_remap.insert(sub_rte_index, new_index);
