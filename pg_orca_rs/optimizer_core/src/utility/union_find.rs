@@ -24,6 +24,14 @@ impl UnionFind {
         x
     }
 
+    /// Find root without path compression (non-mutable).
+    pub fn find_non_mut(&self, mut x: u32) -> u32 {
+        while self.parent[x as usize] != x {
+            x = self.parent[x as usize];
+        }
+        x
+    }
+
     pub fn union(&mut self, a: u32, b: u32) -> u32 {
         let ra = self.find(a);
         let rb = self.find(b);

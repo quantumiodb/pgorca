@@ -18,6 +18,16 @@ impl CatalogSnapshot {
     }
 }
 
+impl Default for CatalogSnapshot {
+    fn default() -> Self {
+        Self {
+            tables: HashMap::new(),
+            rte_to_table: HashMap::new(),
+            cost_model: CostModel::default(),
+        }
+    }
+}
+
 // ── Cost Model (replaces CostParams) ──────────────────
 
 /// Cost model parameters.

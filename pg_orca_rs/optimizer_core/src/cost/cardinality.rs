@@ -369,17 +369,15 @@ pub fn estimate_selectivity_v2(
     catalog: &CatalogSnapshot,
     table_ids: &[TableId],
 ) -> f64 {
-    // Check for contradictions via range analysis
-    let ranges = collect_column_ranges(predicate);
-    for (_col_id, range) in &ranges {
-        if let (Some(lo), Some(hi)) = (range.lower, range.upper) {
-            if lo > hi {
-                return 0.0; // contradiction detected
-            }
-        }
+    // 1. Build constraint graph to detect cross-column contradictions
+    let mut graph = ColumnConstraintGraph::new();
+    graph.add_predicate(predicate);
+    
+    if graph.is_contradiction() {
+        return 0.0;
     }
 
-    // Use recursive estimation (with MCV/histogram support)
+    // 2. Use recursive estimation (with MCV/histogram support)
     estimate_selectivity_recursive(predicate, catalog, table_ids)
 }
 
@@ -490,7 +488,86 @@ fn estimate_selectivity_recursive(
     }
 }
 
-// ── Helper functions ────────────────────────────────────
+// ── Column Constraint Graph ────────────────────────────
+
+/// ColumnConstraintGraph tracks equivalence classes and range constraints
+/// to detect contradictions and improve cardinality estimation.
+pub struct ColumnConstraintGraph {
+    pub equivalence_classes: EquivalenceClasses,
+    pub range_constraints: HashMap<ColumnId, ColumnRange>,
+}
+
+impl ColumnConstraintGraph {
+    pub fn new() -> Self {
+        Self {
+            equivalence_classes: EquivalenceClasses::new(),
+            range_constraints: HashMap::new(),
+        }
+    }
+
+    /// Extract all constraints (equalities and ranges) from a predicate tree.
+    pub fn add_predicate(&mut self, pred: &ScalarExpr) {
+        self.equivalence_classes.extract_from_predicate(pred);
+        self.collect_ranges_recursive(pred);
+        self.propagate_constraints();
+    }
+
+    fn collect_ranges_recursive(&mut self, pred: &ScalarExpr) {
+        collect_ranges_inner(pred, &mut self.range_constraints);
+    }
+
+    /// Propagate range constraints across equivalence classes.
+    /// E.g., if A = B and A > 10, then B must also be > 10.
+    fn propagate_constraints(&mut self) {
+        let mut group_ranges: HashMap<u32, ColumnRange> = HashMap::new();
+
+        // 1. First pass: Aggregate ranges per equivalence class
+        for (&col_id, range) in &self.range_constraints {
+            let root = self.equivalence_classes.ensure_col_read_only(col_id);
+            if let Some(r) = root {
+                let entry = group_ranges.entry(r).or_insert_with(ColumnRange::unbounded);
+                if let Some(intersected) = entry.intersect(range) {
+                    *entry = intersected;
+                } else {
+                    // Contradiction: set to empty
+                    *entry = ColumnRange { lower: Some(1.0), upper: Some(0.0) };
+                }
+            }
+        }
+
+        // 2. Second pass: Push aggregated ranges back to all columns in the class
+        let col_ids: Vec<ColumnId> = self.equivalence_classes.col_to_idx.keys().cloned().collect();
+        for col_id in col_ids {
+            if let Some(r) = self.equivalence_classes.ensure_col_read_only(col_id) {
+                if let Some(group_range) = group_ranges.get(&r) {
+                    self.range_constraints.insert(col_id, group_range.clone());
+                }
+            }
+        }
+    }
+
+    pub fn is_contradiction(&self) -> bool {
+        for range in self.range_constraints.values() {
+            if let (Some(lo), Some(hi)) = (range.lower, range.upper) {
+                if lo > hi {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+impl EquivalenceClasses {
+    fn ensure_col_read_only(&self, col: ColumnId) -> Option<u32> {
+        self.col_to_idx.get(&col).map(|&idx| self.uf.find_non_mut(idx))
+    }
+}
+
+// Update UnionFind to have a non-mutable find if possible, or just use find.
+// Actually, find in UnionFind usually needs mut for path compression.
+// Let's check UnionFind implementation.
+
 
 fn is_equality_op(oid: u32) -> bool {
     matches!(oid, 96 | 410 | 416 | 670 | 1054 | 98 | 15) // int4eq, int2eq, int8eq, oideq, texteq, etc.
@@ -621,6 +698,100 @@ mod tests {
 
         assert!(ec.are_equivalent(a, c));
         assert!(!ec.are_equivalent(a, ColumnId(4)));
+    }
+
+    #[test]
+    fn test_cross_column_contradiction() {
+        // a = b AND a > 10 AND b < 5 → contradiction
+        let pred = ScalarExpr::BoolExpr {
+            bool_type: BoolExprType::And,
+            args: vec![
+                ScalarExpr::OpExpr {
+                    op_oid: 96, // int4eq
+                    return_type: 16,
+                    args: vec![
+                        ScalarExpr::ColumnRef(ColumnId(1)),
+                        ScalarExpr::ColumnRef(ColumnId(2)),
+                    ],
+                },
+                ScalarExpr::OpExpr {
+                    op_oid: 521, // int4gt
+                    return_type: 16,
+                    args: vec![
+                        ScalarExpr::ColumnRef(ColumnId(1)),
+                        ScalarExpr::Const {
+                            type_oid: 23, typmod: -1, collation: 0,
+                            value: ConstValue::Int32(10), is_null: false,
+                        },
+                    ],
+                },
+                ScalarExpr::OpExpr {
+                    op_oid: 97, // int4lt
+                    return_type: 16,
+                    args: vec![
+                        ScalarExpr::ColumnRef(ColumnId(2)),
+                        ScalarExpr::Const {
+                            type_oid: 23, typmod: -1, collation: 0,
+                            value: ConstValue::Int32(5), is_null: false,
+                        },
+                    ],
+                },
+            ],
+        };
+        let sel = estimate_selectivity_v2(&pred, &CatalogSnapshot::default(), &[]);
+        assert_eq!(sel, 0.0, "expected contradiction selectivity 0.0");
+    }
+
+    #[test]
+    fn test_range_propagation() {
+        // a = b AND a > 100 AND b < 200 → both should have range (100, 200)
+        let pred = ScalarExpr::BoolExpr {
+            bool_type: BoolExprType::And,
+            args: vec![
+                ScalarExpr::OpExpr {
+                    op_oid: 96,
+                    return_type: 16,
+                    args: vec![
+                        ScalarExpr::ColumnRef(ColumnId(1)),
+                        ScalarExpr::ColumnRef(ColumnId(2)),
+                    ],
+                },
+                ScalarExpr::OpExpr {
+                    op_oid: 521,
+                    return_type: 16,
+                    args: vec![
+                        ScalarExpr::ColumnRef(ColumnId(1)),
+                        ScalarExpr::Const {
+                            type_oid: 23, typmod: -1, collation: 0,
+                            value: ConstValue::Int32(100), is_null: false,
+                        },
+                    ],
+                },
+                ScalarExpr::OpExpr {
+                    op_oid: 97,
+                    return_type: 16,
+                    args: vec![
+                        ScalarExpr::ColumnRef(ColumnId(2)),
+                        ScalarExpr::Const {
+                            type_oid: 23, typmod: -1, collation: 0,
+                            value: ConstValue::Int32(200), is_null: false,
+                        },
+                    ],
+                },
+            ],
+        };
+        
+        let mut graph = ColumnConstraintGraph::new();
+        graph.add_predicate(&pred);
+        
+        let range_a = graph.range_constraints.get(&ColumnId(1)).unwrap();
+        let range_b = graph.range_constraints.get(&ColumnId(2)).unwrap();
+        
+        // Both should be [101, 199] due to strict < and > (op_to_range adds/subs 1.0)
+        assert_eq!(range_a.lower, Some(101.0));
+        assert_eq!(range_a.upper, Some(199.0));
+        assert_eq!(range_b.lower, Some(101.0));
+        assert_eq!(range_b.upper, Some(199.0));
     }
 
     #[test]
