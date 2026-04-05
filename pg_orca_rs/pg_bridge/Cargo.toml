@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "lib"]
 
+[[bin]]
+name = "pgrx_embed_pg_bridge"
+path = "src/bin/pgrx_embed.rs"
+
 [features]
 default = ["pg18"]
 pg14 = ["pgrx/pg14", "pgrx-tests/pg14"]
