@@ -410,3 +410,96 @@ impl Scheduler {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use crate::cost::stats::{CostParams, TableStats, ColumnStats};
+    use crate::ir::types::{TableId, ColumnId};
+    use crate::ir::logical::LogicalOp;
+    
+    fn make_test_catalog() -> CatalogSnapshot {
+        let mut tables = HashMap::new();
+        let mut rte_to_table = HashMap::new();
+        tables.insert(TableId(1), TableStats {
+            oid: 16384,
+            name: "t".into(),
+            row_count: 1000.0,
+            page_count: 10,
+            columns: vec![
+                ColumnStats { attnum: 1, name: "a".into(), avg_width: 4, ..Default::default() },
+            ],
+            indexes: vec![],
+            col_id_to_attnum: HashMap::new(),
+        });
+        rte_to_table.insert(1u32, TableId(1));
+        CatalogSnapshot { tables, rte_to_table, cost_params: CostParams::default() }
+    }
+
+    #[test]
+    fn test_derive_logical_props_task() {
+        let mut memo = Memo::new();
+        let catalog = make_test_catalog();
+        let mut ctx = SearchCtx::new(5000);
+
+        let op = Operator::Logical(LogicalOp::Get {
+            table_id: TableId(1),
+            columns: vec![ColumnId(1)],
+            rte_index: 1,
+        });
+        let (group_id, _) = memo.insert_expr(op, vec![], None);
+
+        let mut scheduler = Scheduler::new();
+        scheduler.schedule(Task::DeriveLogicalProps {
+            group_id,
+            state: DeriveLogicalPropsState::Init,
+        });
+
+        // Run scheduler
+        scheduler.run(&mut memo, &catalog, &mut ctx).unwrap();
+
+        // Verify logical properties were derived
+        let props = memo.get_group(group_id).logical_props.get().unwrap();
+        assert_eq!(props.row_count, 1000.0);
+        assert_eq!(props.output_columns, vec![ColumnId(1)]);
+    }
+
+    #[test]
+    fn test_scheduler_task_stack_lifo() {
+        let mut scheduler = Scheduler::new();
+        
+        let dummy_req = RequiredProperties::none();
+        
+        scheduler.schedule(Task::OptimizeGroup {
+            group_id: GroupId(1),
+            required: dummy_req.clone(),
+            upper_bound: 100.0,
+            state: OptimizeGroupState::Init,
+        });
+        
+        scheduler.schedule(Task::OptimizeGroup {
+            group_id: GroupId(2),
+            required: dummy_req.clone(),
+            upper_bound: 50.0,
+            state: OptimizeGroupState::Init,
+        });
+        
+        // Since it's a LIFO stack, popping should return GroupId(2) first
+        let task = scheduler.task_stack.pop().unwrap();
+        if let Task::OptimizeGroup { group_id, upper_bound, .. } = task {
+            assert_eq!(group_id.0, 2);
+            assert_eq!(upper_bound, 50.0);
+        } else {
+            panic!("Expected OptimizeGroup task");
+        }
+        
+        let task = scheduler.task_stack.pop().unwrap();
+        if let Task::OptimizeGroup { group_id, upper_bound, .. } = task {
+            assert_eq!(group_id.0, 1);
+            assert_eq!(upper_bound, 100.0);
+        } else {
+            panic!("Expected OptimizeGroup task");
+        }
+    }
+}
