@@ -47,10 +47,64 @@ pub unsafe fn convert_scalar(
         pg_sys::NodeTag::T_WindowFunc => {
             convert_window_func(node as *mut pg_sys::WindowFunc, col_map)
         }
+        pg_sys::NodeTag::T_CaseExpr => {
+            convert_case_expr(node as *mut pg_sys::CaseExpr, col_map)
+        }
+        pg_sys::NodeTag::T_CoalesceExpr => {
+            convert_coalesce_expr(node as *mut pg_sys::CoalesceExpr, col_map)
+        }
         _ => Err(InboundError::UnsupportedFeature(
             format!("scalar node tag {:?}", tag)
         )),
     }
+}
+
+unsafe fn convert_case_expr(
+    ce: *mut pg_sys::CaseExpr,
+    col_map: &ColumnMapping,
+) -> Result<ScalarExpr, InboundError> {
+    let arg = if !(*ce).arg.is_null() {
+        Some(Box::new(convert_scalar((*ce).arg as *mut pg_sys::Node, col_map)?))
+    } else {
+        None
+    };
+
+    let when_ptrs = list_iter::<pg_sys::CaseWhen>((*ce).args);
+    let mut when_clauses = Vec::new();
+    for when_ptr in &when_ptrs {
+        let cw = *when_ptr;
+        let cond = convert_scalar((*cw).expr as *mut pg_sys::Node, col_map)?;
+        let result = convert_scalar((*cw).result as *mut pg_sys::Node, col_map)?;
+        when_clauses.push((cond, result));
+    }
+
+    let default = if !(*ce).defresult.is_null() {
+        Some(Box::new(convert_scalar((*ce).defresult as *mut pg_sys::Node, col_map)?))
+    } else {
+        None
+    };
+
+    Ok(ScalarExpr::CaseExpr {
+        arg,
+        when_clauses,
+        default,
+        result_type: (*ce).casetype.to_u32(),
+    })
+}
+
+unsafe fn convert_coalesce_expr(
+    ce: *mut pg_sys::CoalesceExpr,
+    col_map: &ColumnMapping,
+) -> Result<ScalarExpr, InboundError> {
+    let arg_ptrs = list_iter::<pg_sys::Node>((*ce).args);
+    let mut args = Vec::new();
+    for arg_ptr in &arg_ptrs {
+        args.push(convert_scalar(*arg_ptr, col_map)?);
+    }
+    Ok(ScalarExpr::Coalesce {
+        args,
+        result_type: (*ce).coalescetype.to_u32(),
+    })
 }
 
 unsafe fn convert_var(

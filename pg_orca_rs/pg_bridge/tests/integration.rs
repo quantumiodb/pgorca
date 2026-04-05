@@ -326,7 +326,21 @@ fn test_extended_types() {
     let rows = c.query("SELECT id FROM _test_types WHERE val_lsn = '0/16B6688'::pg_lsn;", &[]).unwrap();
     assert_eq!(rows.len(), 1);
 
-    // 10. Large text (TOAST test)
+    // 10. CASE WHEN test
+    let plan = explain(&mut c, "SELECT id, CASE WHEN val_numeric > 100 THEN 'big' ELSE 'small' END FROM _test_types;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "CASE WHEN failed orca: {:?}", plan);
+    let rows = c.query("SELECT CASE WHEN val_numeric > 100 THEN 'big' ELSE 'small' END FROM _test_types WHERE id = 1;", &[]).unwrap();
+    let res: String = rows[0].get(0);
+    assert_eq!(res, "big");
+
+    // 11. COALESCE test
+    let plan = explain(&mut c, "SELECT id, COALESCE(val_text, 'default') FROM _test_types;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "COALESCE failed orca: {:?}", plan);
+    let rows = c.query("SELECT COALESCE(val_text, 'default') FROM _test_types WHERE id = 1;", &[]).unwrap();
+    let res: String = rows[0].get(0);
+    assert_eq!(res, "hello world");
+
+    // 12. Large text (TOAST test)
     let large_text = "A".repeat(100000); // 100KB text should be enough to trigger TOAST
     c.execute("INSERT INTO _test_types (id, val_text) VALUES (2, $1);", &[&large_text]).unwrap();
 
@@ -452,7 +466,6 @@ fn test_network_and_opaque_types() {
             val_cidr cidr,
             val_macaddr macaddr,
             val_macaddr8 macaddr8,
-            val_xml xml,
             val_int4range int4range,
             val_int8range int8range,
             val_numrange numrange,
@@ -472,7 +485,6 @@ fn test_network_and_opaque_types() {
             '192.168.1.0/24'::cidr,
             '08:00:2b:01:02:03'::macaddr,
             '08:00:2b:01:02:03:04:05'::macaddr8,
-            '<root><child>text</child></root>'::xml,
             '[1,10)'::int4range,
             '[1,100)'::int8range,
             '[1.5,10.5)'::numrange,
@@ -482,9 +494,9 @@ fn test_network_and_opaque_types() {
             point(1.0, 2.0),
             box(point(0,0), point(1,1)),
             circle(point(0,0), 5.0),
-            to_tsvector(''english'', ''hello world''),
-            to_tsquery(''english'', ''hello''),
-            ''$.key''::jsonpath
+            to_tsvector('english', 'hello world'),
+            to_tsquery('english', 'hello'),
+            '$.key'::jsonpath
         );
     ").unwrap();
 

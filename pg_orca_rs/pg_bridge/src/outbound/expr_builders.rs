@@ -319,6 +319,48 @@ pub unsafe fn build_scalar_expr(
             Ok(wf as *mut pg_sys::Expr)
         }
 
+        ScalarExpr::CaseExpr { arg, when_clauses, default, result_type } => {
+            let ce = palloc_node::<pg_sys::CaseExpr>(pg_sys::NodeTag::T_CaseExpr);
+            (*ce).casetype = pg_sys::Oid::from(*result_type);
+            (*ce).casecollid = pg_sys::Oid::from(0u32);
+            (*ce).location = -1;
+
+            if let Some(a) = arg {
+                (*ce).arg = build_scalar_expr(a, col_map)? as *mut pg_sys::Expr;
+            }
+
+            let mut args_list: *mut pg_sys::List = std::ptr::null_mut();
+            for (cond, result) in when_clauses {
+                let cw = palloc_node::<pg_sys::CaseWhen>(pg_sys::NodeTag::T_CaseWhen);
+                (*cw).expr = build_scalar_expr(cond, col_map)? as *mut pg_sys::Expr;
+                (*cw).result = build_scalar_expr(result, col_map)? as *mut pg_sys::Expr;
+                (*cw).location = -1;
+                args_list = pg_sys::lappend(args_list, cw as *mut std::ffi::c_void);
+            }
+            (*ce).args = args_list;
+
+            if let Some(d) = default {
+                (*ce).defresult = build_scalar_expr(d, col_map)? as *mut pg_sys::Expr;
+            }
+
+            Ok(ce as *mut pg_sys::Expr)
+        }
+
+        ScalarExpr::Coalesce { args, result_type } => {
+            let ce = palloc_node::<pg_sys::CoalesceExpr>(pg_sys::NodeTag::T_CoalesceExpr);
+            (*ce).coalescetype = pg_sys::Oid::from(*result_type);
+            (*ce).coalescecollid = pg_sys::Oid::from(0u32);
+            (*ce).location = -1;
+
+            let mut args_list: *mut pg_sys::List = std::ptr::null_mut();
+            for arg in args {
+                let arg_expr = build_scalar_expr(arg, col_map)?;
+                args_list = pg_sys::lappend(args_list, arg_expr as *mut std::ffi::c_void);
+            }
+            (*ce).args = args_list;
+            Ok(ce as *mut pg_sys::Expr)
+        }
+
         other => Err(OutboundError::PlanBuildError(
             format!("unsupported ScalarExpr variant: {:?}", std::mem::discriminant(other))
         )),
