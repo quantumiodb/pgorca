@@ -236,9 +236,65 @@ fn m1_simple_scan() {
     let plan = explain(&mut c, "SELECT * FROM _test_t;");
     assert!(plan.iter().any(|l| l.contains("Seq Scan")), "plan: {:?}", plan);
     assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "plan: {:?}", plan);
+}
 
-    let rows = query_strings(&mut c, "SELECT * FROM _test_t;");
-    assert_eq!(rows.len(), 2);
+#[test]
+fn test_extended_types() {
+    let mut c = connect();
+    setup(&mut c);
+    c.batch_execute("
+        DROP TABLE IF EXISTS _test_types;
+        CREATE TABLE _test_types (
+            id int,
+            val_numeric numeric,
+            val_date date,
+            val_ts timestamp,
+            val_tstz timestamptz,
+            val_text text
+        );
+        INSERT INTO _test_types VALUES (
+            1, 
+            123.456, 
+            '2024-01-01', 
+            '2024-01-01 12:00:00', 
+            '2024-01-01 12:00:00+00',
+            'hello world'
+        );
+    ").unwrap();
+
+    // 1. Numeric test
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_numeric = 123.456;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Numeric failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_numeric = 123.456;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 2. Date test
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_date = '2024-01-01'::date;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Date failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_date = '2024-01-01'::date;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 3. Timestamp test
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_ts = '2024-01-01 12:00:00'::timestamp;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Timestamp failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_ts = '2024-01-01 12:00:00'::timestamp;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 4. TimestampTz test
+    let plan = explain(&mut c, "SELECT * FROM _test_types WHERE val_tstz = '2024-01-01 12:00:00+00'::timestamptz;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "TimestampTz failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_types WHERE val_tstz = '2024-01-01 12:00:00+00'::timestamptz;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 5. Large text (TOAST test)
+    let large_text = "A".repeat(100000); // 100KB text should be enough to trigger TOAST
+    c.execute("INSERT INTO _test_types (id, val_text) VALUES (2, $1);", &[&large_text]).unwrap();
+
+    let plan = explain(&mut c, "SELECT val_text FROM _test_types WHERE id = 2;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "Large text failed orca: {:?}", plan);
+    let rows = c.query("SELECT length(val_text) FROM _test_types WHERE id = 2;", &[]).unwrap();
+    let len: i32 = rows[0].get(0);
+    assert_eq!(len, 100000);
 }
 
 // ── M3: WHERE clause filter ─────────────────────────────
