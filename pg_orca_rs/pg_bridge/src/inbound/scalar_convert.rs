@@ -173,11 +173,10 @@ unsafe fn convert_const(c: *mut pg_sys::Const) -> Result<ScalarExpr, InboundErro
                 ConstValue::OpaqueText(String::from_utf8_lossy(&text).into_owned())
             }
             _ => {
-                // Enum, domain types, and any other unknown type: use PG output function.
-                // OpaqueText ensures outbound correctly reconstructs via input function
-                // rather than incorrectly treating the datum as a text varlena.
-                let text = datum_to_text_via_output((*c).consttype, datum);
-                ConstValue::OpaqueText(String::from_utf8_lossy(&text).into_owned())
+                // Unknown type: refuse and let PG fall back to standard_planner.
+                return Err(InboundError::UnsupportedFeature(
+                    format!("const type OID {}", type_oid)
+                ));
             }
         }
     };
