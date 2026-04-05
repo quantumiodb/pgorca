@@ -28,7 +28,12 @@ fn make_catalog(num_tables: u32) -> CatalogSnapshot {
             col_id_to_attnum: HashMap::new(),
         });
     }
-    CatalogSnapshot { tables, rte_to_table, cost_model: CostModel::default() }
+    CatalogSnapshot { 
+        tables, 
+        rte_to_table, 
+        cost_model: CostModel::default(),
+        parallel_safe: true,
+    }
 }
 
 // Strategy to generate random LogicalExpr trees

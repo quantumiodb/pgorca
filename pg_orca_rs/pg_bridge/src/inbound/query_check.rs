@@ -35,6 +35,14 @@ pub unsafe fn is_supported_query(query: &pg_sys::Query) -> Result<(), InboundErr
     Ok(())
 }
 
+/// Check if the query is safe to run in parallel mode using PG's max_parallel_hazard.
+pub unsafe fn is_parallel_safe_query(query: *mut pg_sys::Query) -> bool {
+    let hazard = pg_sys::max_parallel_hazard(query);
+    // 's' = safe, 'r' = restricted, 'u' = unsafe.
+    // For now, we only consider 's' as fully parallel safe for our optimizer rules.
+    hazard == b's' as i8
+}
+
 unsafe fn check_range_table(rtable: *mut pg_sys::List) -> Result<(), InboundError> {
     if rtable.is_null() {
         return Err(InboundError::UnsupportedFeature("empty range table".into()));

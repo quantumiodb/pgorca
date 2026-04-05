@@ -10,6 +10,8 @@ pub struct CatalogSnapshot {
     /// Maps RTE index (1-based) → TableId
     pub rte_to_table: HashMap<RteIndex, TableId>,
     pub cost_model: CostModel,
+    /// Whether the query has been verified parallel-safe (via max_parallel_hazard).
+    pub parallel_safe: bool,
 }
 
 impl CatalogSnapshot {
@@ -24,6 +26,7 @@ impl Default for CatalogSnapshot {
             tables: HashMap::new(),
             rte_to_table: HashMap::new(),
             cost_model: CostModel::default(),
+            parallel_safe: false,
         }
     }
 }

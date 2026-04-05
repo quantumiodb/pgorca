@@ -310,6 +310,7 @@ mod tests {
             tables: HashMap::new(),
             rte_to_table: HashMap::new(),
             cost_model: CostModel::default(),
+            parallel_safe: true,
         };
         let op = Operator::Logical(LogicalOp::Get {
             table_id: TableId(1),

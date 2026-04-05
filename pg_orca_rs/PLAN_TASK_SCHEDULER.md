@@ -148,7 +148,21 @@ impl Scheduler {
 3. **支持提前终止与细粒度剪枝**：如果在某个时刻 `upper_bound` 预算已经耗尽，我们可以直接清理掉栈中相关的待执行任务，而不需要在每层递归中传递和检查返回值。
 4. **迈向并发计算的基石**：一旦我们将 `Vec<Task>` 替换为无锁并发队列（如 `crossbeam-deque`），再启动一组 Worker 线程去抢任务，这个设计就能顺理成章地平滑升级为真正的并行 Cascades 优化器（完全对标 GPORCA）。
 
-## 6. 实施路径 (Implementation Path)
+## 6. 深度解析：依赖处理与并发演进 (参考 TensorFlow 设计)
+
+### 6.1 依赖处理的进化路径
+在 v0.2 版本中，我们通过 **LIFO (后进先出) 栈序** 模拟了递归依赖：父任务先改状态压栈，子任务再压栈覆盖其上。父任务被“唤醒”时，子任务的结果已写入 Memo。
+
+但在并发模式下（v0.4+），LIFO 将失效。我们将借鉴 **TensorFlow Executor** 和 **GPORCA** 的核心设计：
+
+*   **依赖计数器 (Pending Dependencies)**: 每个 `Task` 维护一个 `AtomicUsize`。父任务在派生子任务时，初始化计数器。
+*   **反向通知 (Signal & Wakeup)**: 子任务执行完毕后，调用 `parent.decrement_pending()`。
+*   **零等候调度**: 只有计数器归零的任务才会进入 **Ready Queue (就绪队列)**。这彻底解决了“父线程死等子线程”的问题，极大提升了多核利用率。
+
+### 6.2 负载均衡 (Work Stealing)
+得益于任务的原子化，未来可以引入类似 `Rayon` 或 `Tokio` 的工作窃取算法。不同 CPU 核心可以并行探索 Memo 图的不同分支，通过这种数据流驱动 (Dataflow-driven) 的方式，`pg_orca_rs` 将具备处理超大规模复杂查询（如几百张表的自动 Join Reorder）的潜力。
+
+## 7. 实施路径 (Implementation Path)
 
 1. **Step 1: 定义 Tasks 与 States**: 在 `search/task.rs` 中定义好完整的 Enum 和状态流转标识。
 2. **Step 2: 构建 Scheduler**: 创建 `Scheduler` 结构体，替换掉现有的递归 `optimize_group` 函数。

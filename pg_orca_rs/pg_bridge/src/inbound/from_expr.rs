@@ -10,7 +10,7 @@ use optimizer_core::ir::types::{TableId, IndexAmType, SortKey, ColumnId, AggExpr
 
 use super::InboundError;
 use super::column_mapping::ColumnMapping;
-use super::query_check::is_supported_query;
+use super::query_check::{is_supported_query, is_parallel_safe_query};
 use super::scalar_convert::convert_scalar;
 use crate::utils::pg_list::{list_iter, list_iter_oid, list_length};
 
@@ -177,7 +177,8 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
         max_parallel_workers: pg_sys::max_parallel_workers_per_gather as usize,
     };
 
-    let mut catalog = CatalogSnapshot { tables, rte_to_table, cost_model };
+    let parallel_safe = is_parallel_safe_query(query as *const pg_sys::Query as *mut pg_sys::Query);
+    let mut catalog = CatalogSnapshot { tables, rte_to_table, cost_model, parallel_safe };
 
     // 4. Build logical expression tree
     let mut logical_expr = if !query.setOperations.is_null() {

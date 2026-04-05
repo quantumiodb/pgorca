@@ -2,13 +2,13 @@
 
 ## 前置条件
 
-- PostgreSQL 17 已编译安装（需要 `pg_config`、`initdb`、`pg_ctl`、`psql`）
-- Rust toolchain + `cargo-pgrx` 0.17.0
-- `pgrx` 已初始化：`cargo pgrx init --pg17=/path/to/pg_config`
+- PostgreSQL 18 已编译安装（需要 `pg_config`、`initdb`、`pg_ctl`、`psql`）
+- Rust toolchain + `cargo-pgrx` 0.18.0
+- `pgrx` 已初始化：`cargo pgrx init --pg18=/path/to/pg_config`
 
 ```bash
 # 设置环境变量（后续所有命令都依赖此变量）
-export PGRX_PG_CONFIG_PATH=/home/administrator/workspace/install/bin/pg_config
+export PGRX_PG_CONFIG_PATH=/Users/jianghua/pg-install/bin/pg_config
 ```
 
 ## 编译
@@ -127,10 +127,10 @@ cp pg_bridge/test/results/base.out pg_bridge/test/expected/base.out
 ## 常见问题
 
 **Q: `pg_bridge.so not found` 报错**
-A: 先运行 `cargo pgrx install --release --pg-config $PGRX_PG_CONFIG_PATH`
+A: 先运行 `cargo pgrx install --pg-config $PGRX_PG_CONFIG_PATH`
 
 **Q: 测试全部 `FAILED` + `Could not obtain test mutex`**
-A: PG 实例崩溃导致。检查是否用了 debug 构建的 PG（assert 会 abort）。用 release PG 运行测试。
+A: PG 实例崩溃导致。检查是否用了 debug 构建的 PG（assert 会 abort）
 
 **Q: SQL 回归输出 diff**
 A: 运行 `diff -u test/expected/base.out test/results/base.out` 查看差异。如果变更合理，`cp results/base.out expected/base.out` 更新基准。

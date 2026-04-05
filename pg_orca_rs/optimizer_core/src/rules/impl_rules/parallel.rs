@@ -36,7 +36,11 @@ impl Rule for Get2ParallelSeqScan {
             _ => return vec![],
         };
 
-        // Only parallelize large tables.
+        // Only parallelize when the query is parallel-safe and the table is large enough.
+        if !catalog.parallel_safe {
+            return vec![];
+        }
+
         let page_count = catalog.tables.get(&table_id)
             .map(|ts| ts.page_count)
             .unwrap_or(0);
@@ -101,6 +105,10 @@ impl Rule for Select2ParallelSeqScan {
             None => return vec![],
         };
 
+        if !catalog.parallel_safe {
+            return vec![];
+        }
+
         let page_count = catalog.tables.get(&table_id)
             .map(|ts| ts.page_count)
             .unwrap_or(0);
@@ -143,7 +151,7 @@ mod tests {
             col_id_to_attnum: HashMap::new(),
         });
         rte_to_table.insert(1u32, TableId(1));
-        CatalogSnapshot { tables, rte_to_table, cost_model: CostModel::default() }
+        CatalogSnapshot { tables, rte_to_table, cost_model: CostModel::default(), parallel_safe: true }
     }
 
     #[test]

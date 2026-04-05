@@ -276,7 +276,12 @@ mod tests {
             col_id_to_attnum: HashMap::new(),
         });
         rte_to_table.insert(1u32, TableId(1));
-        CatalogSnapshot { tables, rte_to_table, cost_model: CostModel::default() }
+        CatalogSnapshot { 
+            tables, 
+            rte_to_table, 
+            cost_model: CostModel::default(),
+            parallel_safe: true,
+        }
     }
 
     #[test]

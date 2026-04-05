@@ -682,6 +682,7 @@ mod tests {
             tables,
             rte_to_table,
             cost_model: CostModel::default(),
+            parallel_safe: true,
         };
         (catalog, tid)
     }

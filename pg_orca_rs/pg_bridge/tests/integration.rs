@@ -555,9 +555,9 @@ fn test_network_and_opaque_types() {
     assert_eq!(rows.len(), 1);
 
     // 10. tsvector / tsquery — use @@ operator
-    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_tsvector @@ to_tsquery('english', 'hello');");
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_tsvector @@ 'hello'::tsquery;");
     assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "tsvector failed orca: {:?}", plan);
-    let rows = c.query("SELECT id FROM _test_opaque WHERE val_tsvector @@ to_tsquery('english', 'hello');", &[]).unwrap();
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_tsvector @@ 'hello'::tsquery;", &[]).unwrap();
     assert_eq!(rows.len(), 1);
 
     c.batch_execute("DROP TABLE IF EXISTS _test_opaque CASCADE;").unwrap();

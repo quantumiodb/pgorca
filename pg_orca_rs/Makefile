@@ -1,4 +1,4 @@
-PG_CONFIG ?= /home/administrator/workspace/install/bin/pg_config
+PG_CONFIG ?= /Users/jianghua/pg-install/bin/pg_config
 export PGRX_PG_CONFIG_PATH = $(PG_CONFIG)
 
 CARGO = cargo
