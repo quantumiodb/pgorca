@@ -398,8 +398,11 @@ unsafe fn build_const(
             (*buf).month = *months;
             (false, std::mem::size_of::<pg_sys::Interval>() as i32, pg_sys::Datum::from(buf as usize))
         }
-        ConstValue::Bit(s) | ConstValue::Json(s) | ConstValue::Jsonb(s) => {
-            // Use PG input function to reconstruct the datum from text representation
+        ConstValue::Bit(s) | ConstValue::Json(s) | ConstValue::Jsonb(s)
+        | ConstValue::OpaqueText(s) => {
+            // Use PG input function to reconstruct the datum from text representation.
+            // This covers bit/varbit, json, jsonb, inet, cidr, macaddr, xml, range types,
+            // geometric types, tsvector, tsquery, jsonpath, enums, and other opaque types.
             let mut input_fn = pg_sys::Oid::INVALID;
             let mut ioparam = pg_sys::Oid::INVALID;
             pg_sys::getTypeInputInfo(pg_sys::Oid::from(type_oid), &mut input_fn, &mut ioparam);

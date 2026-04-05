@@ -114,5 +114,9 @@ pub enum ConstValue {
     // JSON/JSONB (stored as text)
     Json(String),
     Jsonb(String),
+    // Opaque types: stored as text via PG output function, reconstructed via input function.
+    // Used for inet, cidr, macaddr, macaddr8, xml, range types, geometric types,
+    // tsvector, tsquery, jsonpath, enum, and any other type not given a dedicated variant.
+    OpaqueText(String),
     Null,
 }

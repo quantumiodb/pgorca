@@ -155,15 +155,29 @@ unsafe fn convert_const(c: *mut pg_sys::Const) -> Result<ScalarExpr, InboundErro
                 let text = datum_to_text_via_output((*c).consttype, datum);
                 ConstValue::Bit(String::from_utf8_lossy(&text).into_owned())
             }
-            _ => {
-                // For enum, range, and other unknown types: use PG output function
-                // to get a text representation that preserves the value.
-                // The type_oid in ScalarExpr::Const still carries the real type.
+            // Network types
+            pg_sys::INETOID | pg_sys::CIDROID | pg_sys::MACADDROID | pg_sys::MACADDR8OID
+            // XML
+            | pg_sys::XMLOID
+            // Range types
+            | pg_sys::INT4RANGEOID | pg_sys::INT8RANGEOID | pg_sys::NUMRANGEOID
+            | pg_sys::DATERANGEOID | pg_sys::TSRANGEOID | pg_sys::TSTZRANGEOID
+            // Geometric types
+            | pg_sys::POINTOID | pg_sys::BOXOID | pg_sys::CIRCLEOID | pg_sys::LSEGOID
+            | pg_sys::PATHOID | pg_sys::POLYGONOID | pg_sys::LINEOID
+            // Full-text search types
+            | pg_sys::TSVECTOROID | pg_sys::TSQUERYOID
+            // JSON path
+            | pg_sys::JSONPATHOID => {
                 let text = datum_to_text_via_output((*c).consttype, datum);
-                match std::str::from_utf8(&text) {
-                    Ok(s) => ConstValue::Text(s.to_string()),
-                    Err(_) => ConstValue::Int64(datum.value() as i64),
-                }
+                ConstValue::OpaqueText(String::from_utf8_lossy(&text).into_owned())
+            }
+            _ => {
+                // Enum, domain types, and any other unknown type: use PG output function.
+                // OpaqueText ensures outbound correctly reconstructs via input function
+                // rather than incorrectly treating the datum as a text varlena.
+                let text = datum_to_text_via_output((*c).consttype, datum);
+                ConstValue::OpaqueText(String::from_utf8_lossy(&text).into_owned())
             }
         }
     };

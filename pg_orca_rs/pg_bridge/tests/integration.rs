@@ -437,6 +437,120 @@ fn test_special_types() {
     c.batch_execute("DROP TABLE IF EXISTS _test_special CASCADE; DROP TYPE IF EXISTS mood CASCADE;").unwrap();
 }
 
+// ── Category 1 & 2 types: inet, cidr, macaddr, xml, ranges, geometric, fts ──
+
+#[test]
+fn test_network_and_opaque_types() {
+    let mut c = connect();
+    setup(&mut c);
+    enable_orca(&mut c);
+    c.batch_execute("
+        DROP TABLE IF EXISTS _test_opaque CASCADE;
+        CREATE TABLE _test_opaque (
+            id int,
+            val_inet inet,
+            val_cidr cidr,
+            val_macaddr macaddr,
+            val_macaddr8 macaddr8,
+            val_xml xml,
+            val_int4range int4range,
+            val_int8range int8range,
+            val_numrange numrange,
+            val_daterange daterange,
+            val_tsrange tsrange,
+            val_tstzrange tstzrange,
+            val_point point,
+            val_box box,
+            val_circle circle,
+            val_tsvector tsvector,
+            val_tsquery tsquery,
+            val_jsonpath jsonpath
+        );
+        INSERT INTO _test_opaque VALUES (
+            1,
+            '192.168.1.1'::inet,
+            '192.168.1.0/24'::cidr,
+            '08:00:2b:01:02:03'::macaddr,
+            '08:00:2b:01:02:03:04:05'::macaddr8,
+            '<root><child>text</child></root>'::xml,
+            '[1,10)'::int4range,
+            '[1,100)'::int8range,
+            '[1.5,10.5)'::numrange,
+            '[2024-01-01,2025-01-01)'::daterange,
+            '[2024-01-01 00:00:00,2025-01-01 00:00:00)'::tsrange,
+            '[2024-01-01 00:00:00+00,2025-01-01 00:00:00+00)'::tstzrange,
+            point(1.0, 2.0),
+            box(point(0,0), point(1,1)),
+            circle(point(0,0), 5.0),
+            to_tsvector(''english'', ''hello world''),
+            to_tsquery(''english'', ''hello''),
+            ''$.key''::jsonpath
+        );
+    ").unwrap();
+
+    // 1. inet
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_inet = '192.168.1.1'::inet;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "inet failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_inet = '192.168.1.1'::inet;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 2. cidr
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_cidr = '192.168.1.0/24'::cidr;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "cidr failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_cidr = '192.168.1.0/24'::cidr;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 3. macaddr
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_macaddr = '08:00:2b:01:02:03'::macaddr;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "macaddr failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_macaddr = '08:00:2b:01:02:03'::macaddr;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 4. macaddr8
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_macaddr8 = '08:00:2b:01:02:03:04:05'::macaddr8;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "macaddr8 failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_macaddr8 = '08:00:2b:01:02:03:04:05'::macaddr8;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 5. int4range
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_int4range = '[1,10)'::int4range;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "int4range failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_int4range = '[1,10)'::int4range;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 6. int8range
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_int8range = '[1,100)'::int8range;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "int8range failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_int8range = '[1,100)'::int8range;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 7. numrange
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_numrange = '[1.5,10.5)'::numrange;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "numrange failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_numrange = '[1.5,10.5)'::numrange;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 8. daterange
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_daterange = '[2024-01-01,2025-01-01)'::daterange;");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "daterange failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_daterange = '[2024-01-01,2025-01-01)'::daterange;", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 9. point (geometric — use ~= operator for equality)
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_point ~= point(1.0, 2.0);");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "point failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_point ~= point(1.0, 2.0);", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // 10. tsvector / tsquery — use @@ operator
+    let plan = explain(&mut c, "SELECT * FROM _test_opaque WHERE val_tsvector @@ to_tsquery('english', 'hello');");
+    assert!(plan.iter().any(|l| l.contains("Optimizer: pg_orca")), "tsvector failed orca: {:?}", plan);
+    let rows = c.query("SELECT id FROM _test_opaque WHERE val_tsvector @@ to_tsquery('english', 'hello');", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+
+    c.batch_execute("DROP TABLE IF EXISTS _test_opaque CASCADE;").unwrap();
+}
+
 // ── M3: WHERE clause filter ─────────────────────────────
 
 #[test]
