@@ -1,5 +1,6 @@
 use crate::properties::required::RequiredProperties;
 use crate::properties::delivered::DeliveredProperties;
+use crate::properties::parallel::Parallelism;
 use super::types::*;
 use super::scalar::ScalarExpr;
 
@@ -29,15 +30,22 @@ impl PhysicalPropertyProvider for PhysicalOp {
                     // Extract column ids from the merge clause's left and right keys
                     // For now, we return empty requirement (fallback to basic property framework logic)
                 }
-                RequiredProperties::none() 
+                RequiredProperties::serial()
             }
             PhysicalOp::Agg { strategy: AggStrategy::Sorted, .. } => {
                 // Group by columns should be requested as sorting keys.
+                RequiredProperties::serial()
+            }
+            // Gather/GatherMerge: children may produce Partial output — no serial req.
+            PhysicalOp::Gather { .. } | PhysicalOp::GatherMerge { .. } => {
                 RequiredProperties::none()
             }
-            PhysicalOp::Sort { .. } => RequiredProperties::none(),
+            // Sort: child output may be parallel (Sort propagates parallelism in derive_delivered).
+            // But we don't want a parallel sort here — require serial for simplicity.
+            PhysicalOp::Sort { .. } => RequiredProperties::serial(),
             PhysicalOp::Limit { .. } | PhysicalOp::Unique { .. } => req_props.clone(),
-            _ => RequiredProperties::none(),
+            // All other operators (HashJoin, NestLoop, etc.) require serial children.
+            _ => RequiredProperties::serial(),
         }
     }
 
@@ -46,8 +54,16 @@ impl PhysicalPropertyProvider for PhysicalOp {
         children_delivered: &[DeliveredProperties],
     ) -> DeliveredProperties {
         match self {
-            PhysicalOp::Sort { keys } => DeliveredProperties { ordering: keys.clone() },
-            PhysicalOp::IndexScan { index_order_keys, .. } => DeliveredProperties { ordering: index_order_keys.clone() },
+            PhysicalOp::Sort { keys } => DeliveredProperties {
+                ordering: keys.clone(),
+                parallelism: children_delivered.first()
+                    .map(|c| c.parallelism.clone())
+                    .unwrap_or(Parallelism::Serial),
+            },
+            PhysicalOp::IndexScan { index_order_keys, .. } => DeliveredProperties {
+                ordering: index_order_keys.clone(),
+                parallelism: Parallelism::Serial,
+            },
             PhysicalOp::Limit { .. } | PhysicalOp::Unique { .. } => {
                 if children_delivered.is_empty() {
                     DeliveredProperties::none()
@@ -55,6 +71,18 @@ impl PhysicalPropertyProvider for PhysicalOp {
                     children_delivered[0].clone()
                 }
             }
+            PhysicalOp::ParallelSeqScan { num_workers, .. } => DeliveredProperties {
+                ordering: Vec::new(),
+                parallelism: Parallelism::Partial { num_workers: *num_workers },
+            },
+            PhysicalOp::Gather { .. } => DeliveredProperties {
+                ordering: Vec::new(),
+                parallelism: Parallelism::Serial,
+            },
+            PhysicalOp::GatherMerge { sort_keys, .. } => DeliveredProperties {
+                ordering: sort_keys.clone(),
+                parallelism: Parallelism::Serial,
+            },
             _ => DeliveredProperties::none(),
         }
     }
@@ -134,6 +162,23 @@ pub enum PhysicalOp {
 
     // ── Auxiliary ────────────────────────────
     Material,
+
+    // ── Parallel ─────────────────────────────
+    /// Parallel sequential scan — produces a partial result stream.
+    /// Maps to PG SeqScan with parallel_aware = true.
+    ParallelSeqScan {
+        scanrelid: RteIndex,
+        num_workers: usize,
+    },
+    /// Gathers parallel worker results into a single serial stream.
+    Gather {
+        num_workers: usize,
+    },
+    /// Gathers and merges sorted parallel worker output preserving order.
+    GatherMerge {
+        num_workers: usize,
+        sort_keys: Vec<SortKey>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -4,6 +4,7 @@ use crate::ir::physical::PhysicalOp;
 use crate::ir::operator::Operator;
 use crate::ir::scalar::ScalarExpr;
 use crate::memo::{Memo, GroupId};
+use crate::memo::group::EnforcerKind;
 use crate::properties::required::{RequiredProperties, RequiredPropsKey};
 use crate::OptimizerError;
 
@@ -89,17 +90,70 @@ pub fn extract_plan(
         width,
     };
 
-    if winner.needs_enforcer {
-        plan = PhysicalPlan {
-            op: PhysicalOp::Sort { keys: required.ordering.clone() },
-            children: vec![plan],
-            output_columns,
-            target_list,
-            qual: vec![],
-            cost: winner.cost.clone(),
-            rows,
-            width,
-        };
+    match &winner.enforcer {
+        EnforcerKind::None => {}
+        EnforcerKind::Sort { keys } => {
+            plan = PhysicalPlan {
+                op: PhysicalOp::Sort { keys: keys.clone() },
+                children: vec![plan],
+                output_columns,
+                target_list,
+                qual: vec![],
+                cost: winner.cost.clone(),
+                rows,
+                width,
+            };
+        }
+        EnforcerKind::Gather { num_workers } => {
+            plan = PhysicalPlan {
+                op: PhysicalOp::Gather { num_workers: *num_workers },
+                children: vec![plan],
+                output_columns,
+                target_list,
+                qual: vec![],
+                cost: winner.cost.clone(),
+                rows,
+                width,
+            };
+        }
+        EnforcerKind::GatherMerge { num_workers, sort_keys } => {
+            plan = PhysicalPlan {
+                op: PhysicalOp::GatherMerge {
+                    num_workers: *num_workers,
+                    sort_keys: sort_keys.clone(),
+                },
+                children: vec![plan],
+                output_columns,
+                target_list,
+                qual: vec![],
+                cost: winner.cost.clone(),
+                rows,
+                width,
+            };
+        }
+        EnforcerKind::GatherThenSort { num_workers, sort_keys } => {
+            // Wrap in Gather first, then Sort on top.
+            let gathered = PhysicalPlan {
+                op: PhysicalOp::Gather { num_workers: *num_workers },
+                children: vec![plan],
+                output_columns: output_columns.clone(),
+                target_list: target_list.clone(),
+                qual: vec![],
+                cost: winner.cost.clone(),
+                rows,
+                width,
+            };
+            plan = PhysicalPlan {
+                op: PhysicalOp::Sort { keys: sort_keys.clone() },
+                children: vec![gathered],
+                output_columns,
+                target_list,
+                qual: vec![],
+                cost: winner.cost.clone(),
+                rows,
+                width,
+            };
+        }
     }
 
     Ok(plan)

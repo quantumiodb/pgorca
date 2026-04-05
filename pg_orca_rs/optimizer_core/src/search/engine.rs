@@ -62,7 +62,9 @@ pub fn optimize_with_timeout(
     memo.set_root(root);
 
     let mut ctx = SearchCtx::new(timeout_ms);
-    let required = RequiredProperties::none();
+    // The top-level plan must always be serial — PG's executor cannot consume
+    // a partial (parallel-worker) stream directly.
+    let required = RequiredProperties::serial();
     
     let mut scheduler = Scheduler::new();
     scheduler.schedule(Task::OptimizeGroup {
@@ -230,7 +232,8 @@ pub(super) fn derive_props(
 
 pub(super) fn get_page_count(op: &PhysicalOp, catalog: &CatalogSnapshot) -> u64 {
     match op {
-        PhysicalOp::SeqScan { scanrelid } => {
+        PhysicalOp::SeqScan { scanrelid }
+        | PhysicalOp::ParallelSeqScan { scanrelid, .. } => {
             catalog.get_table_by_rte(*scanrelid)
                 .map(|ts| ts.page_count)
                 .unwrap_or_else(|| {

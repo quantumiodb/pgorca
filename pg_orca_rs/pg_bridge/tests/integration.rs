@@ -1097,6 +1097,82 @@ fn cost_model_damping_guc() {
     c.batch_execute("DROP TABLE IF EXISTS _test_damp CASCADE;").unwrap();
 }
 
+// ── M11: Parallel query ─────────────────────────────────
+
+#[test]
+fn parallel_seq_scan_gather() {
+    let mut c = connect();
+    enable_orca(&mut c);
+
+    // Enable parallel query in PG.
+    c.batch_execute(
+        "SET max_parallel_workers_per_gather = 2;
+         SET min_parallel_table_scan_size = '0';
+         SET parallel_setup_cost = 0;
+         SET parallel_tuple_cost = 0;",
+    )
+    .unwrap();
+
+    // Create a table large enough to trigger our parallel scan rule (>= 1024 pages).
+    // We artificially bump page count via relpages in pg_class after ANALYZE.
+    c.batch_execute(
+        "DROP TABLE IF EXISTS _test_parallel CASCADE;
+         CREATE TABLE _test_parallel (a int, b text);
+         INSERT INTO _test_parallel
+           SELECT i, md5(i::text)
+           FROM generate_series(1, 10000) i;
+         ANALYZE _test_parallel;
+         -- Force page count large enough for parallel rule (>= 1024 pages).
+         UPDATE pg_class SET relpages = 2000
+           WHERE relname = '_test_parallel';",
+    )
+    .unwrap();
+
+    let plan = explain(&mut c, "SELECT * FROM _test_parallel;");
+    eprintln!("parallel_seq_scan plan: {:?}", plan);
+
+    // The plan should come from pg_orca.
+    assert!(
+        plan.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "plan not from pg_orca: {:?}", plan,
+    );
+    // The plan should include a Gather or Parallel Seq Scan node.
+    let has_gather = plan.iter().any(|l| l.contains("Gather") || l.contains("Parallel Seq Scan"));
+    assert!(has_gather, "expected Gather/Parallel Seq Scan in plan: {:?}", plan);
+
+    // Results must be correct.
+    let rows = c
+        .query("SELECT count(*) FROM _test_parallel;", &[])
+        .unwrap();
+    let cnt: i64 = rows[0].get(0);
+    assert_eq!(cnt, 10000, "wrong row count: {}", cnt);
+
+    c.batch_execute("DROP TABLE IF EXISTS _test_parallel CASCADE;").unwrap();
+}
+
+#[test]
+fn parallel_small_table_no_gather() {
+    let mut c = connect();
+    enable_orca(&mut c);
+
+    // A small table (well under 1024 pages) should NOT get a Gather node.
+    c.batch_execute(
+        "DROP TABLE IF EXISTS _test_small CASCADE;
+         CREATE TABLE _test_small (a int, b text);
+         INSERT INTO _test_small VALUES (1, 'x'), (2, 'y');
+         ANALYZE _test_small;",
+    )
+    .unwrap();
+
+    let plan = explain(&mut c, "SELECT * FROM _test_small;");
+    eprintln!("small table plan: {:?}", plan);
+
+    let has_gather = plan.iter().any(|l| l.contains("Gather"));
+    assert!(!has_gather, "unexpected Gather on small table: {:?}", plan);
+
+    c.batch_execute("DROP TABLE IF EXISTS _test_small CASCADE;").unwrap();
+}
+
 /// Extract the first "rows=NNN" estimate from EXPLAIN output lines.
 fn extract_rows_estimate(plan: &[String]) -> Option<f64> {
     for line in plan {
@@ -1213,20 +1289,21 @@ fn pg_regress_int4() {
 
 // ── SQL regression tests (test/sql/*.sql vs test/expected/*.out) ─
 
-#[test]
-fn sql_regress_base() {
+/// Run a SQL file through psql and compare output against test/expected/<name>.out.
+/// On first run (no expected file), saves actual output as the baseline.
+fn run_sql_regress(name: &str) {
     let inst = pg();
     let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test");
-    let sql_file = test_dir.join("sql/base.sql");
+    let sql_file = test_dir.join(format!("sql/{}.sql", name));
     assert!(sql_file.exists(), "missing {}", sql_file.display());
 
-    // Run SQL via psql (set LD_LIBRARY_PATH to PG's own libdir to avoid libpq conflicts)
     let lib_dir = cmd_output(
         &std::env::var("PGRX_PG_CONFIG_PATH").unwrap_or("pg_config".into()),
         &["--libdir"],
     );
     let output = Command::new(inst.pg_bin.join("psql"))
         .args([
+            "-X", "-a", "-q",
             "-h", "127.0.0.1",
             "-p", &inst.port.to_string(),
             "-U", &whoami(),
@@ -1240,49 +1317,41 @@ fn sql_regress_base() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Save actual output for inspection
-    let actual_file = test_dir.join("results/base.out");
+    let actual_file = test_dir.join(format!("results/{}.out", name));
     std::fs::create_dir_all(test_dir.join("results")).ok();
     std::fs::write(&actual_file, stdout.as_bytes()).ok();
 
-    // Check no fatal errors (connection lost = crash)
     assert!(
         !stderr.contains("server closed the connection unexpectedly"),
-        "SQL regression test crashed!\nstderr: {}\nSee: {}",
-        stderr,
-        actual_file.display(),
+        "SQL regression test '{}' crashed!\nstderr: {}\nSee: {}",
+        name, stderr, actual_file.display(),
     );
     assert!(
         !stderr.contains("FATAL"),
-        "SQL regression test hit FATAL error!\nstderr: {}",
-        stderr,
+        "SQL regression test '{}' hit FATAL error!\nstderr: {}",
+        name, stderr,
     );
-    // psql exit code 0 means all queries ran (even if some had ERRORs from fallback)
     assert!(
         output.status.success(),
-        "psql exited with {}.\nstderr: {}",
-        output.status,
-        stderr,
+        "psql exited with {} for '{}'.\nstderr: {}",
+        output.status, name, stderr,
     );
+    assert!(!stdout.is_empty(), "psql produced no output for '{}'", name);
 
-    // Verify output is non-empty
-    assert!(!stdout.is_empty(), "psql produced no output");
-
-    // Compare against expected output (test/expected/base.out)
-    let expected_file = test_dir.join("expected/base.out");
+    let expected_file = test_dir.join(format!("expected/{}.out", name));
     if expected_file.exists() {
         let expected = std::fs::read_to_string(&expected_file).unwrap();
         if stdout != expected {
             panic!(
-                "SQL regression output differs.\n\
+                "SQL regression output differs for '{}'.\n\
                  To update expected: cp {} {}\n\
                  To review:  diff -u {} {}",
+                name,
                 actual_file.display(), expected_file.display(),
                 expected_file.display(), actual_file.display(),
             );
         }
     } else {
-        // First run: save as expected baseline
         std::fs::create_dir_all(test_dir.join("expected")).ok();
         std::fs::write(&expected_file, stdout.as_bytes()).unwrap();
         eprintln!(
@@ -1291,4 +1360,68 @@ fn sql_regress_base() {
             expected_file.display(),
         );
     }
+}
+
+#[test]
+fn sql_regress_base() {
+    run_sql_regress("base");
+}
+
+#[test]
+fn sql_regress_parallel() {
+    run_sql_regress("parallel");
+
+    // Additional structural assertions: verify the plan for the large table
+    // actually contains Gather and Parallel Seq Scan nodes.
+    let mut c = connect();
+    c.batch_execute(
+        "SET orca.enabled = on;
+         SET max_parallel_workers_per_gather = 2;
+         SET min_parallel_table_scan_size = '0';
+         SET parallel_setup_cost = 0;
+         SET parallel_tuple_cost = 0;",
+    )
+    .unwrap();
+
+    // Re-create the large table for structural checks (the SQL file cleans up after itself).
+    c.batch_execute(
+        "DROP TABLE IF EXISTS orca_parallel_check CASCADE;
+         CREATE TABLE orca_parallel_check (id int, val text);
+         INSERT INTO orca_parallel_check
+           SELECT i, md5(i::text) FROM generate_series(1, 10000) i;
+         ANALYZE orca_parallel_check;
+         UPDATE pg_class SET relpages = 2000
+           WHERE relname = 'orca_parallel_check';",
+    )
+    .unwrap();
+
+    let plan = explain(&mut c, "SELECT * FROM orca_parallel_check;");
+    eprintln!("sql_regress_parallel plan: {:?}", plan);
+
+    assert!(
+        plan.iter().any(|l| l.contains("Optimizer: pg_orca")),
+        "plan not from pg_orca: {:?}", plan,
+    );
+    assert!(
+        plan.iter().any(|l| l.contains("Gather") || l.contains("Parallel Seq Scan")),
+        "expected Gather or Parallel Seq Scan in plan: {:?}", plan,
+    );
+
+    // Small table must not get Gather.
+    c.batch_execute(
+        "DROP TABLE IF EXISTS orca_small_check CASCADE;
+         CREATE TABLE orca_small_check (id int, val text);
+         INSERT INTO orca_small_check VALUES (1,'a'),(2,'b');
+         ANALYZE orca_small_check;",
+    )
+    .unwrap();
+    let small_plan = explain(&mut c, "SELECT * FROM orca_small_check;");
+    assert!(
+        !small_plan.iter().any(|l| l.contains("Gather")),
+        "unexpected Gather on small table: {:?}", small_plan,
+    );
+
+    c.batch_execute(
+        "DROP TABLE IF EXISTS orca_parallel_check, orca_small_check CASCADE;"
+    ).unwrap();
 }

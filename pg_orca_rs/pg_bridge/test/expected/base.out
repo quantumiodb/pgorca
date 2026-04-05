@@ -1,22 +1,32 @@
-SET
-SET
-DROP TABLE
-CREATE TABLE
-INSERT 0 3
-ANALYZE
-CREATE TABLE
-INSERT 0 1000
-CREATE INDEX
-ANALYZE
-CREATE TABLE
-INSERT 0 3
-ANALYZE
+-- ================================================================
+-- pg_orca_rs base regression tests
+-- ================================================================
+SET orca.enabled = on;
+SET client_min_messages = 'warning';
+-- Setup (clean slate)
+DROP TABLE IF EXISTS orca_t, orca_orders, orca_cust CASCADE;
+CREATE TABLE orca_t (a int, b text);
+INSERT INTO orca_t VALUES (1, 'hello'), (2, 'world'), (3, 'foo');
+ANALYZE orca_t;
+CREATE TABLE orca_orders (id int, amount numeric, customer_id int);
+INSERT INTO orca_orders SELECT i, (i * 1.5)::numeric, (i % 100)
+  FROM generate_series(1, 1000) i;
+CREATE INDEX orca_orders_id_idx ON orca_orders(id);
+ANALYZE orca_orders;
+CREATE TABLE orca_cust (id int PRIMARY KEY, name text);
+INSERT INTO orca_cust VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol');
+ANALYZE orca_cust;
+-- ================================================================
+-- M1: Simple scan
+-- ================================================================
+EXPLAIN (COSTS OFF) SELECT * FROM orca_t;
      QUERY PLAN     
 --------------------
  Seq Scan on orca_t
  Optimizer: pg_orca
 (2 rows)
 
+SELECT * FROM orca_t ORDER BY a;
  a |   b   
 ---+-------
  1 | hello
@@ -24,6 +34,10 @@ ANALYZE
  3 | foo
 (3 rows)
 
+-- ================================================================
+-- M3: WHERE clause filter
+-- ================================================================
+EXPLAIN (COSTS OFF) SELECT * FROM orca_t WHERE a > 1;
      QUERY PLAN     
 --------------------
  Seq Scan on orca_t
@@ -31,17 +45,25 @@ ANALYZE
  Optimizer: pg_orca
 (3 rows)
 
+SELECT * FROM orca_t WHERE a > 1 ORDER BY a;
  a |   b   
 ---+-------
  2 | world
  3 | foo
 (2 rows)
 
+SELECT count(*) FROM orca_orders WHERE id > 990;
     
 ----
  10
 (1 row)
 
+-- ================================================================
+-- M4: JOIN (inner join via merge/nestloop/hash)
+-- ================================================================
+SELECT orca_t.a, orca_t.b, orca_cust.name
+  FROM orca_t JOIN orca_cust ON orca_t.a = orca_cust.id
+  ORDER BY orca_t.a;
  a |   b   | name  
 ---+-------+-------
  1 | hello | Alice
@@ -49,6 +71,10 @@ ANALYZE
  3 | foo   | Carol
 (3 rows)
 
+-- ================================================================
+-- M6: Aggregation
+-- ================================================================
+EXPLAIN (COSTS OFF) SELECT count(*) FROM orca_t;
         QUERY PLAN        
 --------------------------
  Aggregate
@@ -56,16 +82,19 @@ ANALYZE
  Optimizer: pg_orca
 (3 rows)
 
+SELECT count(*) FROM orca_t;
    
 ---
  3
 (1 row)
 
+SELECT count(*) FROM orca_orders WHERE id > 900;
      
 -----
  100
 (1 row)
 
+EXPLAIN (COSTS OFF) SELECT a, count(*) FROM orca_t GROUP BY a;
         QUERY PLAN        
 --------------------------
  HashAggregate
@@ -74,6 +103,7 @@ ANALYZE
  Optimizer: pg_orca
 (4 rows)
 
+SELECT a, count(*) FROM orca_t GROUP BY a ORDER BY a;
  a |   
 ---+---
  1 | 1
@@ -81,6 +111,10 @@ ANALYZE
  3 | 1
 (3 rows)
 
+-- ================================================================
+-- M7: ORDER BY / LIMIT / DISTINCT
+-- ================================================================
+SELECT * FROM orca_t ORDER BY a DESC;
  a |   b   
 ---+-------
  3 | foo
@@ -88,6 +122,7 @@ ANALYZE
  1 | hello
 (3 rows)
 
+EXPLAIN (COSTS OFF) SELECT * FROM orca_t ORDER BY a LIMIT 2;
            QUERY PLAN           
 --------------------------------
  Limit
@@ -97,17 +132,20 @@ ANALYZE
  Optimizer: pg_orca
 (5 rows)
 
+SELECT * FROM orca_t ORDER BY a LIMIT 2;
  a |   b   
 ---+-------
  1 | hello
  2 | world
 (2 rows)
 
+SELECT * FROM orca_t ORDER BY a LIMIT 1 OFFSET 1;
  a |   b   
 ---+-------
  2 | world
 (1 row)
 
+EXPLAIN (COSTS OFF) SELECT DISTINCT a FROM orca_t;
         QUERY PLAN        
 --------------------------
  Unique
@@ -115,6 +153,7 @@ ANALYZE
  Optimizer: pg_orca
 (3 rows)
 
+SELECT DISTINCT a FROM orca_t ORDER BY a;
  a 
 ---
  1
@@ -122,6 +161,10 @@ ANALYZE
  3
 (3 rows)
 
+-- ================================================================
+-- M11: Window functions
+-- ================================================================
+EXPLAIN (COSTS OFF) SELECT a, row_number() OVER (ORDER BY a) FROM orca_t;
          QUERY PLAN          
 -----------------------------
  WindowAgg
@@ -130,6 +173,7 @@ ANALYZE
  Optimizer: pg_orca
 (4 rows)
 
+SELECT a, row_number() OVER (ORDER BY a) FROM orca_t;
  a | row_number 
 ---+------------
  1 |          1
@@ -137,6 +181,7 @@ ANALYZE
  3 |          3
 (3 rows)
 
+SELECT a, rank() OVER (ORDER BY a) FROM orca_t;
  a | rank 
 ---+------
  1 |    1
@@ -144,6 +189,10 @@ ANALYZE
  3 |    3
 (3 rows)
 
+-- ================================================================
+-- UNION / UNION ALL
+-- ================================================================
+EXPLAIN (COSTS OFF) SELECT a, b FROM orca_t WHERE a = 1 UNION ALL SELECT a, b FROM orca_t WHERE a = 2;
             QUERY PLAN             
 -----------------------------------
  Append
@@ -154,12 +203,14 @@ ANALYZE
  Optimizer: pg_orca
 (6 rows)
 
+SELECT a, b FROM orca_t WHERE a = 1 UNION ALL SELECT a, b FROM orca_t WHERE a = 2 ORDER BY a;
  a |   b   
 ---+-------
  1 | hello
  2 | world
 (2 rows)
 
+EXPLAIN (COSTS OFF) SELECT a FROM orca_t UNION SELECT a FROM orca_t;
                   QUERY PLAN                   
 -----------------------------------------------
  Unique
@@ -171,6 +222,7 @@ ANALYZE
  Optimizer: pg_orca
 (7 rows)
 
+SELECT a FROM orca_t UNION SELECT a FROM orca_t ORDER BY a;
  a |   b   
 ---+-------
  1 | hello
@@ -178,6 +230,8 @@ ANALYZE
  3 | foo
 (3 rows)
 
+-- Mixed UNION ALL + UNION
+EXPLAIN (COSTS OFF) SELECT a FROM orca_t UNION ALL SELECT a FROM orca_t UNION SELECT a FROM orca_t;
                   QUERY PLAN                   
 -----------------------------------------------
  Unique
@@ -190,6 +244,7 @@ ANALYZE
  Optimizer: pg_orca
 (8 rows)
 
+SELECT a FROM orca_t UNION ALL SELECT a FROM orca_t UNION SELECT a FROM orca_t ORDER BY a;
  a |   b   
 ---+-------
  1 | hello
@@ -197,6 +252,8 @@ ANALYZE
  3 | foo
 (3 rows)
 
+-- Three-way UNION ALL
+EXPLAIN (COSTS OFF) SELECT a, b FROM orca_t UNION ALL SELECT a, b FROM orca_t UNION ALL SELECT a, b FROM orca_t;
             QUERY PLAN             
 -----------------------------------
  Append
@@ -206,6 +263,11 @@ ANALYZE
  Optimizer: pg_orca
 (5 rows)
 
+SELECT a, b FROM orca_t UNION ALL SELECT a, b FROM orca_t UNION ALL SELECT a, b FROM orca_t ORDER BY a, b;
+-- ================================================================
+-- Fallback (must not crash)
+-- ================================================================
+SELECT * FROM orca_t WHERE a IN (SELECT id FROM orca_cust) ORDER BY a;
  a |   b   
 ---+-------
  1 | hello
@@ -213,6 +275,7 @@ ANALYZE
  3 | foo
 (3 rows)
 
+WITH cte AS (SELECT * FROM orca_t) SELECT * FROM cte ORDER BY a;
  a |   b   
 ---+-------
  1 | hello
@@ -220,11 +283,16 @@ ANALYZE
  3 | foo
 (3 rows)
 
+-- ================================================================
+-- Combined
+-- ================================================================
+SELECT count(*) FROM orca_orders WHERE id BETWEEN 100 AND 200;
      
 -----
  101
 (1 row)
 
+SELECT a, count(*) FROM orca_t GROUP BY a ORDER BY a;
  a |   
 ---+---
  1 | 1
@@ -232,4 +300,5 @@ ANALYZE
  3 | 1
 (3 rows)
 
-DROP TABLE
+-- Cleanup
+DROP TABLE orca_t, orca_orders, orca_cust;

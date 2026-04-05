@@ -165,6 +165,46 @@ pub fn cost_physical_op(
             Cost { startup, total }
         }
 
+        PhysicalOp::ParallelSeqScan { .. } => {
+            let pages = page_count as f64;
+            let num_workers = match op {
+                PhysicalOp::ParallelSeqScan { num_workers, .. } => *num_workers as f64,
+                _ => 1.0,
+            };
+            // Cost is reduced by parallelism; each worker scans a fraction of pages.
+            let parallel_divisor = 1.0 + num_workers * 0.3; // PG uses a similar damping
+            Cost {
+                startup: params.seq_page_cost, // worker startup overhead
+                total: params.seq_page_cost * pages / parallel_divisor
+                    + params.cpu_tuple_cost * rows,
+            }
+        }
+
+        PhysicalOp::Gather { .. } => {
+            let child = children_costs.first().copied().unwrap_or(Cost::zero());
+            let child_rows = children_rows.first().copied().unwrap_or(1.0).max(1.0);
+            // Gather startup: fixed worker-launch overhead (small relative to scan savings).
+            Cost {
+                startup: child.startup + params.seq_page_cost * 10.0,
+                total: child.total + params.cpu_tuple_cost * child_rows,
+            }
+        }
+
+        PhysicalOp::GatherMerge { .. } => {
+            let child = children_costs.first().copied().unwrap_or(Cost::zero());
+            let child_rows = children_rows.first().copied().unwrap_or(1.0).max(1.0);
+            // GatherMerge: like Gather but with merge overhead (similar to Sort).
+            let merge_cpu = if child_rows > 1.0 {
+                params.cpu_operator_cost * child_rows * child_rows.log2()
+            } else {
+                0.0
+            };
+            Cost {
+                startup: child.startup + params.seq_page_cost * 10.0,
+                total: child.total + params.cpu_tuple_cost * child_rows + merge_cpu,
+            }
+        }
+
         // Future operators
         _ => Cost { startup: 0.0, total: f64::MAX / 2.0 },
     }
@@ -173,7 +213,6 @@ pub fn cost_physical_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::types::TableId;
 
     #[test]
     fn test_seq_scan_cost() {

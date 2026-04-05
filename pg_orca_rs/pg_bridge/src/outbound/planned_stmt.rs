@@ -26,6 +26,7 @@ pub unsafe fn build_planned_stmt(
     (*stmt).paramExecTypes = std::ptr::null_mut();
     (*stmt).stmt_location = query.stmt_location;
     (*stmt).stmt_len = query.stmt_len;
+    (*stmt).parallelModeNeeded = plan_tree_has_gather(plan_tree);
 
     // Build relationOids from rtable if not already populated
     if (*stmt).relationOids.is_null() {
@@ -52,4 +53,17 @@ pub unsafe fn build_planned_stmt(
     }
 
     Ok(stmt)
+}
+
+/// Walk the plan tree and return true if any Gather or GatherMerge node is present.
+unsafe fn plan_tree_has_gather(plan: *mut pg_sys::Plan) -> bool {
+    if plan.is_null() {
+        return false;
+    }
+    let tag = (*plan).type_;
+    if matches!(tag, pg_sys::NodeTag::T_Gather | pg_sys::NodeTag::T_GatherMerge) {
+        return true;
+    }
+    plan_tree_has_gather((*plan).lefttree)
+        || plan_tree_has_gather((*plan).righttree)
 }

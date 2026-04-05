@@ -70,6 +70,9 @@ impl RuleSet {
                 Box::new(impl_rules::window::Window2WindowAgg),
                 // Append (partitioned tables)
                 Box::new(impl_rules::append::Append2Append),
+                // Parallel
+                Box::new(impl_rules::parallel::Get2ParallelSeqScan),
+                Box::new(impl_rules::parallel::Select2ParallelSeqScan),
             ],
         }
     }

@@ -4,7 +4,8 @@ use crate::cost::stats::CatalogSnapshot;
 use crate::ir::operator::Operator;
 use crate::ir::physical::PhysicalPropertyProvider;
 use crate::ir::types::Cost;
-use crate::memo::group::Winner;
+use crate::memo::group::{Winner, EnforcerKind};
+use crate::properties::parallel::Parallelism;
 use crate::memo::{ExprId, GroupId, Memo};
 use crate::properties::delivered::DeliveredProperties;
 use crate::properties::required::{RequiredProperties, RequiredPropsKey};
@@ -411,19 +412,61 @@ impl Scheduler {
 
         let delivered = phys_op.derive_delivered(&children_delivered);
         let mut final_delivered = delivered.clone();
-        let mut needs_enforcer = false;
+        let mut enforcer = EnforcerKind::None;
 
         if !delivered.satisfies(&required, &logical_props) {
-            needs_enforcer = true;
-            // Add a simple penalty cost for sorting Enforcer for now.
-            // A more sophisticated implementation would cost a Sort operator properly.
-            // Using N * log2(N) * cpu_operator_cost approximation.
             let rows = logical_props.row_count.max(1.0);
-            let sort_cost = rows * rows.log2() * catalog.cost_model.cpu_operator_cost;
-            local_cost.total += sort_cost;
-            final_delivered = DeliveredProperties { ordering: required.ordering.clone() };
+
+            // Determine which enforcer(s) are needed.
+            let needs_gather = matches!(&delivered.parallelism, Parallelism::Partial { .. })
+                && required.parallelism.as_ref().map_or(true, |rp| *rp == Parallelism::Serial);
+            let needs_sort = !required.ordering.is_empty()
+                && delivered.ordering != required.ordering;
+
+            let num_workers = delivered.parallelism.num_workers();
+
+            match (needs_gather, needs_sort) {
+                (true, true) => {
+                    // Need to gather AND sort — use GatherMerge (cheaper than Gather + Sort).
+                    let sort_keys = required.ordering.clone();
+                    let merge_cpu = if rows > 1.0 {
+                        catalog.cost_model.cpu_operator_cost * rows * rows.log2()
+                    } else {
+                        0.0
+                    };
+                    local_cost.total += catalog.cost_model.seq_page_cost * 10.0
+                        + catalog.cost_model.cpu_tuple_cost * rows + merge_cpu;
+                    enforcer = EnforcerKind::GatherMerge { num_workers, sort_keys: sort_keys.clone() };
+                    final_delivered = DeliveredProperties {
+                        ordering: sort_keys,
+                        parallelism: Parallelism::Serial,
+                    };
+                }
+                (true, false) => {
+                    // Need Gather only.
+                    local_cost.total += catalog.cost_model.seq_page_cost * 10.0
+                        + catalog.cost_model.cpu_tuple_cost * rows;
+                    enforcer = EnforcerKind::Gather { num_workers };
+                    final_delivered = DeliveredProperties {
+                        ordering: Vec::new(),
+                        parallelism: Parallelism::Serial,
+                    };
+                }
+                (false, true) => {
+                    // Need Sort only (serial path).
+                    let sort_cost = rows * rows.log2() * catalog.cost_model.cpu_operator_cost;
+                    local_cost.total += sort_cost;
+                    enforcer = EnforcerKind::Sort { keys: required.ordering.clone() };
+                    final_delivered = DeliveredProperties {
+                        ordering: required.ordering.clone(),
+                        parallelism: delivered.parallelism.clone(),
+                    };
+                }
+                (false, false) => {}
+            }
         }
 
+        let needs_enforcer = enforcer != EnforcerKind::None;
         let total_cost = local_cost.total;
 
         if total_cost < upper_bound {
@@ -441,6 +484,7 @@ impl Scheduler {
                         },
                         delivered_props: final_delivered,
                         needs_enforcer,
+                        enforcer,
                     },
                 );
             }

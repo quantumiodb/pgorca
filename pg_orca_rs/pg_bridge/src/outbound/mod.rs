@@ -56,6 +56,8 @@ unsafe fn is_passthrough_node(plan: *mut pg_sys::Plan) -> bool {
         | pg_sys::NodeTag::T_Limit
         | pg_sys::NodeTag::T_Unique
         | pg_sys::NodeTag::T_LockRows
+        | pg_sys::NodeTag::T_Gather
+        | pg_sys::NodeTag::T_GatherMerge
     )
 }
 
@@ -68,6 +70,7 @@ unsafe fn is_scan_node(plan: *mut pg_sys::Plan) -> bool {
         | pg_sys::NodeTag::T_BitmapHeapScan
     )
 }
+
 
 unsafe fn is_join_node(plan: *mut pg_sys::Plan) -> bool {
     matches!(
@@ -102,6 +105,15 @@ unsafe fn apply_query_projection(
         | pg_sys::NodeTag::T_IndexScan
         | pg_sys::NodeTag::T_IndexOnlyScan
         | pg_sys::NodeTag::T_BitmapHeapScan => {
+            (*pg_plan).targetlist = query.targetList;
+            Ok(pg_plan)
+        }
+        // Gather/GatherMerge: project at the child scan level if it's a scan.
+        pg_sys::NodeTag::T_Gather | pg_sys::NodeTag::T_GatherMerge => {
+            let child = (*pg_plan).lefttree;
+            if !child.is_null() && is_scan_node(child) {
+                (*child).targetlist = query.targetList;
+            }
             (*pg_plan).targetlist = query.targetList;
             Ok(pg_plan)
         }
@@ -645,6 +657,52 @@ unsafe fn build_plan_node(
             };
             plan_builders::build_append(
                 child_plans,
+                target_list,
+                plan.rows,
+                &plan.cost,
+                plan.width as i32,
+            )
+        }
+
+        PhysicalOp::ParallelSeqScan { scanrelid, .. } => {
+            let target_list = build_target_list_for_scan(plan, col_map)?;
+            let qual = build_qual_list(&plan.qual, col_map)?;
+            plan_builders::build_parallel_seq_scan(
+                *scanrelid,
+                target_list,
+                qual,
+                plan.rows,
+                &plan.cost,
+                plan.width as i32,
+            )
+        }
+
+        PhysicalOp::Gather { num_workers } => {
+            if plan.children.is_empty() {
+                return Err(OutboundError::PlanBuildError("Gather needs a child".into()));
+            }
+            let child_plan = build_plan_node(&plan.children[0], col_map)?;
+            let target_list = (*child_plan).targetlist;
+            plan_builders::build_gather(
+                *num_workers,
+                child_plan,
+                target_list,
+                plan.rows,
+                &plan.cost,
+                plan.width as i32,
+            )
+        }
+
+        PhysicalOp::GatherMerge { num_workers, sort_keys } => {
+            if plan.children.is_empty() {
+                return Err(OutboundError::PlanBuildError("GatherMerge needs a child".into()));
+            }
+            let child_plan = build_plan_node(&plan.children[0], col_map)?;
+            let target_list = (*child_plan).targetlist;
+            plan_builders::build_gather_merge(
+                *num_workers,
+                sort_keys,
+                child_plan,
                 target_list,
                 plan.rows,
                 &plan.cost,

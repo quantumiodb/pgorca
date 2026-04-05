@@ -824,6 +824,104 @@ unsafe fn find_col_pos_in_plan(varno: u32, varattno: i16, plan: *mut pg_sys::Pla
     None
 }
 
+// ── ParallelSeqScan ───────────────────────────────────────────────────────────
+
+/// Build a parallel-aware SeqScan (parallel_aware = true).
+pub unsafe fn build_parallel_seq_scan(
+    scanrelid: u32,
+    target_list: *mut pg_sys::List,
+    qual: *mut pg_sys::List,
+    rows: f64,
+    cost: &Cost,
+    width: i32,
+) -> Result<*mut pg_sys::Plan, OutboundError> {
+    let scan = palloc_node::<pg_sys::SeqScan>(pg_sys::NodeTag::T_SeqScan);
+    (*scan).scan.scanrelid = scanrelid;
+    set_plan_fields(
+        &mut (*scan).scan.plan,
+        target_list, qual,
+        std::ptr::null_mut(), std::ptr::null_mut(),
+        cost, rows, width,
+    );
+    (*scan).scan.plan.parallel_aware = true;
+    (*scan).scan.plan.parallel_safe = true;
+    Ok(&mut (*scan).scan.plan as *mut pg_sys::Plan)
+}
+
+// ── Gather ────────────────────────────────────────────────────────────────────
+
+/// Build a Gather node that collects results from parallel workers.
+pub unsafe fn build_gather(
+    num_workers: usize,
+    child_plan: *mut pg_sys::Plan,
+    target_list: *mut pg_sys::List,
+    rows: f64,
+    cost: &Cost,
+    width: i32,
+) -> Result<*mut pg_sys::Plan, OutboundError> {
+    let gather = palloc_node::<pg_sys::Gather>(pg_sys::NodeTag::T_Gather);
+    (*gather).num_workers = num_workers as i32;
+    (*gather).single_copy = false;
+    (*gather).invisible = false;
+    (*gather).initParam = std::ptr::null_mut();
+
+    set_plan_fields(
+        &mut (*gather).plan,
+        target_list, std::ptr::null_mut(),
+        child_plan, std::ptr::null_mut(),
+        cost, rows, width,
+    );
+    (*gather).plan.parallel_aware = false;
+    (*gather).plan.parallel_safe = false;
+    Ok(&mut (*gather).plan as *mut pg_sys::Plan)
+}
+
+// ── GatherMerge ───────────────────────────────────────────────────────────────
+
+/// Build a GatherMerge node that merges sorted output from parallel workers.
+pub unsafe fn build_gather_merge(
+    num_workers: usize,
+    keys: &[SortKey],
+    child_plan: *mut pg_sys::Plan,
+    target_list: *mut pg_sys::List,
+    rows: f64,
+    cost: &Cost,
+    width: i32,
+) -> Result<*mut pg_sys::Plan, OutboundError> {
+    let n = keys.len();
+    let gm = palloc_node::<pg_sys::GatherMerge>(pg_sys::NodeTag::T_GatherMerge);
+    (*gm).num_workers = num_workers as i32;
+    (*gm).numCols = n as i32;
+    (*gm).initParam = std::ptr::null_mut();
+
+    if n > 0 {
+        let sort_col_idx = pg_sys::palloc0(n * std::mem::size_of::<pg_sys::AttrNumber>()) as *mut pg_sys::AttrNumber;
+        let sort_operators = pg_sys::palloc0(n * std::mem::size_of::<pg_sys::Oid>()) as *mut pg_sys::Oid;
+        let collations = pg_sys::palloc0(n * std::mem::size_of::<pg_sys::Oid>()) as *mut pg_sys::Oid;
+        let nulls_first = pg_sys::palloc0(n * std::mem::size_of::<bool>()) as *mut bool;
+        for (i, key) in keys.iter().enumerate() {
+            *sort_col_idx.add(i) = (i + 1) as pg_sys::AttrNumber;
+            *sort_operators.add(i) = pg_sys::Oid::from(key.sort_op_oid);
+            *collations.add(i) = pg_sys::Oid::from(key.collation_oid);
+            *nulls_first.add(i) = key.nulls_first;
+        }
+        (*gm).sortColIdx = sort_col_idx;
+        (*gm).sortOperators = sort_operators;
+        (*gm).collations = collations;
+        (*gm).nullsFirst = nulls_first;
+    }
+
+    set_plan_fields(
+        &mut (*gm).plan,
+        target_list, std::ptr::null_mut(),
+        child_plan, std::ptr::null_mut(),
+        cost, rows, width,
+    );
+    (*gm).plan.parallel_aware = false;
+    (*gm).plan.parallel_safe = false;
+    Ok(&mut (*gm).plan as *mut pg_sys::Plan)
+}
+
 // ── WindowAgg ────────────────────────────────────────────────────────────────
 
 pub unsafe fn build_window_agg(
