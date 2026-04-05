@@ -382,7 +382,7 @@ impl Scheduler {
         let local_cost = cost_physical_op(
             &phys_op,
             &logical_props,
-            &catalog.cost_params,
+            &catalog.cost_model,
             &children_costs,
             &child_rows,
             page_count,
@@ -415,7 +415,7 @@ impl Scheduler {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use crate::cost::stats::{CostParams, TableStats, ColumnStats};
+    use crate::cost::stats::{CostModel, TableStats, ColumnStats};
     use crate::ir::types::{TableId, ColumnId};
     use crate::ir::logical::LogicalOp;
     
@@ -434,7 +434,7 @@ mod tests {
             col_id_to_attnum: HashMap::new(),
         });
         rte_to_table.insert(1u32, TableId(1));
-        CatalogSnapshot { tables, rte_to_table, cost_params: CostParams::default() }
+        CatalogSnapshot { tables, rte_to_table, cost_model: CostModel::default() }
     }
 
     #[test]

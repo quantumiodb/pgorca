@@ -3,13 +3,13 @@ use crate::ir::physical::PhysicalOp;
 use crate::ir::physical::AggStrategy;
 use crate::properties::logical::LogicalProperties;
 
-use super::stats::CostParams;
+use super::stats::CostModel;
 
 /// Compute cost for a physical operator.
 pub fn cost_physical_op(
     op: &PhysicalOp,
     logical_props: &LogicalProperties,
-    params: &CostParams,
+    params: &CostModel,
     children_costs: &[Cost],
     children_rows: &[f64],
     page_count: u64,
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_seq_scan_cost() {
-        let params = CostParams::default();
+        let params = CostModel::default();
         let props = LogicalProperties {
             output_columns: vec![ColumnId(1)],
             row_count: 1000.0,

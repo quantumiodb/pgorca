@@ -246,7 +246,7 @@ pub(super) fn get_page_count(op: &PhysicalOp, catalog: &CatalogSnapshot) -> u64 
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use crate::cost::stats::{CostParams, TableStats, ColumnStats};
+    use crate::cost::stats::{CostModel, TableStats, ColumnStats};
     use crate::ir::types::{TableId, ColumnId};
 
     fn make_test_catalog() -> CatalogSnapshot {
@@ -265,7 +265,7 @@ mod tests {
             col_id_to_attnum: HashMap::new(),
         });
         rte_to_table.insert(1u32, TableId(1));
-        CatalogSnapshot { tables, rte_to_table, cost_params: CostParams::default() }
+        CatalogSnapshot { tables, rte_to_table, cost_model: CostModel::default() }
     }
 
     #[test]

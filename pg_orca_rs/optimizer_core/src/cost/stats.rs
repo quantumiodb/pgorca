@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use crate::ir::types::{ColumnId, TableId, IndexAmType, RteIndex};
-use crate::ir::scalar::{ScalarExpr, BoolExprType, NullTestType};
+use crate::ir::scalar::{ScalarExpr, BoolExprType, NullTestType, ConstValue};
+
+// ── Catalog Snapshot ───────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct CatalogSnapshot {
     pub tables: HashMap<TableId, TableStats>,
     /// Maps RTE index (1-based) → TableId
     pub rte_to_table: HashMap<RteIndex, TableId>,
-    pub cost_params: CostParams,
+    pub cost_model: CostModel,
 }
 
 impl CatalogSnapshot {
@@ -16,8 +18,13 @@ impl CatalogSnapshot {
     }
 }
 
+// ── Cost Model (replaces CostParams) ──────────────────
+
+/// Cost model parameters.
+/// PG standard parameters come from GUCs; damping factors from custom GUCs.
 #[derive(Debug, Clone)]
-pub struct CostParams {
+pub struct CostModel {
+    // PG standard cost parameters
     pub seq_page_cost: f64,
     pub random_page_cost: f64,
     pub cpu_tuple_cost: f64,
@@ -25,9 +32,14 @@ pub struct CostParams {
     pub cpu_operator_cost: f64,
     pub effective_cache_size: f64,
     pub work_mem: usize,
+
+    // GPORCA-style damping factors (mitigate independence assumption bias)
+    pub damping_factor_filter: f64,
+    pub damping_factor_join: f64,
+    pub damping_factor_groupby: f64,
 }
 
-impl Default for CostParams {
+impl Default for CostModel {
     fn default() -> Self {
         Self {
             seq_page_cost: 1.0,
@@ -35,11 +47,19 @@ impl Default for CostParams {
             cpu_tuple_cost: 0.01,
             cpu_index_tuple_cost: 0.005,
             cpu_operator_cost: 0.0025,
-            effective_cache_size: 524288.0,  // 4GB in pages
+            effective_cache_size: 524288.0, // 4GB in pages
             work_mem: 4 * 1024 * 1024,
+            damping_factor_filter: 0.75,
+            damping_factor_join: 0.75,
+            damping_factor_groupby: 0.75,
         }
     }
 }
+
+// Backward-compatible alias
+pub type CostParams = CostModel;
+
+// ── Table & Column Statistics ──────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct TableStats {
@@ -53,6 +73,19 @@ pub struct TableStats {
     pub col_id_to_attnum: HashMap<ColumnId, i16>,
 }
 
+/// Histogram boundary value (from pg_statistic stakind=HISTOGRAM).
+#[derive(Debug, Clone)]
+pub struct HistogramBound {
+    pub value: ConstValue,
+}
+
+/// Most Common Value entry (from pg_statistic stakind=MCV).
+#[derive(Debug, Clone)]
+pub struct McvEntry {
+    pub value: ConstValue,
+    pub frequency: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct ColumnStats {
     pub attnum: i16,
@@ -61,6 +94,12 @@ pub struct ColumnStats {
     pub null_fraction: f64,
     pub avg_width: i32,
     pub correlation: f64,
+
+    /// Histogram bounds (from stavalues[stakind=HISTOGRAM])
+    pub histogram_bounds: Option<Vec<HistogramBound>>,
+
+    /// Most common values (from stavalues[stakind=MCV])
+    pub most_common_vals: Option<Vec<McvEntry>>,
 }
 
 impl Default for ColumnStats {
@@ -72,6 +111,8 @@ impl Default for ColumnStats {
             null_fraction: 0.0,
             avg_width: 4,
             correlation: 0.0,
+            histogram_bounds: None,
+            most_common_vals: None,
         }
     }
 }
@@ -89,6 +130,8 @@ pub struct IndexStats {
     pub predicate: Option<ScalarExpr>,
     pub include_columns: Vec<i16>,
 }
+
+// ── Legacy Selectivity Estimator (kept for compatibility) ──
 
 /// Estimate predicate selectivity (fraction of rows that satisfy the predicate).
 pub fn estimate_selectivity(

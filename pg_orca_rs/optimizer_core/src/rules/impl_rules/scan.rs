@@ -300,7 +300,7 @@ impl Rule for Select2IndexOnlyScan {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use crate::cost::stats::{CostParams, CatalogSnapshot};
+    use crate::cost::stats::{CostModel, CatalogSnapshot};
     use crate::ir::types::{TableId, ColumnId};
 
     #[test]
@@ -309,7 +309,7 @@ mod tests {
         let catalog = CatalogSnapshot {
             tables: HashMap::new(),
             rte_to_table: HashMap::new(),
-            cost_params: CostParams::default(),
+            cost_model: CostModel::default(),
         };
         let op = Operator::Logical(LogicalOp::Get {
             table_id: TableId(1),

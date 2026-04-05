@@ -163,7 +163,7 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
     }
 
     // 3. Read PG cost GUCs
-    let cost_params = CostParams {
+    let cost_model = CostModel {
         seq_page_cost: pg_sys::seq_page_cost,
         random_page_cost: pg_sys::random_page_cost,
         cpu_tuple_cost: pg_sys::cpu_tuple_cost,
@@ -171,9 +171,10 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
         cpu_operator_cost: pg_sys::cpu_operator_cost,
         effective_cache_size: pg_sys::effective_cache_size as f64,
         work_mem: pg_sys::work_mem as usize * 1024,
+        ..CostModel::default()
     };
 
-    let mut catalog = CatalogSnapshot { tables, rte_to_table, cost_params };
+    let mut catalog = CatalogSnapshot { tables, rte_to_table, cost_model };
 
     // 4. Build logical expression tree
     let mut logical_expr = if !query.setOperations.is_null() {
