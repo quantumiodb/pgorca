@@ -1,4 +1,4 @@
-use pgrx::pg_sys;
+use pgrx::{pg_sys, FromDatum};
 use optimizer_core::ir::scalar::{ScalarExpr, BoolExprType, NullTestType, ConstValue};
 use optimizer_core::ir::types::AggExpr;
 use super::InboundError;
@@ -71,33 +71,42 @@ unsafe fn convert_const(c: *mut pg_sys::Const) -> Result<ScalarExpr, InboundErro
     let typmod = (*c).consttypmod;
     let collation = (*c).constcollid.to_u32();
     let is_null = (*c).constisnull;
+    let datum = (*c).constvalue;
 
     let value = if is_null {
         ConstValue::Null
     } else {
-        let datum = (*c).constvalue;
-        // Decode based on type OID
-        match type_oid {
-            16 => ConstValue::Bool(datum.value() != 0), // bool
-            21 => ConstValue::Int16(datum.value() as i16), // int2
-            23 => ConstValue::Int32(datum.value() as i32), // int4
-            20 => ConstValue::Int64(datum.value() as i64), // int8
-            700 => ConstValue::Float32(f32::from_bits(datum.value() as u32)), // float4
-            701 => ConstValue::Float64(f64::from_bits(datum.value() as u64)), // float8
-            25 | 1043 => {
-                // text / varchar — varlena datum
-                let ptr = datum.cast_mut_ptr::<u8>();
-                if ptr.is_null() {
-                    ConstValue::Text(String::new())
-                } else {
-                    // skip 4-byte varlena header
-                    let header = *(ptr as *const u32);
-                    let len = (header >> 2) as usize;
-                    let data = std::slice::from_raw_parts(ptr.add(4), len.saturating_sub(4));
-                    ConstValue::Text(String::from_utf8_lossy(data).into_owned())
-                }
+        match (*c).consttype {
+            pg_sys::BOOLOID => ConstValue::Bool(bool::from_datum(datum, false).unwrap()),
+            pg_sys::INT2OID => ConstValue::Int16(i16::from_datum(datum, false).unwrap()),
+            pg_sys::INT4OID => ConstValue::Int32(i32::from_datum(datum, false).unwrap()),
+            pg_sys::INT8OID => ConstValue::Int64(i64::from_datum(datum, false).unwrap()),
+            pg_sys::FLOAT4OID => ConstValue::Float32(f32::from_datum(datum, false).unwrap()),
+            pg_sys::FLOAT8OID => ConstValue::Float64(f64::from_datum(datum, false).unwrap()),
+            pg_sys::TEXTOID | pg_sys::VARCHAROID | pg_sys::BPCHAROID | pg_sys::NAMEOID => {
+                let s = String::from_datum(datum, false).unwrap_or_default();
+                ConstValue::Text(s)
             }
-            _ => ConstValue::Int64(datum.value() as i64), // best-effort for unknown types
+            pg_sys::NUMERICOID => {
+                let n = pgrx::AnyNumeric::from_datum(datum, false).map(|n| n.to_string()).unwrap_or_default();
+                ConstValue::Numeric(n)
+            }
+            pg_sys::DATEOID => {
+                // PG date is 4 bytes
+                ConstValue::Date(i32::from_datum(datum, false).unwrap())
+            }
+            pg_sys::TIMESTAMPOID => {
+                // PG timestamp is 8 bytes
+                ConstValue::Timestamp(i64::from_datum(datum, false).unwrap())
+            }
+            pg_sys::TIMESTAMPTZOID => {
+                // PG timestamptz is 8 bytes
+                ConstValue::TimestampTz(i64::from_datum(datum, false).unwrap())
+            }
+            _ => {
+                // Fallback for unknown types: treat as 64-bit value if possible
+                ConstValue::Int64(datum.value() as i64)
+            }
         }
     };
 

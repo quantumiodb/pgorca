@@ -95,5 +95,9 @@ pub enum ConstValue {
     Float64(f64),
     Text(String),
     Bytea(Vec<u8>),
+    Numeric(String),
+    Date(i32),
+    Timestamp(i64),
+    TimestampTz(i64),
     Null,
 }

@@ -1,6 +1,7 @@
 use std::ffi::CString;
+use std::str::FromStr;
 
-use pgrx::pg_sys;
+use pgrx::{pg_sys, IntoDatum};
 
 use optimizer_core::ir::scalar::{ScalarExpr, BoolExprType, NullTestType, ConstValue};
 use optimizer_core::ir::types::ColumnRef;
@@ -355,6 +356,14 @@ unsafe fn build_const(
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.add(4), bytes.len());
             (false, -1, pg_sys::Datum::from(buf as usize))
         }
+        ConstValue::Numeric(s) => {
+            let n = pgrx::AnyNumeric::from_str(s).unwrap_or_else(|_| pgrx::AnyNumeric::from(0));
+            let datum = n.into_datum().expect("failed to convert Numeric to datum");
+            (false, -1, datum)
+        }
+        ConstValue::Date(v) => (true, 4, pg_sys::Datum::from(*v)),
+        ConstValue::Timestamp(v) => (true, 8, pg_sys::Datum::from(*v)),
+        ConstValue::TimestampTz(v) => (true, 8, pg_sys::Datum::from(*v)),
         ConstValue::Null => (true, -1, pg_sys::Datum::from(0usize)),
         ConstValue::Bytea(b) => {
             let total_len = 4 + b.len();
