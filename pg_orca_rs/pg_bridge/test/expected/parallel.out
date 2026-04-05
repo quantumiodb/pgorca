@@ -27,7 +27,7 @@ EXPLAIN (COSTS OFF) SELECT * FROM orca_parallel;
                 QUERY PLAN                
 ------------------------------------------
  Gather
-   Workers Planned: 1
+   Workers Planned: 2
    ->  Parallel Seq Scan on orca_parallel
  Optimizer: pg_orca
 (4 rows)
@@ -39,7 +39,7 @@ EXPLAIN (COSTS OFF) SELECT * FROM orca_parallel WHERE id > 9000;
                 QUERY PLAN                
 ------------------------------------------
  Gather
-   Workers Planned: 1
+   Workers Planned: 2
    ->  Parallel Seq Scan on orca_parallel
          Filter: (id > 9000)
  Optimizer: pg_orca
@@ -53,7 +53,7 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM orca_parallel;
 ------------------------------------------------
  Aggregate
    ->  Gather
-         Workers Planned: 1
+         Workers Planned: 2
          ->  Parallel Seq Scan on orca_parallel
  Optimizer: pg_orca
 (5 rows)

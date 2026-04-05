@@ -9,9 +9,6 @@ use crate::rules::{Rule, RulePromise};
 /// min_parallel_table_scan_size default = 8 * 1024 * 1024 / 8192 = 1024 pages).
 const MIN_PARALLEL_PAGES: u64 = 1024;
 
-/// Maximum workers per gather (mirrors PG's max_parallel_workers_per_gather = 2).
-const MAX_WORKERS: usize = 2;
-
 // ── Get2ParallelSeqScan ────────────────────────────────────────────────────────
 
 /// Converts `LogicalOp::Get` on a large table → `ParallelSeqScan`.
@@ -47,7 +44,7 @@ impl Rule for Get2ParallelSeqScan {
             return vec![];
         }
 
-        let num_workers = choose_workers(page_count);
+        let num_workers = choose_workers(page_count, catalog.cost_model.max_parallel_workers);
         let phys = Operator::Physical(PhysicalOp::ParallelSeqScan { scanrelid: rte_index, num_workers });
         let (_, eid) = memo.insert_expr(phys, vec![], Some(group_id));
         vec![eid]
@@ -111,7 +108,7 @@ impl Rule for Select2ParallelSeqScan {
             return vec![];
         }
 
-        let num_workers = choose_workers(page_count);
+        let num_workers = choose_workers(page_count, catalog.cost_model.max_parallel_workers);
         let phys = Operator::Physical(PhysicalOp::ParallelSeqScan { scanrelid: rte_index, num_workers });
         let (_, eid) = memo.insert_expr(phys, vec![], Some(group_id));
         vec![eid]
@@ -121,12 +118,9 @@ impl Rule for Select2ParallelSeqScan {
 }
 
 /// Choose number of parallel workers based on page count (mirrors PG's formula).
-fn choose_workers(page_count: u64) -> usize {
-    // PG: workers = log2(pages / min_parallel_pages)
-    // Capped at MAX_WORKERS.
-    let ratio = (page_count as f64) / (MIN_PARALLEL_PAGES as f64);
-    let workers = ratio.log2().floor() as usize;
-    workers.max(1).min(MAX_WORKERS)
+/// Use max_parallel_workers directly as the worker count, capped by the GUC value.
+fn choose_workers(_page_count: u64, max_parallel_workers: usize) -> usize {
+    max_parallel_workers.max(1)
 }
 
 #[cfg(test)]

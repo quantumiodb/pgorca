@@ -47,6 +47,9 @@ pub struct CostModel {
     pub damping_factor_filter: f64,
     pub damping_factor_join: f64,
     pub damping_factor_groupby: f64,
+
+    /// Mirror of PG's max_parallel_workers_per_gather GUC.
+    pub max_parallel_workers: usize,
 }
 
 impl Default for CostModel {
@@ -62,6 +65,7 @@ impl Default for CostModel {
             damping_factor_filter: 0.75,
             damping_factor_join: 0.75,
             damping_factor_groupby: 0.75,
+            max_parallel_workers: 2,
         }
     }
 }

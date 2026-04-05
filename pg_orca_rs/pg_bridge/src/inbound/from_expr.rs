@@ -174,6 +174,7 @@ pub unsafe fn convert_query(query: &pg_sys::Query) -> Result<ConvertResult, Inbo
         damping_factor_filter: crate::ORCA_DAMPING_FILTER.get(),
         damping_factor_join: crate::ORCA_DAMPING_JOIN.get(),
         damping_factor_groupby: crate::ORCA_DAMPING_GROUPBY.get(),
+        max_parallel_workers: pg_sys::max_parallel_workers_per_gather as usize,
     };
 
     let mut catalog = CatalogSnapshot { tables, rte_to_table, cost_model };
