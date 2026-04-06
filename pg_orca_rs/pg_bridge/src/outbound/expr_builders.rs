@@ -447,10 +447,15 @@ unsafe fn build_const(
             // geometric types, tsvector, tsquery, jsonpath, enums, and other opaque types.
             let mut input_fn = pg_sys::Oid::INVALID;
             let mut ioparam = pg_sys::Oid::INVALID;
-            pg_sys::getTypeInputInfo(pg_sys::Oid::from(type_oid), &mut input_fn, &mut ioparam);
+            let pg_type_oid = pg_sys::Oid::from(type_oid);
+            pg_sys::getTypeInputInfo(pg_type_oid, &mut input_fn, &mut ioparam);
             let cstr = std::ffi::CString::new(s.as_str()).unwrap_or_default();
             let d = pg_sys::OidInputFunctionCall(input_fn, cstr.as_ptr() as *mut _, ioparam, typmod);
-            (false, -1, d)
+            // Use the type's actual byval/typlen so PG interprets the datum correctly.
+            // Enum types are stored by value (Oid, 4 bytes); varlena types are not.
+            let byval = pg_sys::get_typbyval(pg_type_oid);
+            let len = pg_sys::get_typlen(pg_type_oid) as i32;
+            (byval, len, d)
         }
     };
 

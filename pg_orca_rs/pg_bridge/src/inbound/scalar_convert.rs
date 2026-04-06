@@ -227,10 +227,17 @@ unsafe fn convert_const(c: *mut pg_sys::Const) -> Result<ScalarExpr, InboundErro
                 ConstValue::OpaqueText(String::from_utf8_lossy(&text).into_owned())
             }
             _ => {
-                // Unknown type: refuse and let PG fall back to standard_planner.
-                return Err(InboundError::UnsupportedFeature(
-                    format!("const type OID {}", type_oid)
-                ));
+                // Check if it's a user-defined enum type (typtype = 'e').
+                // Enums are passed by value as an Oid; use the output function to get the label.
+                if pg_sys::get_typtype((*c).consttype) == pg_sys::TYPTYPE_ENUM as i8 {
+                    let text = datum_to_text_via_output((*c).consttype, datum);
+                    ConstValue::OpaqueText(String::from_utf8_lossy(&text).into_owned())
+                } else {
+                    // Unknown type: refuse and let PG fall back to standard_planner.
+                    return Err(InboundError::UnsupportedFeature(
+                        format!("const type OID {}", type_oid)
+                    ));
+                }
             }
         }
     };
