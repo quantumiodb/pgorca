@@ -13,6 +13,7 @@ extern "C" {
 #include <fmgr.h>
 
 #include <commands/explain.h>
+#include <commands/explain_format.h>
 #include <optimizer/planner.h>
 #include <utils/elog.h>
 #include <utils/guc.h>

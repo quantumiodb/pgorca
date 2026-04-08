@@ -524,7 +524,7 @@ CMDColumnArray *CTranslatorRelcacheToDXL::RetrieveRelColumns(CMemoryPool *mp, CM
   CMDColumnArray *mdcol_array = GPOS_NEW(mp) CMDColumnArray(mp);
 
   for (uint32_t ul = 0; ul < (uint32_t)rel->rd_att->natts; ul++) {
-    Form_pg_attribute att = &rel->rd_att->attrs[ul];
+    Form_pg_attribute att = TupleDescAttr(rel->rd_att, ul);
     CMDName *md_colname = CDXLUtils::CreateMDNameFromCharArray(mp, NameStr(att->attname));
 
     uint32_t col_len = UINT32_MAX;

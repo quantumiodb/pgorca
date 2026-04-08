@@ -18,7 +18,7 @@
 2. Checkout to the commit according to your needs.
 
     ```bash
-    cmake  -Bbuild -G Ninja
+    cmake -B build -G Ninja -DPostgreSQL_ROOT=/home/administrator/workspace/install -DPG_CONFIG=/home/administrator/workspace/install/bin/pg_config
     cmake --build build
     ```
 

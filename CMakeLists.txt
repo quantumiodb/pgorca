@@ -82,7 +82,11 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/libgpdbcost/include
     ${CMAKE_CURRENT_SOURCE_DIR}/libgpos/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-    SYSTEM
+)
+
+target_include_directories(
+  orca_core
+    SYSTEM PUBLIC
     ${PostgreSQL_SERVER_INCLUDE_DIRS}
 )
 
