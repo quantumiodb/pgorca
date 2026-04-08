@@ -189,6 +189,23 @@ PlannedStmt *CTranslatorDXLToPlStmt::GetPlannedStmtFromDXL(const CDXLNode *dxlno
 
   planned_stmt->paramExecTypes = m_dxl_to_plstmt_context->GetParamTypes();
 
+  // PG18: populate unprunableRelids with all base relations in the range
+  // table. Orca does not perform runtime partition pruning, so every
+  // RTE_RELATION entry is reachable during execution.
+  {
+    Bitmapset *unprunable = nullptr;
+    int rti = 1;
+    ListCell *lc;
+    foreach (lc, planned_stmt->rtable)
+    {
+      RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+      if (rte->rtekind == RTE_RELATION)
+        unprunable = bms_add_member(unprunable, rti);
+      rti++;
+    }
+    planned_stmt->unprunableRelids = unprunable;
+  }
+
   return planned_stmt;
 }
 
@@ -2510,6 +2527,9 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLAppend(const CDXLNode *append_dxlnode,
                                                  CDXLTranslationContextArray *ctxt_translation_prev_siblings) {
   // create append plan node
   Append *append = makeNode(Append);
+  // -1 means no partition pruning; makeNode zero-initialises so we must
+  // set this explicitly or the executor crashes looking for pruneinfo.
+  append->part_prune_index = -1;
 
   Plan *plan = &(append->plan);
   plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
