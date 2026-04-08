@@ -43,6 +43,12 @@ static PlannedStmt *pg_planner(Query *parse, const char *query_string, int curso
     init = true;
   }
 
+  // Pure-expression queries (no range table) produce a ComputeScalar +
+  // ConstTableGet plan from ORCA.  plpgsql's exec_simple_check_plan asserts
+  // the plan is a bare Result node with no children; fall back so it gets one.
+  if (parse->rtable == NIL)
+    return standard_planner(parse, query_string, cursorOptions, boundParams);
+
   switch (parse->commandType) {
     case CMD_SELECT: {
       PlannedStmt *plan = nullptr;
