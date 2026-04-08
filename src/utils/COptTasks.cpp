@@ -436,6 +436,23 @@ void *COptTasks::OptimizeTask(void *ptr) {
         plan_stmt->rtable = plan->rtable;
         plan_stmt->relationOids = plan->relationOids;
         plan_stmt->commandType = CMD_SELECT;
+        plan_stmt->canSetTag = opt_ctxt->m_query->canSetTag;
+
+        // PG18: populate unprunableRelids — every RTE_RELATION is reachable
+        // since ORCA does not perform runtime partition pruning.
+        {
+          Bitmapset *unprunable = nullptr;
+          int rti = 1;
+          ListCell *lc;
+          foreach (lc, plan_stmt->rtable)
+          {
+            RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+            if (rte->rtekind == RTE_RELATION)
+              unprunable = bms_add_member(unprunable, rti);
+            rti++;
+          }
+          plan_stmt->unprunableRelids = unprunable;
+        }
 
         opt_ctxt->m_plan_stmt = plan_stmt;
       } else {
