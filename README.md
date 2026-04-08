@@ -18,7 +18,16 @@
 2. Checkout to the commit according to your needs.
 
     ```bash
-    cmake -B build -G Ninja -DPostgreSQL_ROOT=/home/administrator/workspace/install -DPG_CONFIG=/home/administrator/workspace/install/bin/pg_config
+    # Debug build (recommended for development)
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+      -DPostgreSQL_ROOT=/home/administrator/workspace/install \
+      -DPG_CONFIG=/home/administrator/workspace/install/bin/pg_config
+    cmake --build build
+
+    # Release build
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DPostgreSQL_ROOT=/home/administrator/workspace/install \
+      -DPG_CONFIG=/home/administrator/workspace/install/bin/pg_config
     cmake --build build
     ```
 
