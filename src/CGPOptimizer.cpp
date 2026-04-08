@@ -63,7 +63,7 @@ PlannedStmt *CGPOptimizer::GPOPTOptimizedPlan(Query *query, gpdxl::OptConfig *co
     if (GPOS_MATCH_EX(ex, gpdxl::ExmaGPDB, gpdxl::ExmiGPDBError)) {
       PG_RE_THROW();
     } else if (GPOS_MATCH_EX(ex, CException::ExmaInvalid, CException::ExmiORCAInvalidState)) {
-      if (errstart(INFO, TEXTDOMAIN)) {
+      if (errstart(DEBUG1, TEXTDOMAIN)) {
         errcode(ERRCODE_INTERNAL_ERROR);
         errmsg("Worker is already registered! This is an invalid state, please report this error. ");
         errfinish(ex.Filename(), ex.Line(), nullptr);
@@ -77,7 +77,7 @@ PlannedStmt *CGPOptimizer::GPOPTOptimizedPlan(Query *query, gpdxl::OptConfig *co
     // Postgres planner.
 
     if (true) {
-      if (errstart(INFO, TEXTDOMAIN)) {
+      if (errstart(DEBUG1, TEXTDOMAIN)) {
         errcode(ERRCODE_FEATURE_NOT_SUPPORTED);
         errmsg("GPORCA failed to produce a plan, falling back to Postgres-based planner");
         if (serialized_error_msg) {

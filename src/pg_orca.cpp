@@ -50,12 +50,12 @@ static PlannedStmt *pg_planner(Query *parse, const char *query_string, int curso
       GPOS_TRY {
         plan = CGPOptimizer::GPOPTOptimizedPlan(parse, &config);
         if (plan == nullptr) {
-          elog(WARNING, "pg_orca returned NULL plan, falling back to standard planner");
+          elog(DEBUG1, "pg_orca returned NULL plan, falling back to standard planner");
           return standard_planner(parse, query_string, cursorOptions, boundParams);
         }
       }
       GPOS_CATCH_EX(ex) {
-        elog(WARNING, "pg_orca Failed to plan query, GPOS exception at %s:%d, falling back to standard planner",
+        elog(DEBUG1, "pg_orca Failed to plan query, GPOS exception at %s:%d, falling back to standard planner",
              ex.Filename(), ex.Line());
         // Don't need GPOS_RESET_EX here since we're returning immediately
         return standard_planner(parse, query_string, cursorOptions, boundParams);
