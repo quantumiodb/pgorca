@@ -22,10 +22,10 @@ namespace gpdxl {
 class CContextDXLToPlStmt {
  public:
   // counter for generating plan ids
-  uint32_t m_plan_id_counter{0};
+  gpdxl::CIdGenerator m_plan_id_counter{0};
 
   // counter for generating unique param ids
-  uint32_t m_param_id_counter{0};
+  gpdxl::CIdGenerator m_param_id_counter{0};
 
   List *m_param_types_list{nullptr};
 
