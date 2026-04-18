@@ -2815,6 +2815,12 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLResult(const CDXLNode *result_dxlnode,
     if (IsA(target_plan, NestLoop) || IsA(target_plan, MergeJoin) || IsA(target_plan, HashJoin)) {
       Join *join = (Join *)target_plan;
       join->joinqual = gpdb::ListConcat(join->joinqual, target_qual);
+    } else if (IsA(target_plan, ProjectSet)) {
+      // ExecInitProjectSet asserts plan->qual == NIL, and quals that reference
+      // SRF output cannot be pushed below the ProjectSet.  Fall back to the
+      // PG planner for this query.
+      GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+                 GPOS_WSZ_LIT("Filter qual on top of ProjectSet node"));
     } else {
       target_plan->qual = gpdb::ListConcat(target_plan->qual, target_qual);
     }
