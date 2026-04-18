@@ -58,8 +58,10 @@ extern "C" {
 #include <parser/parse_oper.h>
 #include <partitioning/partdesc.h>
 #include <storage/lmgr.h>
+#include <utils/array.h>
 #include <utils/builtins.h>
 #include <utils/datum.h>
+#include <utils/lsyscache.h>
 #include <utils/fmgroids.h>
 #include <utils/inval.h>
 #include <utils/memutils.h>
@@ -1678,10 +1680,46 @@ char *gpdb::DefGetString(DefElem *defelem) {
   return nullptr;
 }
 
+// Transform an array Const to an ArrayExpr so ORCA can expand it for
+// partition pruning and statistics derivation. If `c` is not an array Const,
+// the original Const is returned unchanged. Ported from GPDB/cbdb's
+// transform_array_Const_to_ArrayExpr (absent in upstream PG17).
 Expr *gpdb::TransformArrayConstToArrayExpr(Const *c) {
-  { return nullptr; }
+  Assert(IsA(c, Const));
 
-  return nullptr;
+  if (c->constisnull) {
+    return (Expr *)c;
+  }
+
+  Oid elemtype = get_element_type(c->consttype);
+  if (elemtype == InvalidOid) {
+    return (Expr *)c;
+  }
+
+  ArrayType *ac = DatumGetArrayTypeP(c->constvalue);
+  int nelems = ArrayGetNItems(ARR_NDIM(ac), ARR_DIMS(ac));
+
+  int16 elemlen;
+  bool elembyval;
+  char elemalign;
+  get_typlenbyvalalign(elemtype, &elemlen, &elembyval, &elemalign);
+
+  Datum *elems;
+  bool *nulls;
+  deconstruct_array(ac, elemtype, elemlen, elembyval, elemalign, &elems, &nulls, &nelems);
+
+  ArrayExpr *aexpr = makeNode(ArrayExpr);
+  aexpr->array_typeid = c->consttype;
+  aexpr->element_typeid = elemtype;
+  aexpr->multidims = false;
+  aexpr->location = c->location;
+
+  for (int i = 0; i < nelems; i++) {
+    aexpr->elements =
+        lappend(aexpr->elements, makeConst(elemtype, -1, c->constcollid, elemlen, elems[i], nulls[i], elembyval));
+  }
+
+  return (Expr *)aexpr;
 }
 
 Node *gpdb::EvalConstExpressions(Node *node) {
