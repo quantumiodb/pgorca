@@ -2,7 +2,7 @@
 ## Postgres optimizer plugin
 
 
-* Based on pg 17beta1, other versions have not been tested, please modify as needed if issues arise.
+* Based on pg 18(/home/administrator/workspace/postgres), other versions have not been tested, please modify as needed if issues arise.
 
 
 0. The code is based on modifications from https://github.com/greenplum-db/gporca-archive.git, and has synchronized the latest code of orca from gpdb.
