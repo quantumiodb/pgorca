@@ -2788,19 +2788,35 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLResult(const CDXLNode *result_dxlnode,
                                                        nullptr,  // base table translation context
                                                        child_contexts, output_context);
 
-  // PostgreSQL's ExecResult does not evaluate plan->qual when an outer plan
-  // (child) is present.  Push the filter to the child plan instead, remapping
-  // OUTER_VAR references through the child's targetlist so that the Var attno
-  // values align with the child's input tuple slots.
+  // PostgreSQL's ExecResult never evaluates plan->qual (it only checks
+  // resconstantqual once).  Push the filter down to the first plan node that
+  // does evaluate qual/joinqual.  ORCA may generate stacked Result nodes, so
+  // we walk down through the Result chain, remapping OUTER_VAR references
+  // through each node's targetlist at every level.
   if (quals_list != NIL && child_plan != nullptr) {
-    SRemapOuterVarCtx remap_ctx;
-    remap_ctx.targetlist = child_plan->targetlist;
-    List *child_qual = (List *)RemapOuterVarMutator((Node *)quals_list, &remap_ctx);
-    if (IsA(child_plan, NestLoop) || IsA(child_plan, MergeJoin) || IsA(child_plan, HashJoin)) {
-      Join *join = (Join *)child_plan;
-      join->joinqual = gpdb::ListConcat(join->joinqual, child_qual);
+    List *target_qual = quals_list;
+    Plan *target_plan = child_plan;
+
+    // At each iteration we remap target_qual vars through target_plan's
+    // targetlist (converting from "target_plan output position k" to
+    // "target_plan's child input context"), then skip Result nodes since they
+    // do not evaluate plan->qual.
+    while (true) {
+      SRemapOuterVarCtx remap_ctx;
+      remap_ctx.targetlist = target_plan->targetlist;
+      target_qual = (List *)RemapOuterVarMutator((Node *)target_qual, &remap_ctx);
+
+      if (!IsA(target_plan, Result) || target_plan->lefttree == nullptr)
+        break;
+
+      target_plan = target_plan->lefttree;
+    }
+
+    if (IsA(target_plan, NestLoop) || IsA(target_plan, MergeJoin) || IsA(target_plan, HashJoin)) {
+      Join *join = (Join *)target_plan;
+      join->joinqual = gpdb::ListConcat(join->joinqual, target_qual);
     } else {
-      child_plan->qual = gpdb::ListConcat(child_plan->qual, child_qual);
+      target_plan->qual = gpdb::ListConcat(target_plan->qual, target_qual);
     }
     plan->qual = NIL;
   } else {
