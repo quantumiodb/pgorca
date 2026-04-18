@@ -1733,6 +1733,12 @@ Expr *CTranslatorDXLToScalar::TranslateDXLScalarArrayRefToScalar(const CDXLNode 
     array_ref->refassgnexpr = TranslateDXLToScalar((*scalar_array_ref_node)[3], colid_var);
   }
 
+  /* slice and/or store operations yield the container type */
+  if (array_ref->reflowerindexpr || array_ref->refassgnexpr)
+    array_ref->refrestype = array_ref->refcontainertype;
+  else
+    array_ref->refrestype = array_ref->refelemtype;
+
   return (Expr *)array_ref;
 }
 
