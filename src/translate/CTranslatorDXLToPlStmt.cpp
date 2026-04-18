@@ -1,18 +1,27 @@
 extern "C" {
 #include <postgres.h>
 
+#include <access/htup_details.h>
+#include <catalog/pg_aggregate.h>
 #include <catalog/pg_collation.h>
 #include <executor/execPartition.h>
 #include <executor/executor.h>
+#include <nodes/nodeFuncs.h>
 #include <nodes/nodes.h>
 #include <nodes/plannodes.h>
 #include <nodes/primnodes.h>
+#include <optimizer/optimizer.h>
+#include <parser/parse_agg.h>
 #include <partitioning/partdesc.h>
 #include <storage/lmgr.h>
+#include <utils/builtins.h>
+#include <utils/datum.h>
+#include <utils/fmgroids.h>
 #include <utils/guc.h>
 #include <utils/lsyscache.h>
 #include <utils/partcache.h>
 #include <utils/rel.h>
+#include <utils/syscache.h>
 #include <utils/typcache.h>
 }
 
@@ -80,6 +89,187 @@ using namespace gpmd;
 #define GPDXL_ROOT_PLAN_ID -1
 #define GPDXL_PLAN_ID_START 1
 #define GPDXL_PARAM_ID_START 0
+
+// ORCA doesn't run PG's preprocess_aggrefs(), so Aggref->aggno / aggtransno
+// stay at their default (zero). ExecInitAgg() then sizes pergroup/pertrans
+// from max(aggno)+1 and stores results of every Aggref into the same slot,
+// which corrupts values for aggregates with non-matching result types
+// (e.g. BIT_AND(int2) vs BIT_AND(bit) sharing slot 0 causes a crash when
+// the int2 datum is interpreted as a bit varlena). Replicate PG's
+// find_compatible_agg / find_compatible_trans locally (they are static in
+// prepagg.c) to assign unique aggno/aggtransno per Agg node, with sharing.
+namespace {
+
+// Ports find_compatible_agg() from src/backend/optimizer/prep/prepagg.c.
+// Scope of the search is the agginfos list accumulated for the current Agg.
+int FindCompatibleAggLocal(List *agginfos, Aggref *newagg, List **same_input_transnos) {
+  *same_input_transnos = NIL;
+
+  if (contain_volatile_functions((Node *)newagg)) {
+    return -1;
+  }
+
+  int aggno = -1;
+  ListCell *lc;
+  foreach (lc, agginfos) {
+    AggInfo *agginfo = lfirst_node(AggInfo, lc);
+    Aggref *existingRef = linitial_node(Aggref, agginfo->aggrefs);
+    aggno++;
+
+    if (newagg->inputcollid != existingRef->inputcollid ||
+        newagg->aggtranstype != existingRef->aggtranstype ||
+        newagg->aggstar != existingRef->aggstar ||
+        newagg->aggvariadic != existingRef->aggvariadic ||
+        newagg->aggkind != existingRef->aggkind ||
+        !equal(newagg->args, existingRef->args) ||
+        !equal(newagg->aggorder, existingRef->aggorder) ||
+        !equal(newagg->aggdistinct, existingRef->aggdistinct) ||
+        !equal(newagg->aggfilter, existingRef->aggfilter)) {
+      continue;
+    }
+
+    if (newagg->aggfnoid == existingRef->aggfnoid && newagg->aggtype == existingRef->aggtype &&
+        newagg->aggcollid == existingRef->aggcollid &&
+        equal(newagg->aggdirectargs, existingRef->aggdirectargs)) {
+      list_free(*same_input_transnos);
+      *same_input_transnos = NIL;
+      return aggno;
+    }
+
+    if (agginfo->shareable) {
+      *same_input_transnos = lappend_int(*same_input_transnos, agginfo->transno);
+    }
+  }
+  return -1;
+}
+
+// Ports find_compatible_trans() from src/backend/optimizer/prep/prepagg.c.
+int FindCompatibleTransLocal(List *aggtransinfos, Aggref *newagg, bool shareable, Oid aggtransfn, Oid aggtranstype,
+                             int transtypeLen, bool transtypeByVal, Oid aggcombinefn, Oid aggserialfn,
+                             Oid aggdeserialfn, Datum initValue, bool initValueIsNull, List *transnos) {
+  if (!shareable) {
+    return -1;
+  }
+
+  ListCell *lc;
+  foreach (lc, transnos) {
+    int transno = lfirst_int(lc);
+    AggTransInfo *pertrans = (AggTransInfo *)list_nth(aggtransinfos, transno);
+
+    if (aggtransfn == pertrans->transfn_oid && aggtranstype == pertrans->aggtranstype &&
+        transtypeByVal == pertrans->transtypeByVal && transtypeLen == pertrans->transtypeLen &&
+        aggcombinefn == pertrans->combinefn_oid && aggserialfn == pertrans->serialfn_oid &&
+        aggdeserialfn == pertrans->deserialfn_oid && initValueIsNull == pertrans->initValueIsNull &&
+        (initValueIsNull || datumIsEqual(initValue, pertrans->initValue, transtypeByVal, transtypeLen))) {
+      return transno;
+    }
+  }
+  return -1;
+}
+
+// Decode text-format initial value from pg_aggregate.
+Datum GetAggInitValLocal(Datum textInitVal, Oid transtype) {
+  Oid typinput;
+  Oid typioparam;
+  char *strInitVal;
+  Datum initVal;
+
+  getTypeInputInfo(transtype, &typinput, &typioparam);
+  strInitVal = TextDatumGetCString(textInitVal);
+  initVal = OidInputFunctionCall(typinput, strInitVal, typioparam, -1);
+  pfree(strInitVal);
+  return initVal;
+}
+
+// Mirrors cbdb's CTranslatorDXLToPlStmt::TranslateAggFillInfo, adapted for
+// PG18 AggInfo/AggTransInfo layouts. Populates agginfos/aggtransinfos (owned
+// by caller, scope: single Agg node) and sets aggref->aggno / aggtransno.
+void TranslateAggFillInfo(Aggref *aggref, List **agginfos, List **aggtransinfos) {
+  HeapTuple aggTuple = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggref->aggfnoid));
+  if (!HeapTupleIsValid(aggTuple)) {
+    elog(ERROR, "cache lookup failed for aggregate %u", aggref->aggfnoid);
+  }
+  Form_pg_aggregate aggform = (Form_pg_aggregate)GETSTRUCT(aggTuple);
+
+  Oid aggtransfn = aggform->aggtransfn;
+  Oid aggfinalfn = aggform->aggfinalfn;
+  Oid aggcombinefn = aggform->aggcombinefn;
+  Oid aggserialfn = aggform->aggserialfn;
+  Oid aggdeserialfn = aggform->aggdeserialfn;
+  Oid aggtranstype = aggform->aggtranstype;
+  int32 aggtransspace = aggform->aggtransspace;
+
+  Oid inputTypes[FUNC_MAX_ARGS];
+  int numArguments = get_aggregate_argtypes(aggref, inputTypes);
+  aggtranstype = resolve_aggregate_transtype(aggref->aggfnoid, aggtranstype, inputTypes, numArguments);
+
+  bool initValueIsNull;
+  Datum textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple, Anum_pg_aggregate_agginitval, &initValueIsNull);
+  Datum initValue = initValueIsNull ? (Datum)0 : GetAggInitValLocal(textInitVal, aggtranstype);
+
+  bool shareable = (aggform->aggfinalmodify != AGGMODIFY_READ_WRITE);
+  ReleaseSysCache(aggTuple);
+
+  // Assume same typmod as first input when transition type matches it (MAX/MIN).
+  int32 aggtranstypmod = -1;
+  if (aggref->args) {
+    TargetEntry *tle = (TargetEntry *)linitial(aggref->args);
+    if (aggtranstype == exprType((Node *)tle->expr)) {
+      aggtranstypmod = exprTypmod((Node *)tle->expr);
+    }
+  }
+
+  List *same_input_transnos = nullptr;
+  int aggno = FindCompatibleAggLocal(*agginfos, aggref, &same_input_transnos);
+  int transno;
+
+  if (aggno != -1) {
+    AggInfo *agginfo = (AggInfo *)list_nth(*agginfos, aggno);
+    agginfo->aggrefs = lappend(agginfo->aggrefs, aggref);
+    transno = agginfo->transno;
+  } else {
+    AggInfo *agginfo = makeNode(AggInfo);
+    agginfo->finalfn_oid = aggfinalfn;
+    agginfo->aggrefs = list_make1(aggref);
+    agginfo->shareable = shareable;
+
+    aggno = list_length(*agginfos);
+    *agginfos = lappend(*agginfos, agginfo);
+
+    int16 transtypeLen;
+    bool transtypeByVal;
+    get_typlenbyval(aggtranstype, &transtypeLen, &transtypeByVal);
+
+    transno = FindCompatibleTransLocal(*aggtransinfos, aggref, shareable, aggtransfn, aggtranstype, transtypeLen,
+                                       transtypeByVal, aggcombinefn, aggserialfn, aggdeserialfn, initValue,
+                                       initValueIsNull, same_input_transnos);
+    if (transno == -1) {
+      AggTransInfo *transinfo = makeNode(AggTransInfo);
+      transinfo->args = aggref->args;
+      transinfo->aggfilter = aggref->aggfilter;
+      transinfo->transfn_oid = aggtransfn;
+      transinfo->combinefn_oid = aggcombinefn;
+      transinfo->serialfn_oid = aggserialfn;
+      transinfo->deserialfn_oid = aggdeserialfn;
+      transinfo->aggtranstype = aggtranstype;
+      transinfo->aggtranstypmod = aggtranstypmod;
+      transinfo->transtypeLen = transtypeLen;
+      transinfo->transtypeByVal = transtypeByVal;
+      transinfo->aggtransspace = aggtransspace;
+      transinfo->initValue = initValue;
+      transinfo->initValueIsNull = initValueIsNull;
+
+      transno = list_length(*aggtransinfos);
+      *aggtransinfos = lappend(*aggtransinfos, transinfo);
+    }
+    agginfo->transno = transno;
+  }
+
+  aggref->aggno = aggno;
+  aggref->aggtransno = transno;
+}
+
+}  // namespace
 
 //---------------------------------------------------------------------------
 //	@function:
@@ -1807,6 +1997,26 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLAgg(const CDXLNode *agg_dxlnode, CDXLT
 
   agg->numGroups = std::max(1L, (long)std::min(agg->plan.plan_rows, (double)LONG_MAX));
   SetParamIds(plan);
+
+  // ExecInitAgg uses aggref->aggno / aggtransno to size pergroup / pertrans
+  // arrays. ORCA skips PG's preprocess_aggrefs(), so fill them here.
+  {
+    List *agginfos = nullptr;
+    List *aggtransinfos = nullptr;
+    ListCell *lc_agg;
+    foreach (lc_agg, plan->targetlist) {
+      TargetEntry *te = (TargetEntry *)lfirst(lc_agg);
+      if (IsA(te->expr, Aggref)) {
+        TranslateAggFillInfo((Aggref *)te->expr, &agginfos, &aggtransinfos);
+      }
+    }
+    foreach (lc_agg, plan->qual) {
+      Expr *expr = (Expr *)lfirst(lc_agg);
+      if (IsA(expr, Aggref)) {
+        TranslateAggFillInfo((Aggref *)expr, &agginfos, &aggtransinfos);
+      }
+    }
+  }
 
   // cleanup
   child_contexts->Release();
