@@ -286,16 +286,198 @@ Oid gpdb::TypeCollation(Oid type) {
   return collation;
 }
 
-List *gpdb::ExtractNodesPlan(Plan *pl, int node_tag, bool descend_into_subqueries) {
-  { return nullptr; }
+// Plan tree walker for ExtractNodesPlan — modelled on CBDB's walkers.c.
+// Collects all nodes with the requested tag from a plan subtree.
+struct PgExtractCtx {
+  int node_tag;
+  bool descend_into_subqueries;
+  List *nodes;
+};
 
-  return NIL;
+static bool pg_extract_walker(Node *node, PgExtractCtx *ctx);
+
+// Walk the common Plan fields (targetlist, qual, lefttree, righttree, initPlan).
+static bool pg_walk_plan_fields(Plan *plan, PgExtractCtx *ctx) {
+  if (pg_extract_walker((Node *)plan->targetlist, ctx)) return true;
+  if (pg_extract_walker((Node *)plan->qual, ctx)) return true;
+  if (pg_extract_walker((Node *)plan->lefttree, ctx)) return true;
+  if (pg_extract_walker((Node *)plan->righttree, ctx)) return true;
+  if (pg_extract_walker((Node *)plan->initPlan, ctx)) return true;
+  return false;
+}
+
+// Walk Join-specific fields (plan fields + joinqual).
+static bool pg_walk_join_fields(Join *join, PgExtractCtx *ctx) {
+  if (pg_walk_plan_fields((Plan *)join, ctx)) return true;
+  if (pg_extract_walker((Node *)join->joinqual, ctx)) return true;
+  return false;
+}
+
+static bool pg_extract_walker(Node *node, PgExtractCtx *ctx) {
+  if (node == nullptr) return false;
+
+  // Collect matching nodes.
+  if (nodeTag(node) == (NodeTag)ctx->node_tag)
+    ctx->nodes = lappend(ctx->nodes, node);
+
+  // SubPlan: walk testexpr and args but not the subplan tree itself.
+  if (IsA(node, SubPlan)) {
+    SubPlan *sp = (SubPlan *)node;
+    if (pg_extract_walker((Node *)sp->testexpr, ctx)) return true;
+    if (expression_tree_walker((Node *)sp->args, (bool (*)()) pg_extract_walker, ctx)) return true;
+    return false;
+  }
+
+  // Dispatch on plan node types; delegate expression nodes to expression_tree_walker.
+  switch (nodeTag(node)) {
+    case T_Result:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((Result *)node)->resconstantqual, ctx)) return true;
+      break;
+    case T_ProjectSet:
+    case T_Material:
+    case T_Sort:
+    case T_IncrementalSort:
+    case T_Unique:
+    case T_Gather:
+    case T_GatherMerge:
+    case T_SetOp:
+    case T_LockRows:
+    case T_SeqScan:
+    case T_SampleScan:
+    case T_BitmapHeapScan:
+    case T_WorkTableScan:
+    case T_NamedTuplestoreScan:
+    case T_Hash:
+    case T_Agg:
+    case T_WindowAgg:
+    case T_Group:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      break;
+    case T_Append:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((Append *)node)->appendplans, ctx)) return true;
+      break;
+    case T_MergeAppend:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((MergeAppend *)node)->mergeplans, ctx)) return true;
+      break;
+    case T_RecursiveUnion:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      break;
+    case T_BitmapAnd:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((BitmapAnd *)node)->bitmapplans, ctx)) return true;
+      break;
+    case T_BitmapOr:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((BitmapOr *)node)->bitmapplans, ctx)) return true;
+      break;
+    case T_IndexScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((IndexScan *)node)->indexqual, ctx)) return true;
+      break;
+    case T_IndexOnlyScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((IndexOnlyScan *)node)->indexqual, ctx)) return true;
+      break;
+    case T_BitmapIndexScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((BitmapIndexScan *)node)->indexqual, ctx)) return true;
+      break;
+    case T_TidScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((TidScan *)node)->tidquals, ctx)) return true;
+      break;
+    case T_TidRangeScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((TidRangeScan *)node)->tidrangequals, ctx)) return true;
+      break;
+    case T_SubqueryScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (ctx->descend_into_subqueries)
+        if (pg_extract_walker((Node *)((SubqueryScan *)node)->subplan, ctx)) return true;
+      break;
+    case T_FunctionScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((FunctionScan *)node)->functions, ctx)) return true;
+      break;
+    case T_ValuesScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((ValuesScan *)node)->values_lists, ctx)) return true;
+      break;
+    case T_TableFuncScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((TableFuncScan *)node)->tablefunc, ctx)) return true;
+      break;
+    case T_ForeignScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((ForeignScan *)node)->fdw_exprs, ctx)) return true;
+      break;
+    case T_CustomScan:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((CustomScan *)node)->custom_exprs, ctx)) return true;
+      break;
+    case T_Memoize:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((Memoize *)node)->param_exprs, ctx)) return true;
+      break;
+    case T_Limit:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((Limit *)node)->limitCount, ctx)) return true;
+      if (pg_extract_walker((Node *)((Limit *)node)->limitOffset, ctx)) return true;
+      break;
+    case T_ModifyTable:
+      if (pg_walk_plan_fields((Plan *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((ModifyTable *)node)->withCheckOptionLists, ctx)) return true;
+      if (pg_extract_walker((Node *)((ModifyTable *)node)->onConflictSet, ctx)) return true;
+      if (pg_extract_walker((Node *)((ModifyTable *)node)->onConflictWhere, ctx)) return true;
+      if (pg_extract_walker((Node *)((ModifyTable *)node)->returningLists, ctx)) return true;
+      break;
+    case T_NestLoop:
+      if (pg_walk_join_fields((Join *)node, ctx)) return true;
+      break;
+    case T_MergeJoin:
+      if (pg_walk_join_fields((Join *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((MergeJoin *)node)->mergeclauses, ctx)) return true;
+      break;
+    case T_HashJoin:
+      if (pg_walk_join_fields((Join *)node, ctx)) return true;
+      if (pg_extract_walker((Node *)((HashJoin *)node)->hashclauses, ctx)) return true;
+      break;
+    case T_List:
+    case T_IntList:
+    case T_OidList: {
+      ListCell *lc;
+      foreach (lc, (List *)node) {
+        if (pg_extract_walker((Node *)lfirst(lc), ctx)) return true;
+      }
+      break;
+    }
+    default:
+      // Expression nodes and anything unrecognised — use the standard walker.
+      return expression_tree_walker(node, (bool (*)()) pg_extract_walker, ctx);
+  }
+  return false;
+}
+
+List *gpdb::ExtractNodesPlan(Plan *pl, int node_tag, bool descend_into_subqueries) {
+  PgExtractCtx ctx;
+  ctx.node_tag = node_tag;
+  ctx.descend_into_subqueries = descend_into_subqueries;
+  ctx.nodes = NIL;
+  pg_extract_walker((Node *)pl, &ctx);
+  return ctx.nodes;
 }
 
 List *gpdb::ExtractNodesExpression(Node *node, int node_tag, bool descend_into_subqueries) {
-  { return nullptr; }
-
-  return NIL;
+  PgExtractCtx ctx;
+  ctx.node_tag = node_tag;
+  ctx.descend_into_subqueries = descend_into_subqueries;
+  ctx.nodes = NIL;
+  if (node != nullptr)
+    expression_tree_walker(node, (bool (*)()) pg_extract_walker, &ctx);
+  return ctx.nodes;
 }
 
 void gpdb::FreeAttrStatsSlot(AttStatsSlot *sslot) {

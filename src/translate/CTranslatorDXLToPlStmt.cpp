@@ -87,6 +87,31 @@ extern "C" {
 #include "nodes/nodeFuncs.h"
 
 using namespace gpdxl;
+
+// Remap Var(OUTER_VAR, resno) nodes through a child plan's targetlist.
+// Used in TranslateDXLResult to push a Result node's plan->qual down to its
+// child plan, because PostgreSQL's ExecResult does not evaluate plan->qual
+// when an outer plan (child) is present.  The caller is responsible for
+// ensuring every OUTER_VAR attno is within bounds of the targetlist.
+struct SRemapOuterVarCtx {
+  List *targetlist;
+};
+
+static Node *RemapOuterVarMutator(Node *node, void *ctx) {
+  if (node == nullptr) return nullptr;
+  if (IsA(node, Var)) {
+    Var *var = (Var *)node;
+    if (var->varno == OUTER_VAR && var->varlevelsup == 0) {
+      SRemapOuterVarCtx *context = (SRemapOuterVarCtx *)ctx;
+      GPOS_ASSERT(var->varattno >= 1 &&
+                  var->varattno <= (AttrNumber)gpdb::ListLength(context->targetlist));
+      TargetEntry *te = (TargetEntry *)gpdb::ListNth(context->targetlist, var->varattno - 1);
+      return (Node *)gpdb::CopyObject(te->expr);
+    }
+    return (Node *)gpdb::CopyObject(node);
+  }
+  return gpdb::MutateExpressionTree(node, RemapOuterVarMutator, ctx);
+}
 using namespace gpos;
 using namespace gpopt;
 using namespace gpmd;
@@ -2763,7 +2788,24 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLResult(const CDXLNode *result_dxlnode,
                                                        nullptr,  // base table translation context
                                                        child_contexts, output_context);
 
-  plan->qual = quals_list;
+  // PostgreSQL's ExecResult does not evaluate plan->qual when an outer plan
+  // (child) is present.  Push the filter to the child plan instead, remapping
+  // OUTER_VAR references through the child's targetlist so that the Var attno
+  // values align with the child's input tuple slots.
+  if (quals_list != NIL && child_plan != nullptr) {
+    SRemapOuterVarCtx remap_ctx;
+    remap_ctx.targetlist = child_plan->targetlist;
+    List *child_qual = (List *)RemapOuterVarMutator((Node *)quals_list, &remap_ctx);
+    if (IsA(child_plan, NestLoop) || IsA(child_plan, MergeJoin) || IsA(child_plan, HashJoin)) {
+      Join *join = (Join *)child_plan;
+      join->joinqual = gpdb::ListConcat(join->joinqual, child_qual);
+    } else {
+      child_plan->qual = gpdb::ListConcat(child_plan->qual, child_qual);
+    }
+    plan->qual = NIL;
+  } else {
+    plan->qual = quals_list;
+  }
   result->resconstantqual = (Node *)one_time_quals_list;
   SetParamIds(plan);
 
