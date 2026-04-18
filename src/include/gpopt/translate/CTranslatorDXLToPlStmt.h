@@ -191,6 +191,10 @@ class CTranslatorDXLToPlStmt {
       CDXLTranslationContextArray *ctxt_translation_prev_siblings  // translation contexts of previous siblings
   );
 
+  // Expand an IndexScan on a partitioned table into an Append over per-partition IndexScans
+  Plan *ExpandIndexScanForPartitions(IndexScan *root_index_scan, Index root_rte_index, Oid root_rel_oid,
+                                     Oid root_index_oid, const gpmd::IMDRelation *md_rel);
+
   // translate DXL hash join into a HashJoin node
   Plan *TranslateDXLHashJoin(
       const CDXLNode *TranslateDXLHashJoin, CDXLTranslateContext *output_context,

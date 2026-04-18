@@ -1,11 +1,15 @@
 extern "C" {
 #include <postgres.h>
 
+#include <access/attmap.h>
 #include <access/htup_details.h>
+#include <access/table.h>
+#include <catalog/partition.h>
 #include <catalog/pg_aggregate.h>
 #include <catalog/pg_collation.h>
 #include <executor/execPartition.h>
 #include <executor/executor.h>
+#include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
 #include <nodes/nodes.h>
 #include <nodes/plannodes.h>
@@ -13,6 +17,7 @@ extern "C" {
 #include <optimizer/optimizer.h>
 #include <parser/parse_agg.h>
 #include <partitioning/partdesc.h>
+#include <rewrite/rewriteManip.h>
 #include <storage/lmgr.h>
 #include <utils/builtins.h>
 #include <utils/datum.h>
@@ -738,6 +743,106 @@ void CTranslatorDXLToPlStmt::TranslatePlan(Plan *plan, const CDXLNode *dxlnode, 
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CTranslatorDXLToPlStmt::ExpandIndexScanForPartitions
+//
+//	@doc:
+//		Expand an IndexScan on a partitioned table into an Append over per-partition IndexScans
+//
+//---------------------------------------------------------------------------
+Plan *CTranslatorDXLToPlStmt::ExpandIndexScanForPartitions(IndexScan *root_index_scan, Index root_rte_index,
+                                                            Oid root_rel_oid, Oid root_index_oid,
+                                                            const IMDRelation *md_rel) {
+  Append *append = makeNode(Append);
+  append->part_prune_index = -1;
+  Plan *append_plan = &append->plan;
+
+  Relation root_rel = table_open(root_rel_oid, AccessShareLock);
+
+  IMdIdArray *partition_mdids = md_rel->ChildPartitionMdids();
+  for (uint32_t i = 0; i < partition_mdids->Size(); i++) {
+    Oid part_oid = CMDIdGPDB::CastMdid((*partition_mdids)[i])->Oid();
+    gpdb::GPDBLockRelationOid(part_oid, AccessShareLock);
+    Relation part_rel = table_open(part_oid, AccessShareLock);
+
+    Oid part_index_oid = index_get_partition(part_rel, root_index_oid);
+    if (!OidIsValid(part_index_oid))
+      elog(ERROR, "failed to find index for partition \"%s\" in ORCA index scan",
+           RelationGetRelationName(part_rel));
+    gpdb::GPDBLockRelationOid(part_index_oid, AccessShareLock);
+
+    RangeTblEntry *part_rte = makeNode(RangeTblEntry);
+    part_rte->rtekind = RTE_RELATION;
+    part_rte->relid = part_oid;
+    part_rte->rellockmode = AccessShareLock;
+    part_rte->inh = false;
+    Alias *part_alias = makeAlias(RelationGetRelationName(part_rel), NIL);
+    part_rte->eref = part_alias;
+    part_rte->alias = nullptr;
+    m_dxl_to_plstmt_context->AddRTE(part_rte);
+    Index part_rte_index = (Index)gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList());
+
+    IndexScan *part_scan = (IndexScan *)copyObject(root_index_scan);
+    part_scan->scan.scanrelid = part_rte_index;
+    part_scan->indexid = part_index_oid;
+
+    // Remap attno's from root layout to partition layout, then fix varno
+    part_scan->scan.plan.targetlist =
+        (List *)map_partition_varattnos((List *)part_scan->scan.plan.targetlist, root_rte_index, part_rel, root_rel);
+    part_scan->scan.plan.qual =
+        (List *)map_partition_varattnos((List *)part_scan->scan.plan.qual, root_rte_index, part_rel, root_rel);
+    part_scan->indexqual =
+        (List *)map_partition_varattnos((List *)part_scan->indexqual, root_rte_index, part_rel, root_rel);
+    part_scan->indexqualorig =
+        (List *)map_partition_varattnos((List *)part_scan->indexqualorig, root_rte_index, part_rel, root_rel);
+
+    ChangeVarNodes((Node *)part_scan->scan.plan.targetlist, root_rte_index, part_rte_index, 0);
+    ChangeVarNodes((Node *)part_scan->scan.plan.qual, root_rte_index, part_rte_index, 0);
+    ChangeVarNodes((Node *)part_scan->indexqual, root_rte_index, part_rte_index, 0);
+    ChangeVarNodes((Node *)part_scan->indexqualorig, root_rte_index, part_rte_index, 0);
+
+    part_scan->scan.plan.plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+    table_close(part_rel, NoLock);
+    append->appendplans = gpdb::LAppend(append->appendplans, part_scan);
+  }
+
+  table_close(root_rel, NoLock);
+
+  // Build Append target list with OUTER_VAR references into child target lists
+  append_plan->targetlist = NIL;
+  ListCell *lc;
+  foreach (lc, root_index_scan->scan.plan.targetlist) {
+    TargetEntry *orig_te = (TargetEntry *)lfirst(lc);
+    Oid vartype = InvalidOid;
+    int32 vartypmod = -1;
+    Oid varcollid = InvalidOid;
+    if (IsA(orig_te->expr, Var)) {
+      Var *v = (Var *)orig_te->expr;
+      vartype = v->vartype;
+      vartypmod = v->vartypmod;
+      varcollid = v->varcollid;
+    }
+    Var *new_var = makeVar(OUTER_VAR, orig_te->resno, vartype, vartypmod, varcollid, 0);
+    TargetEntry *new_te =
+        makeTargetEntry((Expr *)new_var, orig_te->resno,
+                        orig_te->resname ? pstrdup(orig_te->resname) : nullptr, orig_te->resjunk);
+    new_te->ressortgroupref = orig_te->ressortgroupref;
+    new_te->resorigtbl = orig_te->resorigtbl;
+    new_te->resorigcol = orig_te->resorigcol;
+    append_plan->targetlist = gpdb::LAppend(append_plan->targetlist, new_te);
+  }
+
+  uint32_t nparts = partition_mdids->Size() > 0 ? partition_mdids->Size() : 1;
+  append_plan->startup_cost = root_index_scan->scan.plan.startup_cost;
+  append_plan->total_cost = root_index_scan->scan.plan.total_cost * nparts;
+  append_plan->plan_rows = root_index_scan->scan.plan.plan_rows * nparts;
+  append_plan->plan_width = root_index_scan->scan.plan.plan_width;
+  append_plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+
+  return append_plan;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CTranslatorDXLToPlStmt::TranslateDXLIndexScan
 //
 //	@doc:
@@ -803,6 +908,10 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLIndexScan(const CDXLNode *index_scan_d
    * available or needed in IndexScan. Ignore them.
    */
   SetParamIds(plan);
+
+  if (md_rel->IsPartitioned()) {
+    return ExpandIndexScanForPartitions(index_scan, index, mdid->Oid(), index_oid, md_rel);
+  }
 
   return (Plan *)index_scan;
 }
