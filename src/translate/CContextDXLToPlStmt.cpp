@@ -36,7 +36,10 @@ uint32_t CContextDXLToPlStmt::GetNextPlanId() {
 uint32_t CContextDXLToPlStmt::GetNextParamId(OID typeoid) {
   m_param_types_list = gpdb::LAppendOid(m_param_types_list, typeoid);
 
-  return ++m_param_id_counter;
+  // paramid is used as a direct 0-based index into es_param_exec_vals,
+  // which is allocated with list_length(paramExecTypes) slots.
+  // Post-increment ensures the first paramid is 0, keeping IDs in-bounds.
+  return m_param_id_counter++;
 }
 
 //---------------------------------------------------------------------------
