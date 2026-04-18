@@ -1,3 +1,0 @@
-[workspace]
-members = ["optimizer_core", "pg_bridge"]
-resolver = "2"
