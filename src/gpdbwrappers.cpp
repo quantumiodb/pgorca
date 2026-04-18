@@ -34,7 +34,15 @@ extern "C" {
 
 #include <access/amapi.h>
 #include <access/genam.h>
+#include <access/cmptype.h>
+#include <access/genam.h>
+#include <access/heapam.h>
+#include <access/stratnum.h>
+#include <access/tableam.h>
+#include <catalog/pg_am_d.h>
+#include <utils/catcache.h>
 #include <catalog/pg_aggregate.h>
+#include <catalog/pg_amop.h>
 #include <catalog/pg_inherits.h>
 #include <commands/defrem.h>
 #include <foreign/fdwapi.h>
@@ -801,25 +809,72 @@ bool gpdb::GetCastFunc(Oid src_oid, Oid dest_oid, bool *is_binary_coercible, Oid
   return false;
 }
 
-unsigned int gpdb::GetComparisonType(Oid op_oid) {
-  {
-    /* catalog tables: pg_amop */
-    return (op_oid);
+// Ported from CBDB get_comparison_type() using PG18's get_op_index_interpretation.
+// Returns OrcaCmpType values matching CTranslatorRelcacheToDXL.cpp:
+//   Eq=0, NEq=1, LT=2, LEq=3, GT=4, GEq=5, Other=6
+static unsigned int get_comparison_type(Oid op_oid) {
+  List *interps = get_op_index_interpretation(op_oid);
+  if (interps == NIL)
+    return 6;  // OrcaCmptOther
+
+  OpIndexInterpretation *interp = (OpIndexInterpretation *)linitial(interps);
+  unsigned int result;
+  switch (interp->cmptype) {
+    case COMPARE_LT: result = 2; break;
+    case COMPARE_LE: result = 3; break;
+    case COMPARE_EQ: result = 0; break;
+    case COMPARE_GE: result = 5; break;
+    case COMPARE_GT: result = 4; break;
+    case COMPARE_NE: result = 1; break;
+    default:         result = 6; break;
+  }
+  list_free_deep(interps);
+  return result;
+}
+
+// Ported from CBDB get_comparison_operator() using PG18 catalog APIs.
+// heap_open/heap_close → table_open/table_close; amopopr field name unchanged.
+static Oid get_comparison_operator(Oid left_oid, Oid right_oid, unsigned int cmpt) {
+  int16 opstrat;
+  switch (cmpt) {
+    case 2: opstrat = BTLessStrategyNumber;         break;
+    case 3: opstrat = BTLessEqualStrategyNumber;    break;
+    case 0: opstrat = BTEqualStrategyNumber;        break;
+    case 5: opstrat = BTGreaterEqualStrategyNumber; break;
+    case 4: opstrat = BTGreaterStrategyNumber;      break;
+    default: return InvalidOid;
   }
 
-  return InvalidOid;
+  Oid result = InvalidOid;
+  Relation pg_amop = table_open(AccessMethodOperatorRelationId, AccessShareLock);
+
+  ScanKeyData scankey[4];
+  ScanKeyInit(&scankey[0], Anum_pg_amop_amoplefttype,  BTEqualStrategyNumber, F_OIDEQ,  ObjectIdGetDatum(left_oid));
+  ScanKeyInit(&scankey[1], Anum_pg_amop_amoprighttype, BTEqualStrategyNumber, F_OIDEQ,  ObjectIdGetDatum(right_oid));
+  ScanKeyInit(&scankey[2], Anum_pg_amop_amopmethod,    BTEqualStrategyNumber, F_OIDEQ,  ObjectIdGetDatum(BTREE_AM_OID));
+  ScanKeyInit(&scankey[3], Anum_pg_amop_amopstrategy,  BTEqualStrategyNumber, F_INT2EQ, Int16GetDatum(opstrat));
+
+  SysScanDesc sscan = systable_beginscan(pg_amop, InvalidOid, false, NULL, 4, scankey);
+  HeapTuple ht;
+  while (HeapTupleIsValid(ht = systable_getnext(sscan))) {
+    Form_pg_amop amoptup = (Form_pg_amop)GETSTRUCT(ht);
+    result = amoptup->amopopr;
+    break;
+  }
+  systable_endscan(sscan);
+  table_close(pg_amop, AccessShareLock);
+  return result;
+}
+
+unsigned int gpdb::GetComparisonType(Oid op_oid) {
+  return get_comparison_type(op_oid);
 }
 
 Oid gpdb::GetComparisonOperator(Oid left_oid, Oid right_oid, unsigned int cmpt) {
-  {
 #ifdef FAULT_INJECTOR
-    SIMPLE_FAULT_INJECTOR("gpdbwrappers_get_comparison_operator");
+  SIMPLE_FAULT_INJECTOR("gpdbwrappers_get_comparison_operator");
 #endif
-    /* catalog tables: pg_amop */
-    return right_oid;
-  }
-
-  return InvalidOid;
+  return get_comparison_operator(left_oid, right_oid, cmpt);
 }
 
 Oid gpdb::GetEqualityOp(Oid type_oid) {
@@ -1355,7 +1410,7 @@ bool gpdb::IsChildPartDistributionMismatched(Relation rel) {
 }
 
 double gpdb::CdbEstimatePartitionedNumTuples(Relation rel) {
-  { return 0; }
+  return rel->rd_rel->reltuples > 0 ? rel->rd_rel->reltuples : 0.0;
 }
 
 void gpdb::CloseRelation(Relation rel) {
@@ -1566,16 +1621,23 @@ List *gpdb::GetOpFamiliesForScOp(Oid opno) {
 
 // get the OID of hash equality operator(s) compatible with the given op
 Oid gpdb::GetCompatibleHashOpFamily(Oid opno) {
-  { return opno; }
-
-  return InvalidOid;
+  Oid result = InvalidOid;
+  CatCList *catlist = SearchSysCacheList1(AMOPOPID, ObjectIdGetDatum(opno));
+  for (int i = 0; i < catlist->n_members; i++) {
+    HeapTuple tuple = &catlist->members[i]->tuple;
+    Form_pg_amop aform = (Form_pg_amop)GETSTRUCT(tuple);
+    if (aform->amopmethod == HASH_AM_OID && aform->amopstrategy == HTEqualStrategyNumber) {
+      result = aform->amopfamily;
+      break;
+    }
+  }
+  ReleaseSysCacheList(catlist);
+  return result;
 }
 
-// get the OID of hash equality operator(s) compatible with the given op
+// For pg_orca (non-GPDB), legacy hash == regular hash
 Oid gpdb::GetCompatibleLegacyHashOpFamily(Oid opno) {
-  { return opno; }
-
-  return InvalidOid;
+  return gpdb::GetCompatibleHashOpFamily(opno);
 }
 
 List *gpdb::GetMergeJoinOpFamilies(Oid opno) {
