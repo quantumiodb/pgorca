@@ -158,6 +158,15 @@ target_link_libraries(pg_orca PRIVATE ${XERCES_LIB})
 install(TARGETS pg_orca
     LIBRARY DESTINATION "${PG_PKGLIBDIR}")
 
+# On macOS, PostgreSQL looks for .dylib but we build .so — create a symlink.
+if(APPLE)
+    install(CODE "
+        execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+            pg_orca.so
+            \"\${CMAKE_INSTALL_PREFIX}/${PG_PKGLIBDIR}/pg_orca.dylib\")
+    ")
+endif()
+
 install(FILES
     pg_orca.control
     pg_orca--1.0.sql

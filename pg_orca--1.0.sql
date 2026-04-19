@@ -1,1 +1,3 @@
-\echo Use "LOAD 'pg_orca'" or shared_preload_libraries to load this extension.
+-- pg_orca extension SQL
+-- Load the shared library so _PG_init runs and registers hooks/GUCs.
+LOAD 'MODULE_PATHNAME';
