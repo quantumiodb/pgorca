@@ -367,15 +367,28 @@ CTranslatorUtils::ConvertToCDXLLogicalTVF(CMemoryPool *mp,
 	}
 	else
 	{
-		// function returns base type
-		CMDName func_mdname = func->Mdname();
+		// function returns base type — use the eref column name (which
+		// preserves the user alias, e.g. "i", "j") if available
+		CMDName *col_name;
+		if (rte->eref != nullptr && list_length(rte->eref->colnames) >= 1)
+		{
+			const char *colstr = strVal(linitial(rte->eref->colnames));
+			col_name = CDXLUtils::CreateMDNameFromCharArray(mp, colstr);
+		}
+		else
+		{
+			col_name = GPOS_NEW(mp) CMDName(mp, func->Mdname().GetMDName());
+		}
 		// table valued functions don't describe the returned column type modifiers, hence the -1
 		column_descrs =
 			GetColumnDescriptorsFromBase(mp, id_generator, mdid_return_type,
-										 default_type_modifier, &func_mdname);
+										 default_type_modifier, col_name);
 	}
 
-	CMDName *pmdfuncname = GPOS_NEW(mp) CMDName(mp, func->Mdname().GetMDName());
+	// Use the RTE alias (e.g. "i", "j") when available, otherwise fall back
+	// to the function's catalog name (e.g. "generate_series")
+	const char *aliasname = (rte->alias != nullptr) ? rte->alias->aliasname : rte->eref->aliasname;
+	CMDName *pmdfuncname = CDXLUtils::CreateMDNameFromCharArray(mp, aliasname);
 
 	CDXLLogicalTVF *tvf_dxl = GPOS_NEW(mp) CDXLLogicalTVF(
 		mp, mdid_func, mdid_return_type, pmdfuncname, column_descrs);
