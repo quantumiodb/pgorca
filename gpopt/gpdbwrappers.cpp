@@ -2506,9 +2506,24 @@ gpdb::GetCompatibleHashOpFamily(Oid opno)
 {
 	GP_WRAP_START;
 	{
-		/* get_compatible_hash_opfamily is GPDB-only; use get_opfamily_oid */
-		(void) opno;
-		return InvalidOid;
+		Oid result = InvalidOid;
+		CatCList *catlist = SearchSysCacheList1(AMOPOPID, ObjectIdGetDatum(opno));
+
+		for (int i = 0; i < catlist->n_members; i++)
+		{
+			HeapTuple tuple = &catlist->members[i]->tuple;
+			Form_pg_amop aform = (Form_pg_amop) GETSTRUCT(tuple);
+
+			if (aform->amopmethod == HASH_AM_OID &&
+				aform->amopstrategy == HTEqualStrategyNumber)
+			{
+				result = aform->amopfamily;
+				break;
+			}
+		}
+
+		ReleaseSysCacheList(catlist);
+		return result;
 	}
 	GP_WRAP_END;
 	return InvalidOid;
