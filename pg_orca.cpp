@@ -72,7 +72,11 @@ static PlannedStmt *
 pg_orca_planner(Query *parse, const char *query_string,
                 int cursorOptions, ParamListInfo boundParams)
 {
-    if (pg_orca_enabled && parse->commandType == CMD_SELECT)
+    /* Pure-expression queries (no rtable): ORCA would produce a plan that
+     * breaks plpgsql's exec_simple_check_plan assertion — fall back. */
+    if (pg_orca_enabled &&
+        parse->commandType == CMD_SELECT &&
+        parse->rtable != NIL)
     {
         if (!orca_initialized)
         {
@@ -97,7 +101,7 @@ pg_orca_planner(Query *parse, const char *query_string,
 }
 
 /* ----------------------------------------------------------------
- * pg_orca_ExplainOneQuery  -- annotate EXPLAIN output
+ * pg_orca_ExplainOneQuery  -- annotate EXPLAIN output with optimizer name
  * ---------------------------------------------------------------- */
 static void
 pg_orca_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into,
@@ -134,65 +138,13 @@ void _PG_init(void)
         PGC_SUSET,
         0, NULL, NULL, NULL);
 
-    /* ORCA tuning GUCs */
-    DefineCustomBoolVariable(
-        "optimizer_enable_motions",
-        "Enable motion nodes in ORCA plans.",
-        NULL, &optimizer_enable_motions, true,
-        PGC_USERSET, 0, NULL, NULL, NULL);
-
-    DefineCustomBoolVariable(
-        "optimizer_enable_motions_masteronly_queries",
-        "Enable motion nodes for coordinator-only queries.",
-        NULL, &optimizer_enable_motions_masteronly_queries, true,
-        PGC_USERSET, 0, NULL, NULL, NULL);
-
-    DefineCustomBoolVariable(
-        "optimizer_metadata_caching",
-        "Cache metadata in ORCA.",
-        NULL, &optimizer_metadata_caching, true,
-        PGC_USERSET, 0, NULL, NULL, NULL);
-
-    DefineCustomIntVariable(
-        "optimizer_mdcache_size",
-        "Metadata cache size for ORCA (KB).",
-        NULL, &optimizer_mdcache_size, 16384, 0, INT_MAX,
-        PGC_USERSET, 0, NULL, NULL, NULL);
-
-    DefineCustomIntVariable(
-        "optimizer_segments",
-        "Number of segments for ORCA costing (1 = single-node).",
-        NULL, &optimizer_segments, 1, 1, 65536,
-        PGC_USERSET, 0, NULL, NULL, NULL);
-
-    DefineCustomRealVariable(
-        "optimizer_sort_factor",
-        "Cost scaling factor for sort operations in ORCA.",
-        NULL, &optimizer_sort_factor, 1.0, 0.0, 1e10,
-        PGC_USERSET, 0, NULL, NULL, NULL);
-
-    DefineCustomRealVariable(
-        "optimizer_spilling_mem_threshold",
-        "Memory threshold (MB) for spilling in ORCA (0 = disabled).",
-        NULL, &optimizer_spilling_mem_threshold, 0.0, 0.0, 1e10,
-        PGC_USERSET, 0, NULL, NULL, NULL);
-
-    DefineCustomStringVariable(
-        "optimizer_search_strategy_path",
-        "Path to ORCA search strategy XML file (empty = built-in).",
-        NULL, &optimizer_search_strategy_path, NULL,
-        PGC_USERSET, 0, NULL, NULL, NULL);
-
-    MarkGUCPrefixReserved("optimizer");
     MarkGUCPrefixReserved("pg_orca");
 
     prev_planner_hook = planner_hook;
     planner_hook      = pg_orca_planner;
 
-    prev_explain_hook     = ExplainOneQuery_hook
-                            ? ExplainOneQuery_hook
-                            : standard_ExplainOneQuery;
-    ExplainOneQuery_hook  = pg_orca_ExplainOneQuery;
+    prev_explain_hook    = ExplainOneQuery_hook ? ExplainOneQuery_hook : standard_ExplainOneQuery;
+    ExplainOneQuery_hook = pg_orca_ExplainOneQuery;
 }
 
 void _PG_fini(void)
