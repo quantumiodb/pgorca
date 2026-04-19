@@ -3956,6 +3956,9 @@ CTranslatorDXLToPlStmt::TranslateDXLAppend(
 {
 	// create append plan node
 	Append *append = MakeNode(Append);
+	/* PG18: -1 means no partition pruning; 0 (palloc0 default) would
+	 * trigger ExecInitPartitionExecPruning and crash with apprelids=NULL */
+	append->part_prune_index = -1;
 
 	Plan *plan = &(append->plan);
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
