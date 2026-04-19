@@ -36,12 +36,13 @@ brew install xerces-c cmake
 
 ```bash
 mkdir build && cd build
-cmake .. -DPG_CONFIG=/path/to/pg_config
+cmake .. -DPG_CONFIG=/Users/jianghua/pg-install/bin/pg_config -DCMAKE_BUILD_TYPE=Debug
 make -j$(nproc)
 make install
 ```
 
 ## Usage
+- Configure shared_preload_libraries = 'pg_orca', or manually load 'pg_orca.so';
 
 ```sql
 -- Load the extension (once per database)
@@ -94,8 +95,4 @@ Many ORCA configuration knobs were GPDB-specific GUCs. They are re-defined as re
 
 PG18 removed `optimizer/walkers.h`. The expression-walker macros (`expression_tree_walker`, `query_tree_walker`, etc.) are redirected to their `_impl` variants via `#define` in each translation file that needs them.
 
-## License
 
-The ORCA libraries (libgpos, libnaucrates, libgpopt, libgpdbcost) are licensed under the **Apache License 2.0**, inherited from Apache Cloudberry / Greenplum Database.
-
-The PostgreSQL integration glue (`gpopt/`, `pg_orca.cpp`) is also Apache 2.0.
