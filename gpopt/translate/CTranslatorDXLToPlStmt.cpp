@@ -276,6 +276,16 @@ CTranslatorDXLToPlStmt::GetPlannedStmtFromDXL(const CDXLNode *dxlnode,
 	planned_stmt->subplans = m_dxl_to_plstmt_context->GetSubplanEntriesList();
 	planned_stmt->planTree = plan;
 
+	/* PG18: mark all RT entries as unprunable so the executor doesn't
+	 * reject them with "trying to open a pruned relation". ORCA does not
+	 * use runtime partition pruning, so every RT entry is always needed. */
+	{
+		int rtsize = list_length(planned_stmt->rtable);
+		for (int i = 1; i <= rtsize; i++)
+			planned_stmt->unprunableRelids =
+				bms_add_member(planned_stmt->unprunableRelids, i);
+	}
+
 	planned_stmt->canSetTag = can_set_tag;
 	planned_stmt->relationOids = oids_list;
 
