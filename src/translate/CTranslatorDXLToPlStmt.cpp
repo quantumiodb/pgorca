@@ -2206,6 +2206,10 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLWindow(const CDXLNode *window_dxlnode,
       break;
     }
   }
+  // PG17 requires winname to be non-NULL: explain.c and ruleutils.c call
+  // quote_identifier(winname) without a NULL guard.  Mirror what PG's
+  // name_active_windows() does for anonymous window clauses.
+  window->winname = psprintf("w%d", window->winref);
 
   plan->lefttree = child_plan;
 
