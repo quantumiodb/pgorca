@@ -2614,6 +2614,14 @@ CTranslatorRelcacheToDXL::RetrievePartKeysAndTypes(CMemoryPool *mp,
 
 	PartitionKeyData *partkey = gpdb::GetRelationPartitionKey(rel);
 
+	if (nullptr == partkey)
+	{
+		// PG18: rd_partdesc may be non-null even for non-partitioned tables
+		*part_keys = nullptr;
+		*part_types = nullptr;
+		return;
+	}
+
 	if (1 < partkey->partnatts)
 	{
 		GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,

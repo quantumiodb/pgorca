@@ -129,6 +129,11 @@ if(APPLE)
     )
 endif()
 
+target_compile_definitions(pg_orca PRIVATE
+    GPOS_DEBUG
+    USE_CMAKE
+)
+
 target_compile_options(pg_orca PRIVATE
     -Wall
     -Wno-unused-parameter
@@ -163,7 +168,7 @@ if(APPLE)
     install(CODE "
         execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
             pg_orca.so
-            \"\${CMAKE_INSTALL_PREFIX}/${PG_PKGLIBDIR}/pg_orca.dylib\")
+            \"${PG_PKGLIBDIR}/pg_orca.dylib\")
     ")
 endif()
 
