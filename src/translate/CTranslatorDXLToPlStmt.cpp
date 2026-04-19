@@ -2211,6 +2211,12 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLWindow(const CDXLNode *window_dxlnode,
   // name_active_windows() does for anonymous window clauses.
   window->winname = psprintf("w%d", window->winref);
 
+  // PG17 asserts: plan.qual == NIL || topWindow (nodeWindowAgg.c:2489).
+  // ORCA only places a filter on the outermost DXL Window node, so if
+  // plan->qual is non-NIL this node is the top of the window stack.
+  if (plan->qual != NIL)
+    window->topWindow = true;
+
   plan->lefttree = child_plan;
 
   // translate partition columns
@@ -2827,6 +2833,10 @@ Plan *CTranslatorDXLToPlStmt::TranslateDXLResult(const CDXLNode *result_dxlnode,
                  GPOS_WSZ_LIT("Filter qual on top of ProjectSet node"));
     } else {
       target_plan->qual = gpdb::ListConcat(target_plan->qual, target_qual);
+      // PG17 asserts plan.qual == NIL || topWindow for WindowAgg.
+      // Pushing a qual down to a WindowAgg makes it the effective top window.
+      if (IsA(target_plan, WindowAgg))
+        ((WindowAgg *)target_plan)->topWindow = true;
     }
     plan->qual = NIL;
   } else {
