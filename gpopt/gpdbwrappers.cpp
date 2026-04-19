@@ -1316,7 +1316,11 @@ gpdb::FreeHeapTuple(HeapTuple htup)
 {
 	GP_WRAP_START;
 	{
-		heap_freetuple(htup);
+		/*
+		 * The only current callers release tuples returned by GetAttStats(),
+		 * which uses SearchSysCache2() on PostgreSQL 18.
+		 */
+		ReleaseSysCache(htup);
 		return;
 	}
 	GP_WRAP_END;
