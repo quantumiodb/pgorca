@@ -41,7 +41,11 @@ static bool extract_dxl_stats_all    = false;
 static bool dpe_stats                = true;
 static bool enumerate_plans          = false;
 static bool sample_plans             = false;
-static bool cte_inlining             = true;
+extern bool optimizer_cte_inlining;
+extern bool optimizer_print_memo_after_exploration;
+extern bool optimizer_print_memo_after_implementation;
+extern bool optimizer_print_memo_after_optimization;
+extern bool optimizer_print_optimization_context;
 static bool enable_const_eval        = true;
 /* optimizer_enable_* bools defined in pg_orca.cpp */
 static bool use_ext_const_eval_ints  = false;
@@ -109,13 +113,13 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttracePrintXformResults, &param_false,
 	 false, GPOS_WSZ_LIT("Print input and output of xforms.")},
 
-	{EopttracePrintMemoAfterExploration, &param_false,
+	{EopttracePrintMemoAfterExploration, &optimizer_print_memo_after_exploration,
 	 false, GPOS_WSZ_LIT("Prints MEMO after exploration.")},
 
-	{EopttracePrintMemoAfterImplementation, &param_false,
+	{EopttracePrintMemoAfterImplementation, &optimizer_print_memo_after_implementation,
 	 false, GPOS_WSZ_LIT("Prints MEMO after implementation.")},
 
-	{EopttracePrintMemoAfterOptimization, &param_false,
+	{EopttracePrintMemoAfterOptimization, &optimizer_print_memo_after_optimization,
 	 false, GPOS_WSZ_LIT("Prints MEMO after optimization.")},
 
 	{EopttracePrintJobScheduler, &param_false,
@@ -127,7 +131,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttracePrintGroupProperties, &param_false,
 	 false, GPOS_WSZ_LIT("Prints group properties.")},
 
-	{EopttracePrintOptimizationContext, &param_false,
+	{EopttracePrintOptimizationContext, &optimizer_print_optimization_context,
 	 false, GPOS_WSZ_LIT("Prints optimization context.")},
 
 	{EopttracePrintOptimizationStatistics, &param_false,
@@ -200,7 +204,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttraceSamplePlans, &sample_plans,
 	 false, GPOS_WSZ_LIT("Enable plan sampling.")},
 
-	{EopttraceEnableCTEInlining, &cte_inlining,
+	{EopttraceEnableCTEInlining, &optimizer_cte_inlining,
 	 false, GPOS_WSZ_LIT("Enable CTE inlining.")},
 
 	{EopttraceEnableConstantExpressionEvaluation, &enable_const_eval,

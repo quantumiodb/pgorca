@@ -62,6 +62,13 @@ double optimizer_spilling_mem_threshold         = 0.0;
 
 char *optimizer_search_strategy_path           = NULL;
 
+/* ORCA debug/print GUCs */
+bool  optimizer_print_memo_after_exploration    = false;
+bool  optimizer_print_memo_after_implementation = false;
+bool  optimizer_print_memo_after_optimization   = false;
+bool  optimizer_print_optimization_context      = false;
+bool  optimizer_cte_inlining                    = true;
+
 /* xforms array: indexed by xform id, true means disabled */
 bool  optimizer_xforms[512] = {false};
 
@@ -311,6 +318,37 @@ void _PG_init(void)
         "optimizer_search_strategy_path",
         "Path to ORCA search strategy XML file (empty = built-in).",
         NULL, &optimizer_search_strategy_path, NULL,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    /* ORCA debug GUCs */
+    DefineCustomBoolVariable(
+        "optimizer_print_memo_after_exploration",
+        "Print ORCA MEMO after exploration phase.",
+        NULL, &optimizer_print_memo_after_exploration, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_print_memo_after_implementation",
+        "Print ORCA MEMO after implementation phase.",
+        NULL, &optimizer_print_memo_after_implementation, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_print_memo_after_optimization",
+        "Print ORCA MEMO after optimization phase.",
+        NULL, &optimizer_print_memo_after_optimization, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_print_optimization_context",
+        "Print ORCA optimization context.",
+        NULL, &optimizer_print_optimization_context, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_cte_inlining",
+        "Enable CTE inlining in ORCA.",
+        NULL, &optimizer_cte_inlining, true,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     MarkGUCPrefixReserved("optimizer");
