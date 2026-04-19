@@ -32,8 +32,8 @@ if [[ ${#TEST_NAMES[@]} -gt 0 ]]; then
         --inputdir="$PG_REGRESS_SQL" \
         --outputdir="$OUTPUT_DIR" \
         --load-extension=pg_orca \
-        "${PG_REGRESS_OPTS[@]}" \
-        "${TEST_NAMES[@]}"
+        "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}" \
+        "${TEST_NAMES[@]+"${TEST_NAMES[@]}"}"
 else
     exec "$PG_REGRESS" \
         --temp-instance="$TEMP_INSTANCE" \
@@ -42,5 +42,5 @@ else
         --outputdir="$OUTPUT_DIR" \
         --load-extension=pg_orca \
         --schedule="$PG_REGRESS_SQL/parallel_schedule" \
-        "${PG_REGRESS_OPTS[@]}"
+        "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}"
 fi
