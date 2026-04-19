@@ -15,7 +15,7 @@
 
 #ifndef GPDXL_CTranslatorUtils_H
 #define GPDXL_CTranslatorUtils_H
-#define GPDXL_SYSTEM_COLUMNS 8
+#define GPDXL_SYSTEM_COLUMNS 7
 
 extern "C" {
 #include "postgres.h"

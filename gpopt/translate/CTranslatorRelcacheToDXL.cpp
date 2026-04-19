@@ -2740,11 +2740,10 @@ CTranslatorRelcacheToDXL::RetrieveRelKeysets(
 				GetAttributePosition(TableOidAttributeNumber, attno_mapping);
 			key_set->Append(GPOS_NEW(mp) ULONG(table_oid_pos));
 		}
-		ULONG seg_id_pos =
-			GetAttributePosition(GpSegmentIdAttributeNumber, attno_mapping);
+		/* In single-node PG18, gp_segment_id does not exist (GpSegmentIdAttributeNumber
+		 * is InvalidAttrNumber). ctid alone uniquely identifies a row. */
 		ULONG ctid_pos =
 			GetAttributePosition(SelfItemPointerAttributeNumber, attno_mapping);
-		key_set->Append(GPOS_NEW(mp) ULONG(seg_id_pos));
 		key_set->Append(GPOS_NEW(mp) ULONG(ctid_pos));
 
 		key_sets->Append(key_set);
