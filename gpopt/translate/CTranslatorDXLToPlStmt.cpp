@@ -3002,6 +3002,11 @@ CTranslatorDXLToPlStmt::TranslateDXLWindow(
 	// create a WindowAgg plan node
 	WindowAgg *window = MakeNode(WindowAgg);
 
+	// PG18 requires winname to be non-NULL for EXPLAIN output (show_window_def
+	// calls quote_identifier on it). ORCA doesn't carry the window clause name
+	// through DXL, so synthesize one — any non-NULL string works here.
+	window->winname = pstrdup("w1");
+
 	Plan *plan = &(window->plan);
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
 
@@ -4121,6 +4126,13 @@ CTranslatorDXLToPlStmt::TranslateDXLCTEProducerToSharedScan(
 	const CDXLNode *cte_producer_dxlnode, CDXLTranslateContext *output_context,
 	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
 {
+	// ShareInputScan (used for CTE sharing) is a CBDB/GPDB-specific plan node
+	// that does not exist in single-node PG18 (T_ShareInputScan = T_Invalid).
+	// Raise an unsupported-op error so ORCA falls back to standard_planner,
+	// which handles CTEs via inlining or CteScan as appropriate.
+	GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+			   GPOS_WSZ_LIT("CTE Producer (ShareInputScan not supported in PG18)"));
+
 	CDXLPhysicalCTEProducer *cte_prod_dxlop =
 		CDXLPhysicalCTEProducer::Cast(cte_producer_dxlnode->GetOperator());
 	ULONG cte_id = cte_prod_dxlop->Id();
@@ -4180,6 +4192,11 @@ CTranslatorDXLToPlStmt::TranslateDXLCTEConsumerToSharedScan(
 	const CDXLNode *cte_consumer_dxlnode, CDXLTranslateContext *output_context,
 	CDXLTranslationContextArray * /*ctxt_translation_prev_siblings*/)
 {
+	// Same as TranslateDXLCTEProducerToSharedScan: ShareInputScan does not
+	// exist in single-node PG18, so fall back to standard_planner.
+	GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+			   GPOS_WSZ_LIT("CTE Consumer (ShareInputScan not supported in PG18)"));
+
 	CDXLPhysicalCTEConsumer *cte_consumer_dxlop =
 		CDXLPhysicalCTEConsumer::Cast(cte_consumer_dxlnode->GetOperator());
 	ULONG cte_id = cte_consumer_dxlop->Id();

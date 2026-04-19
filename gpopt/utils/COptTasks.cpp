@@ -960,15 +960,13 @@ COptTasks::OptimizeTask(void *ptr)
 				query_to_dxl_translator->GetCTEs();
 			GPOS_ASSERT(nullptr != query_output_dxlnode_array);
 
-			BOOL is_master_only =
-				!optimizer_enable_motions ||
-				(!optimizer_enable_motions_masteronly_queries &&
-				 !query_to_dxl_translator->HasDistributedTables());
-			// See NoteDistributionPolicyOpclasses() in src/backend/gpopt/translate/CTranslatorQueryToDXL.cpp
+			// pg_orca runs on single-node PostgreSQL — always disable motions
+			// (Motion nodes use T_Invalid as their node tag and would crash the
+			// PG18 executor if they ever appeared in the plan tree).
 			BOOL use_legacy_opfamilies =
 				(query_to_dxl_translator->GetDistributionHashOpsKind() ==
 				 DistrUseLegacyHashOps);
-			CAutoTraceFlag atf1(EopttraceDisableMotions, is_master_only);
+			CAutoTraceFlag atf1(EopttraceDisableMotions, true /*is_master_only*/);
 			CAutoTraceFlag atf2(EopttraceUseLegacyOpfamilies,
 								use_legacy_opfamilies);
 

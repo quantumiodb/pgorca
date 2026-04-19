@@ -97,21 +97,43 @@ typedef struct Motion
 	int		   *outputSegIdx;
 } Motion;
 
-/* Node tags for GPDB-only plan nodes — not in PG18 node list */
+/*
+ * Node tags for GPDB/CBDB-only plan nodes that do not exist in PG18.
+ *
+ * We assign distinct out-of-range values (≥ 5000) rather than T_Invalid (0)
+ * so that the executor's "unrecognized node type: N" error message carries a
+ * meaningful, grep-able number instead of 0 which is hard to attribute.
+ * PG18's highest NodeTag is ~479, so 5000+ is safely out of range.
+ *
+ * The values mirror the relative ordering from Cloudberry's nodes.h so they
+ * are stable across rebuilds:
+ *   T_Motion           = 5001  (CBDB: after T_Limit)
+ *   T_ShareInputScan   = 5002
+ *   T_SplitUpdate      = 5003
+ *   T_Sequence         = 5004  (CBDB: T_Sequence = T_BitmapAnd - 1 area)
+ *   T_PartitionSelector= 5005
+ *   T_AssertOp         = 5006
+ *   T_DynamicSeqScan   = 5007
+ *   T_DynamicIndexScan = 5008
+ *   T_DynamicIndexOnlyScan    = 5009
+ *   T_DynamicBitmapHeapScan   = 5010
+ *   T_DynamicBitmapIndexScan  = 5011
+ *   T_DynamicForeignScan      = 5012
+ */
 #ifndef T_Motion
-#define T_Motion T_Invalid
+#define T_Motion ((NodeTag) 5001)
 #endif
 #ifndef T_ShareInputScan
-#define T_ShareInputScan T_Invalid
+#define T_ShareInputScan ((NodeTag) 5002)
 #endif
 #ifndef T_SplitUpdate
-#define T_SplitUpdate T_Invalid
+#define T_SplitUpdate ((NodeTag) 5003)
 #endif
 #ifndef T_Sequence
-#define T_Sequence T_Invalid
+#define T_Sequence ((NodeTag) 5004)
 #endif
 #ifndef T_PartitionSelector
-#define T_PartitionSelector T_Invalid
+#define T_PartitionSelector ((NodeTag) 5005)
 #endif
 
 /*
@@ -151,19 +173,19 @@ typedef struct DynamicIndexOnlyScan
 } DynamicIndexOnlyScan;
 
 #ifndef T_DynamicSeqScan
-#define T_DynamicSeqScan T_Invalid
+#define T_DynamicSeqScan ((NodeTag) 5007)
 #endif
 #ifndef T_DynamicIndexScan
-#define T_DynamicIndexScan T_Invalid
+#define T_DynamicIndexScan ((NodeTag) 5008)
 #endif
 #ifndef T_DynamicIndexOnlyScan
-#define T_DynamicIndexOnlyScan T_Invalid
+#define T_DynamicIndexOnlyScan ((NodeTag) 5009)
 #endif
 #ifndef T_DynamicBitmapHeapScan
-#define T_DynamicBitmapHeapScan T_Invalid
+#define T_DynamicBitmapHeapScan ((NodeTag) 5010)
 #endif
 #ifndef T_DynamicForeignScan
-#define T_DynamicForeignScan T_Invalid
+#define T_DynamicForeignScan ((NodeTag) 5012)
 #endif
 
 typedef struct DynamicForeignScan
@@ -188,7 +210,7 @@ typedef struct DynamicBitmapIndexScan
 } DynamicBitmapIndexScan;
 
 #ifndef T_DynamicBitmapIndexScan
-#define T_DynamicBitmapIndexScan T_Invalid
+#define T_DynamicBitmapIndexScan ((NodeTag) 5011)
 #endif
 
 /*
@@ -205,7 +227,7 @@ typedef struct PartitionSelector
 } PartitionSelector;
 
 #ifndef T_PartitionSelector
-#define T_PartitionSelector T_Invalid
+#define T_PartitionSelector ((NodeTag) 5005)
 #endif
 /* MASTER_CONTENT_ID used in segment logic */
 #ifndef MASTER_CONTENT_ID
@@ -238,7 +260,7 @@ typedef struct AssertOp
 } AssertOp;
 
 #ifndef T_AssertOp
-#define T_AssertOp T_Invalid
+#define T_AssertOp ((NodeTag) 5006)
 #endif
 
 /*
