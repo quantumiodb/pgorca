@@ -15,6 +15,7 @@ extern "C" {
 #include "commands/explain.h"
 #if PG_VERSION_NUM >= 180000
 #include "commands/explain_format.h"
+#include "commands/explain_state.h"
 #endif
 #include "executor/executor.h"
 #include "executor/nodeResult.h"
@@ -233,7 +234,8 @@ pg_orca_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into,
                         ParamListInfo params, QueryEnvironment *queryEnv)
 {
     prev_explain_hook(query, cursorOptions, into, es, queryString, params, queryEnv);
-    if (pg_orca_enabled)
+    if (pg_orca_enabled && es->pstmt &&
+        (es->pstmt->queryId & ORCA_QUERY_ID_FLAG) != 0)
         ExplainPropertyText("Optimizer", "pg_orca", es);
 }
 
