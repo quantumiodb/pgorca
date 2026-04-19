@@ -134,7 +134,7 @@ void _PG_init(void)
         "Log a message when pg_orca falls back to the standard planner.",
         NULL,
         &pg_orca_trace_fallback,
-        false,
+        true,
         PGC_SUSET,
         0, NULL, NULL, NULL);
 

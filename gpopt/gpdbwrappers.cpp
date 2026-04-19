@@ -2815,7 +2815,7 @@ gpdb::GPDBAllocSetContextCreate()
 		MemoryContext cxt;
 
 		cxt =
-			AllocSetContextCreate(CurrentMemoryContext, "GPORCA memory pool",
+			AllocSetContextCreate(TopMemoryContext, "GPORCA memory pool",
 								  ALLOCSET_DEFAULT_SIZES);
 		/* MemoryContextDeclareAccountingRoot is GPDB-only — no-op in PG18 */
 
