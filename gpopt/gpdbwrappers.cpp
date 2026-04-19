@@ -524,15 +524,58 @@ gpdb::ExtractNodesPlan(Plan *pl, int node_tag, bool descend_into_subqueries)
 	return NIL;
 }
 
+typedef struct extract_expr_context
+{
+	NodeTag		nodeTag;
+	bool		descendIntoSubqueries;
+	List	   *nodes;
+} extract_expr_context;
+
+static bool
+extract_nodes_expression_walker(Node *node, extract_expr_context *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (nodeTag(node) == context->nodeTag)
+		context->nodes = lappend(context->nodes, node);
+
+	if (nodeTag(node) == T_Query && context->descendIntoSubqueries)
+	{
+		Query *query = (Query *) node;
+
+		if (expression_tree_walker((Node *) query->targetList,
+								   extract_nodes_expression_walker,
+								   (void *) context))
+			return true;
+
+		if (query->jointree != NULL &&
+			expression_tree_walker(query->jointree->quals,
+								   extract_nodes_expression_walker,
+								   (void *) context))
+			return true;
+
+		return expression_tree_walker(query->havingQual,
+									  extract_nodes_expression_walker,
+									  (void *) context);
+	}
+
+	return expression_tree_walker(node, extract_nodes_expression_walker,
+								  (void *) context);
+}
+
 List *
 gpdb::ExtractNodesExpression(Node *node, int node_tag,
 							 bool descend_into_subqueries)
 {
 	GP_WRAP_START;
 	{
-		/* PG18: stub - returns empty list */
-		(void) node; (void) node_tag; (void) descend_into_subqueries;
-		return NIL;
+		extract_expr_context context;
+		context.nodeTag = (NodeTag) node_tag;
+		context.descendIntoSubqueries = descend_into_subqueries;
+		context.nodes = NIL;
+		extract_nodes_expression_walker(node, &context);
+		return context.nodes;
 	}
 	GP_WRAP_END;
 	return NIL;

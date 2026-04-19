@@ -16,6 +16,10 @@ extern "C" {
 #if PG_VERSION_NUM >= 180000
 #include "commands/explain_format.h"
 #endif
+#include "executor/executor.h"
+#include "executor/nodeResult.h"
+#include "nodes/execnodes.h"
+#include "miscadmin.h"
 }
 
 /* ORCA entry points (C linkage, defined in gpopt/CGPOptimizer.cpp) */
@@ -64,6 +68,123 @@ static bool orca_initialized = false;
 
 static planner_hook_type         prev_planner_hook  = nullptr;
 static ExplainOneQuery_hook_type prev_explain_hook  = nullptr;
+static ExecutorStart_hook_type   prev_executor_start_hook = nullptr;
+
+/*
+ * High bit of PlannedStmt->queryId used to flag ORCA-generated plans.
+ * queryId is normally a hash set by pg_stat_statements; hash functions
+ * never set the sign bit, so this bit is safe to borrow.
+ */
+#define ORCA_QUERY_ID_FLAG  (INT64CONST(1) << 63)
+
+/*
+ * pg_orca_ExecResult
+ *
+ * Replacement for PG18's ExecResult that evaluates node->ps.qual per-tuple,
+ * matching CBDB behavior.  ORCA generates Result nodes with non-constant quals
+ * (correlated subquery filters expressed as Params), which PG18's ExecResult
+ * silently ignores — causing "more than one row returned by a subquery".
+ */
+static TupleTableSlot *
+pg_orca_ExecResult(PlanState *pstate)
+{
+    ResultState *node = castNode(ResultState, pstate);
+    ExprContext *econtext = node->ps.ps_ExprContext;
+
+    CHECK_FOR_INTERRUPTS();
+
+    /* One-time constant qual check (e.g. "WHERE 2 > 1") */
+    if (node->rs_checkqual)
+    {
+        bool qualResult = ExecQual(node->resconstantqual, econtext);
+        node->rs_checkqual = false;
+        if (!qualResult)
+        {
+            node->rs_done = true;
+            return NULL;
+        }
+    }
+
+    while (!node->rs_done)
+    {
+        ResetExprContext(econtext);
+
+        PlanState *outerPlan = outerPlanState(node);
+        if (outerPlan != NULL)
+        {
+            TupleTableSlot *outerTupleSlot = ExecProcNode(outerPlan);
+            if (TupIsNull(outerTupleSlot))
+                return NULL;
+
+            econtext->ecxt_outertuple = outerTupleSlot;
+
+            /* Per-tuple qual — ORCA places correlated filters here */
+            if (node->ps.qual && !ExecQual(node->ps.qual, econtext))
+                continue;
+        }
+        else
+        {
+            node->rs_done = true;
+        }
+
+        return ExecProject(node->ps.ps_ProjInfo);
+    }
+
+    return NULL;
+}
+
+/*
+ * Walk the PlanState tree and replace ExecProcNode on every ResultState
+ * that has a non-empty qual list (i.e. ORCA put a per-tuple filter there).
+ */
+static void
+pg_orca_patch_result_nodes(PlanState *ps)
+{
+    if (ps == NULL)
+        return;
+
+    if (IsA(ps, ResultState))
+    {
+        ResultState *rs = (ResultState *) ps;
+        if (rs->ps.qual != NULL)
+            rs->ps.ExecProcNode = pg_orca_ExecResult;
+    }
+
+    /* Recurse into children */
+    pg_orca_patch_result_nodes(ps->lefttree);
+    pg_orca_patch_result_nodes(ps->righttree);
+
+    /* Recurse into subplans */
+    ListCell *lc;
+    foreach(lc, ps->subPlan)
+    {
+        SubPlanState *sps = (SubPlanState *) lfirst(lc);
+        pg_orca_patch_result_nodes(sps->planstate);
+    }
+
+    /* Recurse into initplans */
+    foreach(lc, ps->initPlan)
+    {
+        SubPlanState *sps = (SubPlanState *) lfirst(lc);
+        pg_orca_patch_result_nodes(sps->planstate);
+    }
+}
+
+static void
+pg_orca_ExecutorStart(QueryDesc *queryDesc, int eflags)
+{
+    bool is_orca_plan = (queryDesc->plannedstmt->queryId & ORCA_QUERY_ID_FLAG) != 0;
+
+    /* Let standard startup run first so the PlanState tree is built */
+    if (prev_executor_start_hook)
+        prev_executor_start_hook(queryDesc, eflags);
+    else
+        standard_ExecutorStart(queryDesc, eflags);
+
+    /* Only patch Result nodes in ORCA-generated plans */
+    if (is_orca_plan && queryDesc->planstate)
+        pg_orca_patch_result_nodes(queryDesc->planstate);
+}
 
 /* ----------------------------------------------------------------
  * pg_orca_planner
@@ -88,7 +209,10 @@ pg_orca_planner(Query *parse, const char *query_string,
         PlannedStmt *result = GPOPTOptimizedPlan(parse, &had_unexpected_failure);
 
         if (result != nullptr)
+        {
+            result->queryId |= ORCA_QUERY_ID_FLAG;
             return result;
+        }
 
         if (pg_orca_trace_fallback)
             elog(INFO, "pg_orca: falling back to standard planner%s",
@@ -134,7 +258,7 @@ void _PG_init(void)
         "Log a message when pg_orca falls back to the standard planner.",
         NULL,
         &pg_orca_trace_fallback,
-        true,
+        false,
         PGC_SUSET,
         0, NULL, NULL, NULL);
 
@@ -195,6 +319,9 @@ void _PG_init(void)
 
     prev_explain_hook    = ExplainOneQuery_hook ? ExplainOneQuery_hook : standard_ExplainOneQuery;
     ExplainOneQuery_hook = pg_orca_ExplainOneQuery;
+
+    prev_executor_start_hook = ExecutorStart_hook;
+    ExecutorStart_hook       = pg_orca_ExecutorStart;
 }
 
 void _PG_fini(void)
@@ -202,6 +329,7 @@ void _PG_fini(void)
     planner_hook         = prev_planner_hook;
     ExplainOneQuery_hook = (prev_explain_hook == standard_ExplainOneQuery)
                            ? nullptr : prev_explain_hook;
+    ExecutorStart_hook   = prev_executor_start_hook;
 
     if (orca_initialized)
     {
