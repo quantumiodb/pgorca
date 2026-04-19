@@ -1,0 +1,4 @@
+comment = 'ORCA query optimizer as a PostgreSQL extension'
+default_version = '1.0'
+module_pathname = '$libdir/pg_orca'
+relocatable = false
