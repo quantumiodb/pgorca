@@ -20,7 +20,9 @@ extern "C" {
 #include "executor/executor.h"
 #include "executor/nodeResult.h"
 #include "nodes/execnodes.h"
+#include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
+#include "optimizer/optimizer.h"
 }
 
 /* ORCA entry points (C linkage, defined in gpopt/CGPOptimizer.cpp) */
@@ -195,6 +197,37 @@ pg_orca_ExecutorStart(QueryDesc *queryDesc, int eflags)
 }
 
 /* ----------------------------------------------------------------
+ * fold_query_constants
+ *
+ * Recursively constant-fold all expressions within a Query tree.
+ * eval_const_expressions() alone is a no-op when the top-level node is a
+ * Query, because expression_tree_mutator returns Query nodes unchanged.
+ * We use query_tree_mutator to descend into the Query structure and call
+ * eval_const_expressions on each expression sub-tree.
+ * ---------------------------------------------------------------- */
+extern "C" {
+static Node *
+fold_query_constants_mutator(Node *node, void *context)
+{
+    if (node == NULL)
+        return NULL;
+    if (IsA(node, Query))
+        return (Node *) query_tree_mutator((Query *) node,
+                                           fold_query_constants_mutator,
+                                           context, 0);
+    /* Hand off any expression node to eval_const_expressions, which handles
+     * the full sub-tree recursively. */
+    return eval_const_expressions(NULL, node);
+}
+} /* extern "C" */
+
+static Query *
+fold_query_constants(Query *query)
+{
+    return (Query *) fold_query_constants_mutator((Node *) query, NULL);
+}
+
+/* ----------------------------------------------------------------
  * pg_orca_planner
  * ---------------------------------------------------------------- */
 static PlannedStmt *
@@ -213,8 +246,14 @@ pg_orca_planner(Query *parse, const char *query_string,
             orca_initialized = true;
         }
 
+        /* Fold constants (e.g. similar_to_escape with literal args) before
+         * handing the query tree to ORCA.  eval_const_expressions() is a no-op
+         * when called directly on a Query node, so we use query_tree_mutator to
+         * descend into the Query structure and fold each expression sub-tree. */
+        Query *pqueryCopy = fold_query_constants(parse);
+
         bool had_unexpected_failure = false;
-        PlannedStmt *result = GPOPTOptimizedPlan(parse, &had_unexpected_failure);
+        PlannedStmt *result = GPOPTOptimizedPlan(pqueryCopy, &had_unexpected_failure);
 
         if (result != nullptr)
         {
