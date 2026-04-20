@@ -334,10 +334,21 @@ CTranslatorRelcacheToDXL::RetrieveRelCheckConstraints(CMemoryPool *mp, OID oid)
 void
 CTranslatorRelcacheToDXL::CheckUnsupportedRelation(Relation rel)
 {
-	if (!gpdb::RelationGetPartitionDesc(rel, true) && gpdb::HasSubclassSlow(rel->rd_id))
+	/* PG18: RelationGetPartitionDesc asserts RELKIND_PARTITIONED_TABLE.
+	 * For non-partitioned tables, check inheritance directly. */
+	if (rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
 	{
-		GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
-				   GPOS_WSZ_LIT("Inherited tables"));
+		if (gpdb::HasSubclassSlow(rel->rd_id))
+		{
+			GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
+					   GPOS_WSZ_LIT("Inherited tables"));
+		}
+		return;
+	}
+	if (!gpdb::RelationGetPartitionDesc(rel, true))
+	{
+		/* Partitioned table with no partitions yet — no need to fallback */
+		return;
 	}
 }
 
