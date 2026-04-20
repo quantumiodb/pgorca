@@ -71,6 +71,7 @@ extern "C" {
 #include "compat/utils/relation_keys.h"
 #include "compat/utils/subselect_hashable.h"
 #include "compat/utils/func_output_arg_types.h"
+#include "compat/utils/convert_timevalue_to_scalar.h"
 }
 #define GP_WRAP_START                                            \
 	sigjmp_buf local_sigjmp_buf;                                 \
@@ -1881,14 +1882,13 @@ double
 gpdb::ConvertTimeValueToScalar(Datum datum, Oid typid)
 {
 	bool failure = false;
+	double result = 0.0;
 	GP_WRAP_START;
 	{
-		/* PG18: stub - return 0.0 for unsupported scalar conversion */
-		(void) datum; (void) typid; (void) failure;
-		return 0.0;
+		result = convert_timevalue_to_scalar(datum, typid, &failure);
 	}
 	GP_WRAP_END;
-	return 0.0;
+	return result;
 }
 
 double
