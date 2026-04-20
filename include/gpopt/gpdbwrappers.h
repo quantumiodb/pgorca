@@ -34,8 +34,7 @@ extern "C" {
 // Stub types replacing Cloudberry-specific definitions
 #include "catalog/gp_distribution_policy.h"  // from compat/
 #include "utils/compat_memset.h"              // from compat/
-#include "utils/cmp_type.h"                   // from compat/
-#include "utils/partitioned_numpages.h"       // from compat/
+#include "utils/misc.h"                       // from compat/
 
 #include "gpos/types.h"
 

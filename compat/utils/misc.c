@@ -70,12 +70,7 @@
 #include "statistics/statistics.h"
 #include "utils/builtins.h"
 
-#include "compat/utils/cmp_type.h"
-#include "compat/utils/convert_timevalue_to_scalar.h"
-#include "compat/utils/func_output_arg_types.h"
-#include "compat/utils/partitioned_numpages.h"
-#include "compat/utils/relation_keys.h"
-#include "compat/utils/subselect_hashable.h"
+#include "compat/utils/misc.h"
 
 /* ========================================================================
  * get_comparison_type / get_comparison_operator
