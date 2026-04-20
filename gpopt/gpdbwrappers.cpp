@@ -69,6 +69,7 @@ extern "C" {
 #include "utils/partcache.h"
 #include "compat/utils/cmp_type.h"
 #include "compat/utils/relation_keys.h"
+#include "compat/utils/subselect_hashable.h"
 }
 #define GP_WRAP_START                                            \
 	sigjmp_buf local_sigjmp_buf;                                 \
@@ -3067,9 +3068,7 @@ gpdb::TestexprIsHashable(Node *testexpr, List *param_ids)
 {
 	GP_WRAP_START;
 	{
-		/* testexpr_is_hashable is GPDB-only; conservative stub returns false */
-		(void) testexpr; (void) param_ids;
-		return false;
+		return testexpr_is_hashable(testexpr, param_ids);
 	}
 	GP_WRAP_END;
 	return false;

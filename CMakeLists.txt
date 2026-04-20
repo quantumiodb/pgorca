@@ -119,6 +119,7 @@ add_library(pg_orca MODULE
     compat/utils/ext_stats.c
     compat/utils/cmp_type.c
     compat/utils/relation_keys.c
+    compat/utils/subselect_hashable.c
 )
 
 set_target_properties(pg_orca PROPERTIES
