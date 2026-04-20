@@ -1067,8 +1067,9 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexOnlyScan(
 
 	CDXLTranslateContextBaseTable index_context(m_mp);
 
-	// translate index targetlist
-	/* indextlist not in PG18 IndexScan */ TranslateDXLIndexTList(md_rel, md_index, index,
+	// translate index targetlist (required for IndexOnlyScan to know which
+	// index columns to fetch; also populates index_context for projections)
+	index_scan->indextlist = TranslateDXLIndexTList(md_rel, md_index, index,
 													table_desc, &index_context);
 
 	Plan *plan = &(index_scan->scan.plan);
@@ -4460,9 +4461,10 @@ CTranslatorDXLToPlStmt::TranslateDXLDynIdxOnlyScan(
 
 	CDXLTranslateContextBaseTable index_context(m_mp);
 
-	// translate index targetlist
-	/* indextlist not in PG18 IndexScan */ TranslateDXLIndexTList(
-		md_rel, md_index, index, table_desc, &index_context);
+	// translate index targetlist (DynamicIndexOnlyScan embeds IndexScan which
+	// has no indextlist, but we still need index_context populated for projections)
+	(void) TranslateDXLIndexTList(md_rel, md_index, index, table_desc,
+								  &index_context);
 
 	TranslatePlan(plan, dyn_idx_only_scan_dxlnode, output_context,
 				  m_dxl_to_plstmt_context, &index_context,
