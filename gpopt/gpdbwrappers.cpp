@@ -857,15 +857,18 @@ gpdb::GetAttStats(Oid relid, AttrNumber attnum)
 	return nullptr;
 }
 
+/* Declared in compat/utils/ext_stats.c */
+extern "C" List *GetRelationExtStatistics(Relation relation);
+extern "C" char *GetExtStatisticsName(Oid statOid);
+extern "C" List *GetExtStatisticsKinds(Oid statOid);
+
 List *
 gpdb::GetExtStats(Relation rel)
 {
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_statistic_ext */
-		/* PG18: query pg_statistic_ext for this relation */
-		(void) rel;
-		return NIL; /* stub: no extended stats support in initial port */
+		return GetRelationExtStatistics(rel);
 	}
 	GP_WRAP_END;
 	return nullptr;
@@ -876,8 +879,7 @@ gpdb::GetExtStatsName(Oid statOid)
 {
 	GP_WRAP_START;
 	{
-		/* PG18: look up name from pg_statistic_ext */
-		return get_rel_name(statOid); /* stub: use rel name as proxy */
+		return GetExtStatisticsName(statOid);
 	}
 	GP_WRAP_END;
 	return nullptr;
@@ -888,9 +890,7 @@ gpdb::GetExtStatsKinds(Oid statOid)
 {
 	GP_WRAP_START;
 	{
-		/* PG18: stub - returns empty list */
-		(void) statOid;
-		return NIL;
+		return GetExtStatisticsKinds(statOid);
 	}
 	GP_WRAP_END;
 	return nullptr;
