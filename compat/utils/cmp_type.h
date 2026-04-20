@@ -22,7 +22,15 @@ typedef enum CmpType
 	CmptOther  /* other */
 } CmpType;
 
-extern CmpType get_comparison_type(Oid op_oid);
-extern Oid get_comparison_operator(Oid oidLeft, Oid oidRight, CmpType cmpt);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+CmpType get_comparison_type(Oid op_oid);
+Oid get_comparison_operator(Oid oidLeft, Oid oidRight, CmpType cmpt);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* COMPAT_CMP_TYPE_H */
