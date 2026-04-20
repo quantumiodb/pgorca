@@ -115,6 +115,7 @@ add_library(pg_orca MODULE
     pg_orca.cpp
     ${GPOPT_SRC}
     $<TARGET_OBJECTS:orca_core>
+    compat/utils/walkers.c
 )
 
 set_target_properties(pg_orca PROPERTIES

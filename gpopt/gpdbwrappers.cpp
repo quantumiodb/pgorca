@@ -511,14 +511,15 @@ gpdb::TypeCollation(Oid type)
 }
 
 
+/* Declared in compat/utils/walkers.c */
+extern "C" List *extract_nodes_plan(Plan *pl, int nodeTag, bool descendIntoSubqueries);
+
 List *
 gpdb::ExtractNodesPlan(Plan *pl, int node_tag, bool descend_into_subqueries)
 {
 	GP_WRAP_START;
 	{
-		/* PG18: use plan_tree_walker equivalent - stub returns empty list */
-		(void) pl; (void) node_tag; (void) descend_into_subqueries;
-		return NIL;
+		return extract_nodes_plan(pl, node_tag, descend_into_subqueries);
 	}
 	GP_WRAP_END;
 	return NIL;
