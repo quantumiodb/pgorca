@@ -1326,10 +1326,7 @@ gpdb::GetDefaultDistributionOpclassForType(Oid typid)
 {
 	GP_WRAP_START;
 	{
-		/* catalog tables: pg_type, pg_opclass */
-		/* PG18: single-node, distribution concept not applicable */
-		(void) typid;
-		return InvalidOid;
+		return cdb_default_distribution_opclass_for_type(typid);
 	}
 	GP_WRAP_END;
 	return false;
@@ -1340,12 +1337,7 @@ gpdb::GetColumnDefOpclassForType(List *opclassName, Oid typid)
 {
 	GP_WRAP_START;
 	{
-		/* catalog tables: pg_type, pg_opclass */
-		/* PG18: resolve opclass by name if given, else return invalid */
-		if (opclassName != NIL)
-			return get_opclass_oid(BTREE_AM_OID, opclassName, true);
-		(void) typid;
-		return InvalidOid;
+		return cdb_get_opclass_for_column_def(opclassName, typid);
 	}
 	GP_WRAP_END;
 	return false;
@@ -1356,10 +1348,7 @@ gpdb::GetDefaultDistributionOpfamilyForType(Oid typid)
 {
 	GP_WRAP_START;
 	{
-		/* catalog tables: pg_type, pg_opclass */
-		/* PG18: single-node, distribution concept not applicable */
-		(void) typid;
-		return InvalidOid;
+		return cdb_default_distribution_opfamily_for_type(typid);
 	}
 	GP_WRAP_END;
 	return false;
@@ -1370,9 +1359,7 @@ gpdb::GetDefaultPartitionOpfamilyForType(Oid typid)
 {
 	GP_WRAP_START;
 	{
-		/* catalog tables: pg_type, pg_opclass */
-		/* PG18: single-node, return invalid */
-		(void) typid; return InvalidOid;
+		return default_partition_opfamily_for_type(typid);
 	}
 	GP_WRAP_END;
 	return false;
@@ -1383,9 +1370,7 @@ gpdb::GetHashProcInOpfamily(Oid opfamily, Oid typid)
 {
 	GP_WRAP_START;
 	{
-		/* catalog tables: pg_amproc, pg_type, pg_opclass */
-		/* PG18: get hash function from opfamily */
-		return get_opfamily_proc(opfamily, typid, typid, HASHSTANDARD_PROC);
+		return cdb_hashproc_in_opfamily(opfamily, typid);
 	}
 	GP_WRAP_END;
 	return false;
@@ -1396,8 +1381,7 @@ gpdb::IsLegacyCdbHashFunction(Oid funcid)
 {
 	GP_WRAP_START;
 	{
-		/* PG18: no legacy hash functions */
-		(void) funcid; return false;
+		return isLegacyCdbHashFunction(funcid);
 	}
 	GP_WRAP_END;
 	return false;
@@ -1408,8 +1392,7 @@ gpdb::GetLegacyCdbHashOpclassForBaseType(Oid typid)
 {
 	GP_WRAP_START;
 	{
-		/* PG18: no legacy hash opclasses */
-		(void) typid; return InvalidOid;
+		return get_legacy_cdbhash_opclass_for_base_type(typid);
 	}
 	GP_WRAP_END;
 	return false;

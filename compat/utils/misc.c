@@ -81,6 +81,22 @@
 /* --- get_index_opfamilies --- */
 #include "catalog/pg_index.h"
 
+/* --- cdb_default_distribution_opfamily_for_type, cdb_default_distribution_opclass_for_type,
+       cdb_get_opclass_for_column_def, cdb_hashproc_in_opfamily,
+       default_partition_opfamily_for_type, get_legacy_cdbhash_opclass_for_base_type,
+       isLegacyCdbHashFunction --- */
+#include "access/hash.h"
+#include "access/htup_details.h"
+#include "catalog/pg_am.h"
+#include "catalog/pg_amop.h"
+#include "catalog/pg_amproc.h"
+#include "commands/defrem.h"
+#include "parser/parse_coerce.h"
+#include "utils/catcache.h"
+#include "utils/lsyscache.h"
+#include "utils/syscache.h"
+#include "utils/typcache.h"
+
 #include "compat/utils/misc.h"
 
 /* ========================================================================
@@ -1059,4 +1075,218 @@ get_index_opfamilies(Oid oidIndex)
 
 	ReleaseSysCache(htup);
 	return opfam_oids;
+}
+
+/* ========================================================================
+ * cdb_default_distribution_opfamily_for_type
+ *
+ * Ported from Cloudberry src/backend/cdb/cdbhash.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetDefaultDistributionOpfamilyForType.
+ * ======================================================================== */
+
+/*
+ * Return the default hash operator family to use for distributing the given
+ * type.  Uses the type cache to find the hash opfamily that has a hash
+ * function and an equality operator.
+ */
+Oid
+cdb_default_distribution_opfamily_for_type(Oid typeoid)
+{
+	TypeCacheEntry *tcache;
+
+	tcache = lookup_type_cache(typeoid,
+							   TYPECACHE_HASH_OPFAMILY |
+							   TYPECACHE_HASH_PROC |
+							   TYPECACHE_EQ_OPR);
+
+	if (!tcache->hash_opf)
+		return InvalidOid;
+	if (!tcache->hash_proc)
+		return InvalidOid;
+	if (!tcache->eq_opr)
+		return InvalidOid;
+
+	return tcache->hash_opf;
+}
+
+/* ========================================================================
+ * cdb_default_distribution_opclass_for_type
+ *
+ * Ported from Cloudberry src/backend/cdb/cdbhash.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetDefaultDistributionOpclassForType.
+ * ======================================================================== */
+
+/*
+ * Return the default hash operator class to use for distributing the given
+ * type.  Like cdb_default_distribution_opfamily_for_type() but returns the
+ * opclass instead of the family.
+ */
+Oid
+cdb_default_distribution_opclass_for_type(Oid typeoid)
+{
+	Oid			opfamily;
+
+	opfamily = cdb_default_distribution_opfamily_for_type(typeoid);
+	if (!OidIsValid(opfamily))
+		return InvalidOid;
+
+	return GetDefaultOpClass(typeoid, HASH_AM_OID);
+}
+
+/* ========================================================================
+ * cdb_get_opclass_for_column_def
+ *
+ * Ported from Cloudberry src/backend/cdb/cdbhash.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetColumnDefOpclassForType.
+ *
+ * For single-node pg_orca, gp_use_legacy_hashops is always false, so we
+ * skip the legacy hash opclass path and use the standard default.
+ * ======================================================================== */
+
+Oid
+cdb_get_opclass_for_column_def(List *opclassName, Oid attrType)
+{
+	Oid			opclass = InvalidOid;
+
+	if (opclassName)
+	{
+		opclass = ResolveOpClass(opclassName, attrType,
+								 "hash", HASH_AM_OID);
+	}
+	else
+	{
+		opclass = cdb_default_distribution_opclass_for_type(attrType);
+
+		if (!OidIsValid(opclass))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("data type %s has no default operator class for access method \"%s\"",
+							format_type_be(attrType), "hash"),
+					 errhint("You must specify an operator class or define a default operator class for the data type.")));
+	}
+
+	Assert(OidIsValid(opclass));
+	return opclass;
+}
+
+/* ========================================================================
+ * cdb_hashproc_in_opfamily
+ *
+ * Ported from Cloudberry src/backend/cdb/cdbhash.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetHashProcInOpfamily.
+ * ======================================================================== */
+
+/*
+ * Look up the hash function for a given datatype in a given opfamily.
+ * Falls back to searching for a binary-coercible match if the direct lookup
+ * fails.
+ */
+Oid
+cdb_hashproc_in_opfamily(Oid opfamily, Oid typeoid)
+{
+	Oid			hashfunc;
+	CatCList   *catlist;
+	int			i;
+
+	/* First try a simple lookup. */
+	hashfunc = get_opfamily_proc(opfamily, typeoid, typeoid, HASHSTANDARD_PROC);
+	if (hashfunc)
+		return hashfunc;
+
+	/*
+	 * Not found. Check for the case that there is a function for another
+	 * datatype that's nevertheless binary coercible. (At least 'varchar' ops
+	 * rely on this, to leverage the text operator.)
+	 */
+	catlist = SearchSysCacheList1(AMPROCNUM, ObjectIdGetDatum(opfamily));
+
+	for (i = 0; i < catlist->n_members; i++)
+	{
+		HeapTuple	tuple = &catlist->members[i]->tuple;
+		Form_pg_amproc amproc_form = (Form_pg_amproc) GETSTRUCT(tuple);
+
+		if (amproc_form->amprocnum != HASHSTANDARD_PROC)
+			continue;
+
+		if (amproc_form->amproclefttype != amproc_form->amprocrighttype)
+			continue;
+
+		if (IsBinaryCoercible(typeoid, amproc_form->amproclefttype))
+		{
+			hashfunc = amproc_form->amproc;
+			break;
+		}
+	}
+
+	ReleaseSysCacheList(catlist);
+
+	if (!hashfunc)
+		elog(ERROR, "could not find hash function for type %u in operator family %u",
+			 typeoid, opfamily);
+
+	return hashfunc;
+}
+
+/* ========================================================================
+ * default_partition_opfamily_for_type
+ *
+ * Ported from Cloudberry src/backend/utils/cache/lsyscache.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetDefaultPartitionOpfamilyForType.
+ * ======================================================================== */
+
+/*
+ * Return the default B-tree operator family to use for partition keys.
+ */
+Oid
+default_partition_opfamily_for_type(Oid typeoid)
+{
+	TypeCacheEntry *tcache;
+
+	tcache = lookup_type_cache(typeoid, TYPECACHE_EQ_OPR | TYPECACHE_LT_OPR | TYPECACHE_GT_OPR |
+										TYPECACHE_CMP_PROC |
+										TYPECACHE_EQ_OPR_FINFO | TYPECACHE_CMP_PROC_FINFO |
+										TYPECACHE_BTREE_OPFAMILY);
+
+	if (!tcache->btree_opf)
+		return InvalidOid;
+	if (!tcache->cmp_proc)
+		return InvalidOid;
+	if (!tcache->eq_opr && !tcache->lt_opr && !tcache->gt_opr)
+		return InvalidOid;
+
+	return tcache->btree_opf;
+}
+
+/* ========================================================================
+ * get_legacy_cdbhash_opclass_for_base_type
+ *
+ * Ported from Cloudberry src/backend/cdb/cdblegacyhash.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetLegacyCdbHashOpclassForBaseType.
+ *
+ * For single-node pg_orca, the cdbhash_* legacy opclasses are not installed,
+ * so this always returns InvalidOid.
+ * ======================================================================== */
+
+Oid
+get_legacy_cdbhash_opclass_for_base_type(Oid orig_typid)
+{
+	(void) orig_typid;
+	return InvalidOid;
+}
+
+/* ========================================================================
+ * isLegacyCdbHashFunction
+ *
+ * Ported from Cloudberry src/backend/cdb/cdblegacyhash.c.
+ * Called from gpdbwrappers.cpp: gpdb::IsLegacyCdbHashFunction.
+ *
+ * For single-node pg_orca, legacy cdbhash functions are not installed,
+ * so this always returns false.
+ * ======================================================================== */
+
+bool
+isLegacyCdbHashFunction(Oid funcid)
+{
+	(void) funcid;
+	return false;
 }

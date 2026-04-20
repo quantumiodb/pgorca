@@ -101,6 +101,27 @@ List   *tlist_members(Node *node, List *targetlist);
 /* get_index_opfamilies (from lsyscache.c) */
 List   *get_index_opfamilies(Oid index_oid);
 
+/* cdb_default_distribution_opfamily_for_type (from cdbhash.c) */
+Oid     cdb_default_distribution_opfamily_for_type(Oid typeoid);
+
+/* cdb_default_distribution_opclass_for_type (from cdbhash.c) */
+Oid     cdb_default_distribution_opclass_for_type(Oid typeoid);
+
+/* cdb_get_opclass_for_column_def (from cdbhash.c) */
+Oid     cdb_get_opclass_for_column_def(List *opclassName, Oid attrType);
+
+/* cdb_hashproc_in_opfamily (from cdbhash.c) */
+Oid     cdb_hashproc_in_opfamily(Oid opfamily, Oid typeoid);
+
+/* default_partition_opfamily_for_type (from lsyscache.c) */
+Oid     default_partition_opfamily_for_type(Oid typeoid);
+
+/* get_legacy_cdbhash_opclass_for_base_type (from cdblegacyhash.c) */
+Oid     get_legacy_cdbhash_opclass_for_base_type(Oid orig_typid);
+
+/* isLegacyCdbHashFunction (from cdblegacyhash.c) */
+bool    isLegacyCdbHashFunction(Oid funcid);
+
 #ifdef __cplusplus
 }
 #endif
