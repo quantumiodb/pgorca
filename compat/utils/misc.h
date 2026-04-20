@@ -129,6 +129,9 @@ double  cdb_estimate_partitioned_numtuples(Relation rel);
 struct Const;
 Expr   *transform_array_Const_to_ArrayExpr(struct Const *c);
 
+/* transformGroupedWindows (from orca.c) */
+Node   *transformGroupedWindows(Node *node, void *context);
+
 #ifdef __cplusplus
 }
 #endif

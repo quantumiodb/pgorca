@@ -1403,3 +1403,644 @@ transform_array_Const_to_ArrayExpr(Const *c)
 
 	return (Expr *) aexpr;
 }
+
+/* ========================================================================
+ * transformGroupedWindows
+ *
+ * Ported from Cloudberry src/backend/optimizer/plan/orca.c.
+ * Called from pg_orca.cpp: pg_orca_planner.
+ *
+ * If a Query mixes window functions with aggregates or GROUP BY,
+ * transform it so the grouped/aggregate part becomes a subquery
+ * and the window functions operate on the subquery result.
+ * ======================================================================== */
+
+#include "optimizer/tlist.h"
+#include "rewrite/rewriteManip.h"
+#include "parser/parsetree.h"
+
+/* Context for transformGroupedWindows */
+typedef struct
+{
+	List	   *subtlist;			/* target list for subquery */
+	List	   *subgroupClause;		/* group clause for subquery */
+	List	   *subgroupingSets;	/* grouping sets for subquery */
+	List	   *windowClause;		/* window clause for outer query */
+
+	/* Scratch area for init_grouped_window context and map_sgr_mutator */
+	Index	   *sgr_map;
+	int			sgr_map_size;
+
+	/* Scratch area for grouped_window_mutator and var_for_grouped_window_expr */
+	List	   *subrtable;
+	int			call_depth;
+	TargetEntry *tle;
+} grouped_window_ctx;
+
+static void init_grouped_window_context(grouped_window_ctx *ctx, Query *qry);
+static Var *var_for_grouped_window_expr(grouped_window_ctx *ctx, Node *expr, bool force);
+static void discard_grouped_window_context(grouped_window_ctx *ctx);
+static Node *map_sgr_mutator(Node *node, void *context);
+static Node *grouped_window_mutator(Node *node, void *context);
+static Alias *make_replacement_alias(Query *qry, const char *aname);
+static char *generate_positional_name(AttrNumber attrno);
+static List *generate_alternate_vars(Var *var, grouped_window_ctx *ctx);
+
+/*
+ * maxSortGroupRef - return the largest sortgroupref in a target list.
+ *
+ * Simplified from Cloudberry src/backend/optimizer/util/tlist.c.
+ */
+static Index
+maxSortGroupRef(List *targetlist)
+{
+	Index		maxsgr = 0;
+	ListCell   *lc;
+
+	foreach(lc, targetlist)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lc);
+		if (tle->ressortgroupref > maxsgr)
+			maxsgr = tle->ressortgroupref;
+	}
+	return maxsgr;
+}
+
+/*
+ * get_sortgroupclauses_tles - find unique target entries matching
+ * SortGroupClauses.
+ *
+ * Simplified from Cloudberry src/backend/optimizer/util/tlist.c.
+ */
+static void
+get_sortgroupclauses_tles(List *clauses, List *targetList, List **tles)
+{
+	ListCell   *lc;
+
+	*tles = NIL;
+
+	foreach(lc, clauses)
+	{
+		Node	   *node = lfirst(lc);
+
+		if (node == NULL)
+			continue;
+
+		if (IsA(node, SortGroupClause))
+		{
+			SortGroupClause *sgc = (SortGroupClause *) node;
+			TargetEntry *tle = get_sortgroupclause_tle(sgc, targetList);
+
+			if (!list_member(*tles, tle))
+				*tles = lappend(*tles, tle);
+		}
+		else if (IsA(node, List))
+		{
+			/* Recurse into sublists */
+			List	   *sub = NIL;
+			ListCell   *slc;
+
+			get_sortgroupclauses_tles((List *) node, targetList, &sub);
+			foreach(slc, sub)
+			{
+				if (!list_member(*tles, lfirst(slc)))
+					*tles = lappend(*tles, lfirst(slc));
+			}
+		}
+		else
+		{
+			elog(ERROR, "unrecognized node type in list of sort/group clauses: %d",
+				 (int) nodeTag(node));
+		}
+	}
+}
+
+Node *
+transformGroupedWindows(Node *node, void *context)
+{
+	if (node == NULL)
+		return NULL;
+
+	if (IsA(node, Query))
+	{
+		Query	   *qry = (Query *) query_tree_mutator((Query *) node,
+														transformGroupedWindows,
+														context, 0);
+		Assert(IsA(qry, Query));
+
+		/* Done if no mix of window functions and group by/aggregates */
+		if (!qry->hasWindowFuncs ||
+			!(qry->groupClause || qry->groupingSets || qry->hasAggs))
+			return (Node *) qry;
+
+		Query	   *subq;
+		RangeTblEntry *rte;
+		RangeTblRef *ref;
+		Alias	   *alias;
+		bool		hadSubLinks = qry->hasSubLinks;
+
+		grouped_window_ctx ctx;
+
+		Assert(qry->commandType == CMD_SELECT);
+		Assert(!PointerIsValid(qry->utilityStmt));
+		Assert(qry->returningList == NIL);
+
+		/*
+		 * Make the new subquery (Q'').  Per SQL:2003 there can't be any
+		 * window functions in WHERE, GROUP BY, or HAVING.
+		 */
+		subq = makeNode(Query);
+		subq->commandType = CMD_SELECT;
+		subq->querySource = QSRC_PARSER;
+		subq->canSetTag = true;
+		subq->utilityStmt = NULL;
+		subq->resultRelation = 0;
+		subq->hasAggs = qry->hasAggs;
+		subq->hasWindowFuncs = false;	/* reevaluate later */
+		subq->hasSubLinks = qry->hasSubLinks;	/* reevaluate later */
+
+		/* Core of subquery input table expression */
+		subq->rtable = qry->rtable;
+		subq->rteperminfos = qry->rteperminfos;
+		subq->jointree = qry->jointree;
+		subq->targetList = NIL;		/* fill in later */
+
+		subq->returningList = NIL;
+		subq->groupClause = qry->groupClause;
+		subq->groupingSets = qry->groupingSets;
+		subq->havingQual = qry->havingQual;
+		subq->windowClause = NIL;	/* by construction */
+		subq->distinctClause = NIL;	/* after windowing */
+		subq->sortClause = NIL;		/* after windowing */
+		subq->limitOffset = NULL;	/* after windowing */
+		subq->limitCount = NULL;	/* after windowing */
+		subq->rowMarks = NIL;
+		subq->setOperations = NULL;
+
+		/* Check if there is a window function in the join tree */
+		if (contain_window_function((Node *) subq->jointree))
+			subq->hasWindowFuncs = true;
+
+		/*
+		 * Make the single range table entry for the outer query Q' as a
+		 * wrapper for the subquery Q''.
+		 */
+		rte = makeNode(RangeTblEntry);
+		rte->rtekind = RTE_SUBQUERY;
+		rte->subquery = subq;
+		rte->alias = NULL;			/* fill in later */
+		rte->eref = NULL;			/* fill in later */
+		rte->inFromCl = true;
+
+		/* Make a reference to the new range table entry */
+		ref = makeNode(RangeTblRef);
+		ref->rtindex = 1;
+
+		/*
+		 * Set up context for mutating the target list.
+		 */
+		init_grouped_window_context(&ctx, qry);
+
+		/* Begin rewriting the outer query in place */
+		qry->hasAggs = false;		/* by construction */
+
+		/* Core of outer query input table expression */
+		qry->rtable = list_make1(rte);
+		qry->rteperminfos = NIL;
+		qry->jointree = (FromExpr *) makeNode(FromExpr);
+		qry->jointree->fromlist = list_make1(ref);
+		qry->jointree->quals = NULL;
+
+		qry->groupClause = NIL;		/* by construction */
+		qry->groupingSets = NIL;	/* by construction */
+		qry->havingQual = NULL;		/* by construction */
+
+		/*
+		 * Mutate the Q target list and windowClauses for use in Q' and,
+		 * at the same time, update state with info needed for the subquery
+		 * target list (Q'').
+		 */
+		qry->targetList = (List *) grouped_window_mutator((Node *) qry->targetList, &ctx);
+		qry->windowClause = (List *) grouped_window_mutator((Node *) qry->windowClause, &ctx);
+		qry->hasSubLinks = checkExprHasSubLink((Node *) qry->targetList);
+
+		/* New subquery fields */
+		subq->targetList = ctx.subtlist;
+		subq->groupClause = ctx.subgroupClause;
+		subq->groupingSets = ctx.subgroupingSets;
+
+		/* Build alias for subquery RTE */
+		alias = make_replacement_alias(subq, "Window");
+		rte->eref = copyObject(alias);
+		rte->alias = alias;
+
+		/* Accommodate depth change in new subquery Q'' */
+		IncrementVarSublevelsUp((Node *) subq, 1, 1);
+
+		/* Might have changed */
+		subq->hasSubLinks = checkExprHasSubLink((Node *) subq);
+
+		Assert(PointerIsValid(qry->targetList));
+		Assert(IsA(qry->targetList, List));
+
+		if (hadSubLinks != (qry->hasSubLinks || subq->hasSubLinks))
+			elog(ERROR, "inconsistency detected in internal grouped windows transformation");
+
+		discard_grouped_window_context(&ctx);
+
+		return (Node *) qry;
+	}
+
+	return expression_tree_mutator(node, transformGroupedWindows, context);
+}
+
+/*
+ * Prime the subquery target list with grouping and windowing attributes
+ * and adjust subquery group clauses.
+ */
+static void
+init_grouped_window_context(grouped_window_ctx *ctx, Query *qry)
+{
+	List	   *grp_tles;
+	ListCell   *lc = NULL;
+	Index		maxsgr = 0;
+
+	get_sortgroupclauses_tles(qry->groupClause, qry->targetList, &grp_tles);
+	maxsgr = maxSortGroupRef(grp_tles);
+
+	ctx->subtlist = NIL;
+	ctx->subgroupClause = NIL;
+	ctx->subgroupingSets = NIL;
+
+	ctx->subrtable = qry->rtable;
+
+	/*
+	 * Map input sortgroupref values to subquery values while building
+	 * the subquery target list prefix.
+	 */
+	ctx->sgr_map = palloc0((maxsgr + 1) * sizeof(ctx->sgr_map[0]));
+	ctx->sgr_map_size = maxsgr + 1;
+	foreach(lc, grp_tles)
+	{
+		TargetEntry *tle;
+		Index		old_sgr;
+
+		tle = (TargetEntry *) copyObject(lfirst(lc));
+		old_sgr = tle->ressortgroupref;
+
+		ctx->subtlist = lappend(ctx->subtlist, tle);
+		tle->resno = list_length(ctx->subtlist);
+		tle->ressortgroupref = tle->resno;
+		tle->resjunk = false;
+
+		ctx->sgr_map[old_sgr] = tle->ressortgroupref;
+	}
+
+	/* Miscellaneous scratch area */
+	ctx->call_depth = 0;
+	ctx->tle = NULL;
+
+	/* Revise grouping into ctx->subgroupClause */
+	ctx->subgroupClause = (List *) map_sgr_mutator((Node *) qry->groupClause, ctx);
+	ctx->subgroupingSets = (List *) map_sgr_mutator((Node *) qry->groupingSets, ctx);
+}
+
+static void
+discard_grouped_window_context(grouped_window_ctx *ctx)
+{
+	ctx->subtlist = NIL;
+	ctx->subgroupClause = NIL;
+	ctx->subgroupingSets = NIL;
+	ctx->tle = NULL;
+	if (ctx->sgr_map)
+		pfree(ctx->sgr_map);
+	ctx->sgr_map = NULL;
+	ctx->subrtable = NULL;
+}
+
+/*
+ * Look for the given expression in the context's subtlist.  If none is
+ * found and force is true, add a target for it.  Make and return a Var
+ * referring to the matching target, or NULL if not found/added.
+ */
+static Var *
+var_for_grouped_window_expr(grouped_window_ctx *ctx, Node *expr, bool force)
+{
+	Var		   *var = NULL;
+	TargetEntry *tle = tlist_member((Expr *) expr, ctx->subtlist);
+
+	if (tle == NULL && force)
+	{
+		tle = makeNode(TargetEntry);
+		ctx->subtlist = lappend(ctx->subtlist, tle);
+		tle->expr = (Expr *) expr;
+		tle->resno = list_length(ctx->subtlist);
+
+		if (ctx->call_depth == 3 && ctx->tle != NULL && ctx->tle->resname != NULL)
+			tle->resname = pstrdup(ctx->tle->resname);
+		else
+			tle->resname = generate_positional_name(tle->resno);
+
+		tle->ressortgroupref = 0;
+		tle->resorigtbl = 0;
+		tle->resorigcol = 0;
+		tle->resjunk = false;
+	}
+
+	if (tle != NULL)
+	{
+		var = makeNode(Var);
+		var->varno = 1;				/* one and only */
+		var->varattno = tle->resno;
+		var->vartype = exprType((Node *) tle->expr);
+		var->vartypmod = exprTypmod((Node *) tle->expr);
+		var->varcollid = exprCollation((Node *) tle->expr);
+		var->varlevelsup = 0;
+		var->varnosyn = 1;
+		var->varattnosyn = tle->resno;
+		var->location = 0;
+	}
+
+	return var;
+}
+
+/*
+ * Mutator for subquery groupingClause to adjust sortgroupref values.
+ */
+static Node *
+map_sgr_mutator(Node *node, void *context)
+{
+	grouped_window_ctx *ctx = (grouped_window_ctx *) context;
+
+	if (!node)
+		return NULL;
+
+	if (IsA(node, List))
+	{
+		ListCell   *lc;
+		List	   *new_lst = NIL;
+
+		foreach(lc, (List *) node)
+		{
+			Node	   *newnode = lfirst(lc);
+
+			newnode = map_sgr_mutator(newnode, ctx);
+			new_lst = lappend(new_lst, newnode);
+		}
+		return (Node *) new_lst;
+	}
+	else if (IsA(node, IntList))
+	{
+		ListCell   *lc;
+		List	   *new_lst = NIL;
+
+		foreach(lc, (List *) node)
+		{
+			int			sortgroupref = lfirst_int(lc);
+
+			if (sortgroupref < 0 || sortgroupref >= ctx->sgr_map_size)
+				elog(ERROR, "sortgroupref %d out of bounds", sortgroupref);
+
+			sortgroupref = ctx->sgr_map[sortgroupref];
+			new_lst = lappend_int(new_lst, sortgroupref);
+		}
+		return (Node *) new_lst;
+	}
+	else if (IsA(node, SortGroupClause))
+	{
+		SortGroupClause *g = (SortGroupClause *) node;
+		SortGroupClause *new_g = makeNode(SortGroupClause);
+
+		memcpy(new_g, g, sizeof(SortGroupClause));
+		new_g->tleSortGroupRef = ctx->sgr_map[g->tleSortGroupRef];
+		return (Node *) new_g;
+	}
+	else if (IsA(node, GroupingSet))
+	{
+		GroupingSet *gset = (GroupingSet *) node;
+		GroupingSet *newgset = makeNode(GroupingSet);
+
+		newgset->kind = gset->kind;
+		newgset->content = (List *) map_sgr_mutator((Node *) gset->content, context);
+		newgset->location = gset->location;
+
+		return (Node *) newgset;
+	}
+	else
+		elog(ERROR, "unexpected node type %d in map_sgr_mutator", nodeTag(node));
+
+	return NULL; /* keep compiler happy */
+}
+
+/*
+ * Main transformation mutator for targets and window clauses.
+ * Replaces aggregate/grouping expressions with Var nodes referring
+ * to the subquery.
+ */
+static Node *
+grouped_window_mutator(Node *node, void *context)
+{
+	Node	   *result = NULL;
+	grouped_window_ctx *ctx = (grouped_window_ctx *) context;
+
+	if (!node)
+		return result;
+
+	ctx->call_depth++;
+
+	if (IsA(node, TargetEntry))
+	{
+		TargetEntry *tle = (TargetEntry *) node;
+		TargetEntry *new_tle = makeNode(TargetEntry);
+
+		new_tle->resno = tle->resno;
+		if (tle->resname == NULL)
+			new_tle->resname = generate_positional_name(new_tle->resno);
+		else
+			new_tle->resname = pstrdup(tle->resname);
+
+		new_tle->ressortgroupref = tle->ressortgroupref;
+		new_tle->resorigtbl = InvalidOid;
+		new_tle->resorigcol = 0;
+		new_tle->resjunk = tle->resjunk;
+
+		if (ctx->call_depth == 2)
+			ctx->tle = tle;
+		else
+			ctx->tle = NULL;
+
+		new_tle->expr = (Expr *) grouped_window_mutator((Node *) tle->expr, ctx);
+
+		ctx->tle = NULL;
+		result = (Node *) new_tle;
+	}
+	else if (IsA(node, Aggref))
+	{
+		result = (Node *) var_for_grouped_window_expr(ctx, node, true);
+	}
+	else if (IsA(node, GroupingFunc))
+	{
+		GroupingFunc *gfunc = (GroupingFunc *) node;
+		GroupingFunc *newgfunc;
+
+		newgfunc = (GroupingFunc *) copyObject((Node *) gfunc);
+		newgfunc->refs = (List *) map_sgr_mutator((Node *) newgfunc->refs, ctx);
+
+		result = (Node *) var_for_grouped_window_expr(ctx, (Node *) newgfunc, true);
+	}
+	else if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+
+		result = (Node *) var_for_grouped_window_expr(ctx, node, false);
+
+		if (!result)
+		{
+			List	   *altvars = generate_alternate_vars(var, ctx);
+			ListCell   *lc;
+
+			foreach(lc, altvars)
+			{
+				result = (Node *) var_for_grouped_window_expr(ctx, lfirst(lc), false);
+				if (result)
+					break;
+			}
+		}
+
+		if (!result)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("unresolved grouping key in window query"),
+					 errhint("You might need to use explicit aliases and/or to refer to grouping keys in the same way throughout the query.")));
+		}
+	}
+	else if (IsA(node, SubLink))
+	{
+		result = (Node *) var_for_grouped_window_expr(ctx, node, true);
+	}
+	else
+	{
+		/* Grouping expression; may not find one */
+		result = (Node *) var_for_grouped_window_expr(ctx, node, false);
+	}
+
+	if (!result)
+		result = expression_tree_mutator(node, grouped_window_mutator, ctx);
+
+	ctx->call_depth--;
+	return result;
+}
+
+/*
+ * Build an Alias for a subquery RTE representing the given Query.
+ */
+static Alias *
+make_replacement_alias(Query *qry, const char *aname)
+{
+	ListCell   *lc = NULL;
+	char	   *name = NULL;
+	Alias	   *alias = makeNode(Alias);
+	AttrNumber	attrno = 0;
+
+	alias->aliasname = pstrdup(aname);
+	alias->colnames = NIL;
+
+	foreach(lc, qry->targetList)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+		attrno++;
+
+		if (tle->resname)
+		{
+			name = pstrdup(tle->resname);
+		}
+		else if (IsA(tle->expr, Var))
+		{
+			Var		   *var = (Var *) tle->expr;
+			RangeTblEntry *rte = rt_fetch(var->varno, qry->rtable);
+
+			name = pstrdup(get_rte_attribute_name(rte, var->varattno));
+		}
+		else
+		{
+			name = generate_positional_name(attrno);
+		}
+
+		alias->colnames = lappend(alias->colnames, makeString(name));
+	}
+	return alias;
+}
+
+static char *
+generate_positional_name(AttrNumber attrno)
+{
+	char		buf[NAMEDATALEN];
+
+	snprintf(buf, sizeof(buf), "att_%d", attrno);
+	return pstrdup(buf);
+}
+
+/*
+ * Find alternate Vars that are aliases (modulo ANSI join) of the input Var.
+ */
+static List *
+generate_alternate_vars(Var *invar, grouped_window_ctx *ctx)
+{
+	List	   *rtable = ctx->subrtable;
+	RangeTblEntry *inrte;
+	List	   *alternates = NIL;
+
+	Assert(IsA(invar, Var));
+
+	inrte = rt_fetch(invar->varno, rtable);
+
+	if (inrte->rtekind == RTE_JOIN)
+	{
+		Node	   *ja = list_nth(inrte->joinaliasvars, invar->varattno - 1);
+
+		if (IsA(ja, Var))
+			alternates = lappend(alternates, copyObject(ja));
+	}
+	else
+	{
+		ListCell   *jlc;
+		Index		varno = 0;
+
+		foreach(jlc, rtable)
+		{
+			RangeTblEntry *rte = (RangeTblEntry *) lfirst(jlc);
+
+			varno++;
+
+			if (rte->rtekind == RTE_JOIN)
+			{
+				ListCell   *alc;
+				AttrNumber	attno = 0;
+
+				foreach(alc, rte->joinaliasvars)
+				{
+					ListCell   *tlc;
+					Node	   *altnode = lfirst(alc);
+					Var		   *altvar = (Var *) altnode;
+
+					attno++;
+
+					if (!IsA(altvar, Var) || !equal(invar, altvar))
+						continue;
+
+					foreach(tlc, ctx->subtlist)
+					{
+						TargetEntry *tle = (TargetEntry *) lfirst(tlc);
+						Var		   *v = (Var *) tle->expr;
+
+						if (IsA(v, Var) && v->varno == varno && v->varattno == attno)
+							alternates = lappend(alternates, tle->expr);
+					}
+				}
+			}
+		}
+	}
+	return alternates;
+}

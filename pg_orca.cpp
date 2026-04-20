@@ -23,6 +23,7 @@ extern "C" {
 #include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
+#include "compat/utils/misc.h"
 }
 
 /* ORCA entry points (C linkage, defined in gpopt/CGPOptimizer.cpp) */
@@ -251,6 +252,12 @@ pg_orca_planner(Query *parse, const char *query_string,
          * when called directly on a Query node, so we use query_tree_mutator to
          * descend into the Query structure and fold each expression sub-tree. */
         Query *pqueryCopy = fold_query_constants(parse);
+
+        /*
+         * If the query mixes window functions and aggregates/GROUP BY,
+         * transform it so the grouped part becomes a subquery.
+         */
+        pqueryCopy = (Query *) transformGroupedWindows((Node *) pqueryCopy, NULL);
 
         bool had_unexpected_failure = false;
         PlannedStmt *result = GPOPTOptimizedPlan(pqueryCopy, &had_unexpected_failure);

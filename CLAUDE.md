@@ -73,3 +73,8 @@ EXPLAIN SELECT * FROM t WHERE id > 100;
 - ORCA code uses `GPOS_NEW(mpool)` for memory allocation via ORCA's own memory pools (not regular `new`)
 - The extension is built as a single MODULE library linking all ORCA object code plus the gpopt integration layer
 - On macOS: uses `-bundle_loader` pointing at the postgres binary; `.dylib` symlink created at install time
+
+## Notice
+- cbdb code: /Users/jianghua/work/cloudberry
+- postgresql 18 code: /Users/jianghua/code/postgresql
+
