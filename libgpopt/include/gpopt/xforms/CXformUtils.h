@@ -201,11 +201,12 @@ private:
 									 ULONG ulOriginOpId, CName *pname,
 									 CColRefArray *pdrgpcrOutput,
 									 ULONG ulUnindexedPredColCount,
-									 EIndexScanDirection indexScanDirection)
+									 EIndexScanDirection indexScanDirection,
+									 CColRefSet *pcrsEqCols = nullptr)
 	{
 		return GPOS_NEW(mp)
 			T(mp, pmdindex, ptabdesc, ulOriginOpId, pname, pdrgpcrOutput,
-			  ulUnindexedPredColCount, indexScanDirection);
+			  ulUnindexedPredColCount, indexScanDirection, pcrsEqCols);
 	}
 
 	//	produce an expression representing a new btree index path

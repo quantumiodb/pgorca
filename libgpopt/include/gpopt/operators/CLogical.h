@@ -155,11 +155,14 @@ protected:
 	static CMaxCard Maxcard(CExpressionHandle &exprhdl, ULONG ulScalarIndex,
 							CMaxCard maxcard);
 
-	// compute order spec based on an index
+	// compute order spec based on an index, skipping leading keys covered by
+	// equality predicates (pcrsEqCols) so that the order spec reflects the
+	// effective output order after those columns are fixed to a constant
 	static COrderSpec *PosFromIndex(CMemoryPool *mp, const IMDIndex *pmdindex,
 									CColRefArray *colref_array,
 									const CTableDescriptor *ptabdesc,
-									EIndexScanDirection scan_direction);
+									EIndexScanDirection scan_direction,
+									CColRefSet *pcrsEqCols = nullptr);
 
 	// derive function properties using data access property of scalar child
 	static CFunctionProp *PfpDeriveFromScalar(CMemoryPool *mp,

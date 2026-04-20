@@ -64,7 +64,8 @@ CLogicalIndexGet::CLogicalIndexGet(CMemoryPool *mp, const IMDIndex *pmdindex,
 								   ULONG ulOriginOpId, const CName *pnameAlias,
 								   CColRefArray *pdrgpcrOutput,
 								   ULONG ulUnindexedPredColCount,
-								   EIndexScanDirection scan_direction)
+								   EIndexScanDirection scan_direction,
+								   CColRefSet *pcrsEqCols)
 	: CLogical(mp),
 	  m_pindexdesc(nullptr),
 	  m_ptabdesc(ptabdesc),
@@ -83,9 +84,10 @@ CLogicalIndexGet::CLogicalIndexGet(CMemoryPool *mp, const IMDIndex *pmdindex,
 	// create the index descriptor
 	m_pindexdesc = CIndexDescriptor::Pindexdesc(mp, ptabdesc, pmdindex);
 
-	// compute the order spec
+	// compute the order spec, skipping leading keys covered by equality
+	// predicates so the spec reflects the effective output order
 	m_pos = PosFromIndex(m_mp, pmdindex, m_pdrgpcrOutput, ptabdesc,
-						 m_scan_direction);
+						 m_scan_direction, pcrsEqCols);
 
 	// create a set representation of output columns
 	m_pcrsOutput = GPOS_NEW(mp) CColRefSet(mp, pdrgpcrOutput);

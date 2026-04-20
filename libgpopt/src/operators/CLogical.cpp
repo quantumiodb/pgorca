@@ -150,7 +150,8 @@ COrderSpec *
 CLogical::PosFromIndex(CMemoryPool *mp, const IMDIndex *pmdindex,
 					   CColRefArray *colref_array,
 					   const CTableDescriptor *ptabdesc,
-					   EIndexScanDirection scan_direction)
+					   EIndexScanDirection scan_direction,
+					   CColRefSet *pcrsEqCols)
 {
 	// compute the order spec after getting the current position of the index key
 	// from the table descriptor. Index keys are relative to the
@@ -177,6 +178,14 @@ CLogical::PosFromIndex(CMemoryPool *mp, const IMDIndex *pmdindex,
 	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
 	const IMDRelation *pmdrel = md_accessor->RetrieveRel(ptabdesc->MDId());
 
+	// Skip leading index keys that are covered by equality predicates:
+	// when a leading key is fixed to a constant (e.g. b = true), the index
+	// output is effectively ordered by the remaining keys, so we omit the
+	// equal-column prefix from the order spec.  We stop skipping as soon as
+	// we hit a key that is NOT in pcrsEqCols so that a partial equality prefix
+	// is still represented correctly.
+	bool skipping_eq_prefix = (pcrsEqCols != nullptr);
+
 	for (ULONG ul = 0; ul < ulLenKeys; ul++)
 	{
 		// This is the postion of the index key column relative to the relation
@@ -189,6 +198,17 @@ CLogical::PosFromIndex(CMemoryPool *mp, const IMDIndex *pmdindex,
 		// get the position of the index key column relative to the table descriptor
 		const ULONG ulPosTabDesc = ptabdesc->GetAttributePosition(attno);
 		CColRef *colref = (*colref_array)[ulPosTabDesc];
+
+		if (skipping_eq_prefix)
+		{
+			if (pcrsEqCols->FMember(colref))
+			{
+				// this leading key is pinned by an equality predicate — skip it
+				continue;
+			}
+			// first non-equal key: stop skipping
+			skipping_eq_prefix = false;
+		}
 
 		// Compute and update OrderSpec for Index key
 		CXformUtils::ComputeOrderSpecForIndexKey(mp, &pos, pmdindex,

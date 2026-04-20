@@ -48,10 +48,11 @@ public:
 						 CTableDescriptor *ptabdesc, ULONG ulOriginOpId,
 						 const CName *pnameAlias, CColRefArray *pdrgpcrOutput,
 						 ULONG ulUnindexedPredColCount,
-						 EIndexScanDirection scan_direction)
+						 EIndexScanDirection scan_direction,
+						 CColRefSet *pcrsEqCols = nullptr)
 		: CLogicalIndexGet(mp, pmdindex, ptabdesc, ulOriginOpId, pnameAlias,
 						   pdrgpcrOutput, ulUnindexedPredColCount,
-						   scan_direction)
+						   scan_direction, pcrsEqCols)
 	{
 	}
 

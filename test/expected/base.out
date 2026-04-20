@@ -1,107 +1,174 @@
-LOAD
-SET
-CREATE TABLE
-CREATE TABLE
-CREATE TABLE
-CREATE TABLE
-CREATE TABLE
-CREATE TABLE
-ALTER TABLE
+-- pg_orca base regression test
+-- Tests: SELECT, WHERE, GROUP BY, JOIN, subqueries, CTE, UNION, EXPLAIN
+LOAD 'pg_orca';
+set pg_orca.enable_orca to off;
+-- Create TPC-H schema tables (replaces pg_tpch dependency)
+CREATE TABLE nation (
+    n_nationkey INT NOT NULL,
+    n_name      TEXT NOT NULL,
+    n_regionkey INT NOT NULL,
+    n_comment   TEXT
+);
+CREATE TABLE customer (
+    c_custkey     INT NOT NULL,
+    c_name        TEXT NOT NULL,
+    c_address     TEXT NOT NULL,
+    c_nationkey   INT NOT NULL,
+    c_phone       TEXT NOT NULL,
+    c_acctbal     FLOAT NOT NULL,
+    c_mktsegment  TEXT NOT NULL,
+    c_comment     TEXT NOT NULL
+);
+CREATE TABLE orders (
+    o_orderkey      INT NOT NULL,
+    o_custkey       INT NOT NULL,
+    o_orderstatus   TEXT NOT NULL,
+    o_totalprice    FLOAT NOT NULL,
+    o_orderdate     DATE NOT NULL,
+    o_orderpriority TEXT NOT NULL,
+    o_clerk         TEXT NOT NULL,
+    o_shippriority  INT NOT NULL,
+    o_comment       TEXT NOT NULL
+);
+-- Additional test tables
+CREATE TABLE product (
+    pn     INT NOT NULL,
+    pname  TEXT NOT NULL,
+    pcolor TEXT,
+    PRIMARY KEY (pn)
+);
+CREATE TABLE sale (
+    cn  INT NOT NULL,
+    vn  INT NOT NULL,
+    pn  INT NOT NULL,
+    dt  DATE NOT NULL,
+    qty INT NOT NULL,
+    prc FLOAT NOT NULL,
+    PRIMARY KEY (cn, vn, pn)
+);
+CREATE TABLE test_table (a INT, b INT);
+ALTER TABLE test_table ADD COLUMN c INT;
+EXPLAIN SELECT * FROM test_table;
                           QUERY PLAN                           
 ---------------------------------------------------------------
  Seq Scan on test_table  (cost=0.00..30.40 rows=2040 width=12)
 (1 row)
 
-ALTER TABLE
-ALTER TABLE
-SET
+ALTER TABLE test_table DROP COLUMN c;
+ALTER TABLE test_table ADD COLUMN c INT;
+-- Enable ORCA
+SET pg_orca.enable_orca TO on;
+-- RTE_RESULT
+VALUES(1,2);
  column1 | column2 
 ---------+---------
        1 |       2
 (1 row)
 
+-- RTE_VALUES
+VALUES(1,2),(3,4);
  column1 | column2 
 ---------+---------
        1 |       2
        3 |       4
 (2 rows)
 
+-- Basic SELECT
+EXPLAIN VERBOSE SELECT FROM orders;
                           QUERY PLAN                           
 ---------------------------------------------------------------
  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=1)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(2 rows)
+(3 rows)
 
+EXPLAIN VERBOSE SELECT * FROM orders;
                                                            QUERY PLAN                                                           
 --------------------------------------------------------------------------------------------------------------------------------
  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=56)
    Output: o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority, o_clerk, o_shippriority, o_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(3 rows)
+(4 rows)
 
+EXPLAIN VERBOSE SELECT o_custkey FROM orders;
                           QUERY PLAN                           
 ---------------------------------------------------------------
  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=4)
    Output: o_custkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(3 rows)
+(4 rows)
 
+EXPLAIN VERBOSE SELECT o_custkey, o_custkey FROM orders;
                           QUERY PLAN                           
 ---------------------------------------------------------------
  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=4)
    Output: o_custkey, o_custkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(3 rows)
+(4 rows)
 
+SELECT n_regionkey AS x, n_regionkey AS y FROM nation;
  x | y 
 ---+---
 (0 rows)
 
+SELECT;
 --
 (1 row)
 
+SELECT 1, '1', 2 AS x, 'xx' AS x;
  ?column? | ?column? | x | x  
 ----------+----------+---+----
         1 | 1        | 2 | xx
 (1 row)
 
+EXPLAIN VERBOSE SELECT 1 + 1;
                 QUERY PLAN                
 ------------------------------------------
  Result  (cost=0.00..0.01 rows=1 width=4)
    Output: 2
- Optimizer: pg_orca
-(3 rows)
+(2 rows)
 
+SELECT 1, 1 + 1, true, null, array[1, 2, 3], array[[1], [2], [3]], '[1, 2, 3]';
  ?column? | ?column? | ?column? | ?column? |  array  |     array     | ?column?  
 ----------+----------+----------+----------+---------+---------------+-----------
         1 |        2 | t        |          | {1,2,3} | {{1},{2},{3}} | [1, 2, 3]
 (1 row)
 
+SELECT 1::text;
  text 
 ------
  1
 (1 row)
 
+SELECT '{1,2,3}'::integer[], 1::text, 1::int, 'a'::text, '99999999'::int;
   int4   | text | int4 | text |   int4   
 ---------+------+------+------+----------
  {1,2,3} | 1    |    1 | a    | 99999999
 (1 row)
 
+EXPLAIN VERBOSE SELECT 1+1 = 3 * 10 AND 2 > 1 OR 1 IS NULL WHERE 1=1;
                 QUERY PLAN                
 ------------------------------------------
  Result  (cost=0.00..0.01 rows=1 width=1)
    Output: false
- Optimizer: pg_orca
-(3 rows)
+(2 rows)
 
+-- WHERE
+EXPLAIN VERBOSE SELECT o_orderkey FROM orders WHERE o_custkey > 10;
                           QUERY PLAN                           
 ---------------------------------------------------------------
  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=4)
    Output: o_orderkey
    Filter: (orders.o_custkey > 10)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(4 rows)
+(5 rows)
 
+-- Column aliases with WHERE
+EXPLAIN VERBOSE SELECT n_regionkey AS x, n_regionkey AS y FROM nation WHERE n_regionkey < 10;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
  Result  (cost=0.00..431.00 rows=1 width=4)
@@ -109,26 +176,33 @@ SET
    ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
          Output: n_regionkey
          Filter: (nation.n_regionkey < 10)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(6 rows)
+(7 rows)
 
+-- IN-list constant
+EXPLAIN VERBOSE SELECT 1 WHERE 1 IN (2, 3);
                 QUERY PLAN                
 ------------------------------------------
  Result  (cost=0.00..0.01 rows=1 width=4)
    Output: 1
    One-Time Filter: false
- Optimizer: pg_orca
-(4 rows)
+(3 rows)
 
+-- Expressions
+EXPLAIN VERBOSE SELECT n_regionkey AS x, n_regionkey + 1 AS y FROM nation;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
  Result  (cost=0.00..431.00 rows=1 width=8)
    Output: n_regionkey, (n_regionkey + 1)
    ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
          Output: n_regionkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(5 rows)
+(6 rows)
 
+-- generate_series
+EXPLAIN VERBOSE SELECT 1 FROM generate_series(1,10);
                                        QUERY PLAN                                       
 ----------------------------------------------------------------------------------------
  Result  (cost=0.00..0.01 rows=1000 width=4)
@@ -136,40 +210,49 @@ SET
    ->  Function Scan on pg_catalog.generate_series  (cost=0.00..0.00 rows=1000 width=1)
          Output: generate_series
          Function Call: generate_series(1, 10)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(6 rows)
+(7 rows)
 
-                                    QUERY PLAN                                    
-----------------------------------------------------------------------------------
- Function Scan on pg_catalog.generate_series  (cost=0.00..0.00 rows=1000 width=4)
+EXPLAIN VERBOSE SELECT g FROM generate_series(1,10) g;
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Function Scan on pg_catalog.generate_series g  (cost=0.00..0.00 rows=1000 width=4)
    Output: g
    Function Call: generate_series(1, 10)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(4 rows)
+(5 rows)
 
-                                       QUERY PLAN                                       
-----------------------------------------------------------------------------------------
+EXPLAIN VERBOSE SELECT g + 1 FROM generate_series(1,10) g;
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Result  (cost=0.00..0.01 rows=1000 width=4)
-   Output: (generate_series + 1)
-   ->  Function Scan on pg_catalog.generate_series  (cost=0.00..0.00 rows=1000 width=4)
-         Output: generate_series
+   Output: (g + 1)
+   ->  Function Scan on pg_catalog.generate_series g  (cost=0.00..0.00 rows=1000 width=4)
+         Output: g
          Function Call: generate_series(1, 10)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(6 rows)
+(7 rows)
 
-                                          QUERY PLAN                                          
-----------------------------------------------------------------------------------------------
+EXPLAIN VERBOSE SELECT g + 1 AS x FROM generate_series(1,10) g WHERE 1 < 10;
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
  Result  (cost=0.00..0.01 rows=1000 width=4)
-   Output: (generate_series + 1)
+   Output: (g + 1)
    ->  Result  (cost=0.00..0.00 rows=1000 width=4)
-         Output: generate_series
+         Output: g
          One-Time Filter: (1 < 10)
-         ->  Function Scan on pg_catalog.generate_series  (cost=0.00..0.00 rows=1000 width=4)
-               Output: generate_series
+         ->  Function Scan on pg_catalog.generate_series g  (cost=0.00..0.00 rows=1000 width=4)
+               Output: g
                Function Call: generate_series(1, 10)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(9 rows)
+(10 rows)
 
+-- LIMIT
+EXPLAIN VERBOSE SELECT n_regionkey AS x, n_regionkey + 1 AS y FROM nation LIMIT 10;
                                 QUERY PLAN                                 
 ---------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=8)
@@ -178,9 +261,12 @@ SET
          Output: n_regionkey, (n_regionkey + 1)
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
                Output: n_regionkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(7 rows)
+(8 rows)
 
+-- Arithmetic
+EXPLAIN VERBOSE SELECT o_totalprice + 1, o_totalprice - 1, o_totalprice * 1, o_totalprice / 1 FROM orders WHERE o_orderkey = 1000 AND o_shippriority + 1 > 10;
                                                                                 QUERY PLAN                                                                                
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Result  (cost=0.00..431.00 rows=1 width=32)
@@ -188,9 +274,12 @@ SET
    ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=8)
          Output: o_totalprice
          Filter: ((orders.o_orderkey = 1000) AND ((orders.o_shippriority + 1) > 10))
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(6 rows)
+(7 rows)
 
+-- ORDER BY + LIMIT (index scan tests)
+EXPLAIN VERBOSE SELECT * FROM nation ORDER BY 1 LIMIT 10;
                                  QUERY PLAN                                 
 ----------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=24)
@@ -200,9 +289,11 @@ SET
          Sort Key: nation.n_nationkey
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=24)
                Output: n_nationkey, n_name, n_regionkey, n_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+EXPLAIN VERBOSE SELECT * FROM nation ORDER BY 2 LIMIT 10;
                                  QUERY PLAN                                 
 ----------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=24)
@@ -212,9 +303,11 @@ SET
          Sort Key: nation.n_name
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=24)
                Output: n_nationkey, n_name, n_regionkey, n_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+EXPLAIN VERBOSE SELECT * FROM nation ORDER BY 3 LIMIT 10;
                                  QUERY PLAN                                 
 ----------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=24)
@@ -224,9 +317,11 @@ SET
          Sort Key: nation.n_regionkey
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=24)
                Output: n_nationkey, n_name, n_regionkey, n_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+EXPLAIN VERBOSE SELECT * FROM nation ORDER BY 4 LIMIT 10;
                                  QUERY PLAN                                 
 ----------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=24)
@@ -236,9 +331,11 @@ SET
          Sort Key: nation.n_comment
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=24)
                Output: n_nationkey, n_name, n_regionkey, n_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+EXPLAIN VERBOSE SELECT * FROM orders ORDER BY 1 DESC LIMIT 10;
                                                                  QUERY PLAN                                                                 
 --------------------------------------------------------------------------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=56)
@@ -248,9 +345,11 @@ SET
          Sort Key: orders.o_orderkey DESC
          ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=56)
                Output: o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority, o_clerk, o_shippriority, o_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+EXPLAIN VERBOSE SELECT * FROM orders ORDER BY 1 DESC, 2 ASC LIMIT 10;
                                                                  QUERY PLAN                                                                 
 --------------------------------------------------------------------------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=56)
@@ -260,9 +359,48 @@ SET
          Sort Key: orders.o_orderkey DESC, orders.o_custkey
          ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=56)
                Output: o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority, o_clerk, o_shippriority, o_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+-- Composite index equality prefix: leading key fixed by equality predicate
+-- should allow the scan to satisfy ORDER BY on trailing key without Sort.
+CREATE TABLE boolindex (b bool, i int);
+CREATE UNIQUE INDEX boolindex_b_i_key ON boolindex(b, i);
+-- b is fixed by equality => index output is ordered by i => no Sort node
+EXPLAIN (costs off) SELECT * FROM boolindex WHERE b ORDER BY i LIMIT 10;
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Limit
+   ->  Index Scan using boolindex_b_i_key on boolindex
+         Index Cond: (b = true)
+ Optimizer: pg_orca
+(4 rows)
+
+-- range predicate on b => b not fixed => Sort still needed
+EXPLAIN (costs off) SELECT * FROM boolindex WHERE b > false ORDER BY i LIMIT 10;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: i
+         ->  Index Scan using boolindex_b_i_key on boolindex
+               Index Cond: (b > false)
+ Optimizer: pg_orca
+(6 rows)
+
+-- ORDER BY matches full index key order => no Sort
+EXPLAIN (costs off) SELECT * FROM boolindex ORDER BY b, i LIMIT 10;
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Limit
+   ->  Index Scan using boolindex_b_i_key on boolindex
+ Optimizer: pg_orca
+(3 rows)
+
+DROP TABLE boolindex;
+-- Basic filter
+EXPLAIN VERBOSE SELECT o_totalprice + 1 FROM orders WHERE o_orderkey = 1000 AND o_shippriority + 1 < 10;
                                      QUERY PLAN                                      
 -------------------------------------------------------------------------------------
  Result  (cost=0.00..431.00 rows=1 width=8)
@@ -270,34 +408,44 @@ SET
    ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=8)
          Output: o_totalprice
          Filter: ((orders.o_orderkey = 1000) AND ((orders.o_shippriority + 1) < 10))
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(6 rows)
+(7 rows)
 
+-- IN-list
+EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (1,2,2,3,123,34,345,453,56,567,23,213);
                                             QUERY PLAN                                            
 --------------------------------------------------------------------------------------------------
  Seq Scan on public.customer  (cost=0.00..431.00 rows=1 width=56)
    Output: c_custkey, c_name, c_address, c_nationkey, c_phone, c_acctbal, c_mktsegment, c_comment
    Filter: (customer.c_custkey = ANY ('{1,2,2,3,123,34,345,453,56,567,23,213}'::integer[]))
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(4 rows)
+(5 rows)
 
+EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (1,2,2,3,123,34,345,453,56,567,23,213) OR 1+1=2;
                                                   QUERY PLAN                                                   
 ---------------------------------------------------------------------------------------------------------------
  Seq Scan on public.customer  (cost=0.00..431.00 rows=1 width=56)
    Output: c_custkey, c_name, c_address, c_nationkey, c_phone, c_acctbal, c_mktsegment, c_comment
    Filter: ((customer.c_custkey = ANY ('{1,2,2,3,123,34,345,453,56,567,23,213}'::integer[])) OR ((1 + 1) = 2))
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(4 rows)
+(5 rows)
 
+-- Aggregates
+EXPLAIN VERBOSE SELECT sum(n_regionkey) FROM nation;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
  Aggregate  (cost=0.00..431.00 rows=1 width=8)
    Output: sum(n_regionkey)
    ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
          Output: n_regionkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(5 rows)
+(6 rows)
 
+EXPLAIN VERBOSE SELECT sum(n_regionkey) FROM nation GROUP BY n_name;
                                  QUERY PLAN                                 
 ----------------------------------------------------------------------------
  Result  (cost=0.00..431.00 rows=1 width=8)
@@ -307,9 +455,11 @@ SET
          Group Key: nation.n_name
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=12)
                Output: n_name, n_regionkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+EXPLAIN VERBOSE SELECT o_orderkey, sum(o_custkey) FROM orders GROUP BY o_orderkey ORDER BY o_orderkey;
                                 QUERY PLAN                                 
 ---------------------------------------------------------------------------
  GroupAggregate  (cost=0.00..431.00 rows=1 width=12)
@@ -320,9 +470,11 @@ SET
          Sort Key: orders.o_orderkey
          ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=8)
                Output: o_orderkey, o_custkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(9 rows)
+(10 rows)
 
+EXPLAIN VERBOSE SELECT o_orderkey, sum(o_custkey) FROM orders GROUP BY o_orderkey ORDER BY o_orderkey LIMIT 10;
                                    QUERY PLAN                                    
 ---------------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=12)
@@ -335,9 +487,11 @@ SET
                Sort Key: orders.o_orderkey
                ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=8)
                      Output: o_orderkey, o_custkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(11 rows)
+(12 rows)
 
+EXPLAIN VERBOSE SELECT o_orderkey, sum(o_custkey + o_orderkey) FROM orders GROUP BY o_orderkey ORDER BY o_orderkey LIMIT 10;
                                    QUERY PLAN                                    
 ---------------------------------------------------------------------------------
  Limit  (cost=0.00..431.00 rows=1 width=12)
@@ -350,139 +504,163 @@ SET
                Sort Key: orders.o_orderkey
                ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=8)
                      Output: o_orderkey, o_custkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(11 rows)
+(12 rows)
 
+-- UNION / INTERSECT / EXCEPT
+EXPLAIN VERBOSE SELECT * FROM nation UNION SELECT * FROM nation ORDER BY 2 LIMIT 10;
                                                     QUERY PLAN                                                     
 -------------------------------------------------------------------------------------------------------------------
- Limit  (cost=0.00..862.00 rows=1 width=24)
+ Limit  (cost=0.00..862.00 rows=2 width=24)
    Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
-   ->  GroupAggregate  (cost=0.00..862.00 rows=1 width=24)
+   ->  GroupAggregate  (cost=0.00..862.00 rows=2 width=24)
          Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
          Group Key: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
-         ->  Sort  (cost=0.00..862.00 rows=1 width=24)
+         ->  Sort  (cost=0.00..862.00 rows=2 width=24)
                Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
                Sort Key: nation.n_name, nation.n_nationkey, nation.n_regionkey, nation.n_comment
-               ->  Append  (cost=0.00..862.00 rows=1 width=24)
+               ->  Append  (cost=0.00..862.00 rows=2 width=24)
                      ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=24)
                            Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
                      ->  Seq Scan on public.nation nation_1  (cost=0.00..431.00 rows=1 width=24)
                            Output: nation_1.n_nationkey, nation_1.n_name, nation_1.n_regionkey, nation_1.n_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(14 rows)
+(15 rows)
 
+EXPLAIN VERBOSE SELECT * FROM nation UNION ALL SELECT * FROM nation ORDER BY 2 LIMIT 10;
                                                  QUERY PLAN                                                  
 -------------------------------------------------------------------------------------------------------------
- Limit  (cost=0.00..862.00 rows=1 width=24)
+ Limit  (cost=0.00..862.00 rows=2 width=24)
    Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
-   ->  Sort  (cost=0.00..862.00 rows=1 width=24)
+   ->  Sort  (cost=0.00..862.00 rows=2 width=24)
          Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
          Sort Key: nation.n_name
-         ->  Append  (cost=0.00..862.00 rows=1 width=24)
+         ->  Append  (cost=0.00..862.00 rows=2 width=24)
                ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=24)
                      Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
                ->  Seq Scan on public.nation nation_1  (cost=0.00..431.00 rows=1 width=24)
                      Output: nation_1.n_nationkey, nation_1.n_name, nation_1.n_regionkey, nation_1.n_comment
+ Query Identifier: -9223372036854775808
+ Optimizer: pg_orca
+(12 rows)
+
+EXPLAIN SELECT * FROM nation EXCEPT SELECT * FROM nation ORDER BY 3 LIMIT 10;
+                                                                                                   QUERY PLAN                                                                                                   
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.00..862.00 rows=1 width=24)
+   ->  GroupAggregate  (cost=0.00..862.00 rows=1 width=24)
+         Group Key: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
+         ->  Sort  (cost=0.00..862.00 rows=1 width=24)
+               Sort Key: nation.n_regionkey, nation.n_nationkey, nation.n_name, nation.n_comment
+               ->  Hash Anti Join  (cost=0.00..862.00 rows=1 width=24)
+                     Hash Cond: ((nation.n_nationkey = nation_1.n_nationkey) AND (nation.n_name = nation_1.n_name) AND (nation.n_regionkey = nation_1.n_regionkey) AND (nation.n_comment = nation_1.n_comment))
+                     ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
+                     ->  Hash  (cost=431.00..431.00 rows=1 width=24)
+                           ->  Seq Scan on nation nation_1  (cost=0.00..431.00 rows=1 width=24)
  Optimizer: pg_orca
 (11 rows)
 
-                                                                                                                                           QUERY PLAN                                                                                                                                           
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Limit  (cost=0.00..1293.00 rows=1 width=24)
-   ->  GroupAggregate  (cost=0.00..1293.00 rows=1 width=24)
-         Group Key: nation_1.n_nationkey, nation_1.n_name, nation_1.n_regionkey, nation_1.n_comment
-         ->  Nested Loop Anti Join  (cost=0.00..1293.00 rows=1 width=24)
-               Join Filter: ((NOT (nation_1.n_nationkey IS DISTINCT FROM nation.n_nationkey)) AND (NOT (nation_1.n_name IS DISTINCT FROM nation.n_name)) AND (NOT (nation_1.n_regionkey IS DISTINCT FROM nation.n_regionkey)) AND (NOT (nation_1.n_comment IS DISTINCT FROM nation.n_comment)))
-               ->  Sort  (cost=0.00..431.00 rows=1 width=24)
-                     Sort Key: nation_1.n_regionkey, nation_1.n_nationkey, nation_1.n_name, nation_1.n_comment
-                     ->  Seq Scan on nation nation_1  (cost=0.00..431.00 rows=1 width=24)
-               ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
+EXPLAIN SELECT * FROM nation INTERSECT SELECT * FROM nation ORDER BY 3 LIMIT 10;
+                                                                                                QUERY PLAN                                                                                                
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.00..862.00 rows=1 width=24)
+   ->  Sort  (cost=0.00..862.00 rows=1 width=24)
+         Sort Key: nation.n_regionkey
+         ->  Hash Join  (cost=0.00..862.00 rows=1 width=24)
+               Hash Cond: ((nation.n_nationkey = nation_1.n_nationkey) AND (nation.n_name = nation_1.n_name) AND (nation.n_regionkey = nation_1.n_regionkey) AND (nation.n_comment = nation_1.n_comment))
+               ->  GroupAggregate  (cost=0.00..431.00 rows=1 width=24)
+                     Group Key: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
+                     ->  Sort  (cost=0.00..431.00 rows=1 width=24)
+                           Sort Key: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
+                           ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
+               ->  Hash  (cost=431.00..431.00 rows=1 width=24)
+                     ->  GroupAggregate  (cost=0.00..431.00 rows=1 width=24)
+                           Group Key: nation_1.n_nationkey, nation_1.n_name, nation_1.n_regionkey, nation_1.n_comment
+                           ->  Sort  (cost=0.00..431.00 rows=1 width=24)
+                                 Sort Key: nation_1.n_nationkey, nation_1.n_name, nation_1.n_regionkey, nation_1.n_comment
+                                 ->  Seq Scan on nation nation_1  (cost=0.00..431.00 rows=1 width=24)
  Optimizer: pg_orca
-(10 rows)
+(17 rows)
 
-                                                                                                                                        QUERY PLAN                                                                                                                                        
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Limit  (cost=0.00..1293.00 rows=1 width=24)
-   ->  Nested Loop  (cost=0.00..1293.00 rows=1 width=24)
-         Join Filter: ((NOT (nation_1.n_nationkey IS DISTINCT FROM nation.n_nationkey)) AND (NOT (nation_1.n_name IS DISTINCT FROM nation.n_name)) AND (NOT (nation_1.n_regionkey IS DISTINCT FROM nation.n_regionkey)) AND (NOT (nation_1.n_comment IS DISTINCT FROM nation.n_comment)))
-         ->  GroupAggregate  (cost=0.00..431.00 rows=1 width=24)
-               Group Key: nation_1.n_nationkey, nation_1.n_name, nation_1.n_regionkey, nation_1.n_comment
-               ->  Sort  (cost=0.00..431.00 rows=1 width=24)
-                     Sort Key: nation_1.n_regionkey, nation_1.n_nationkey, nation_1.n_name, nation_1.n_comment
-                     ->  Seq Scan on nation nation_1  (cost=0.00..431.00 rows=1 width=24)
-         ->  GroupAggregate  (cost=0.00..431.00 rows=1 width=24)
-               Group Key: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
-               ->  Sort  (cost=0.00..431.00 rows=1 width=24)
-                     Sort Key: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
-                     ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
- Optimizer: pg_orca
-(14 rows)
-
-                          QUERY PLAN                           
----------------------------------------------------------------
- Nested Loop  (cost=0.00..1293.00 rows=1 width=80)
-   Join Filter: (orders.o_custkey = nation.n_regionkey)
-   ->  Seq Scan on orders  (cost=0.00..431.00 rows=1 width=56)
-   ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
- Optimizer: pg_orca
-(5 rows)
-
+-- JOINs
+EXPLAIN SELECT * FROM orders JOIN nation ON orders.o_custkey = nation.n_regionkey;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- Nested Loop  (cost=0.00..1293.00 rows=1 width=80)
-   Join Filter: (orders.o_custkey = nation.n_regionkey)
+ Hash Join  (cost=0.00..862.00 rows=1 width=80)
+   Hash Cond: (orders.o_custkey = nation.n_regionkey)
+   ->  Seq Scan on orders  (cost=0.00..431.00 rows=1 width=56)
+   ->  Hash  (cost=431.00..431.00 rows=1 width=24)
+         ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
+ Optimizer: pg_orca
+(6 rows)
+
+EXPLAIN SELECT * FROM orders JOIN nation ON orders.o_custkey = nation.n_regionkey AND nation.n_regionkey = 1;
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Hash Join  (cost=0.00..862.00 rows=1 width=80)
+   Hash Cond: (orders.o_custkey = nation.n_regionkey)
    ->  Seq Scan on orders  (cost=0.00..431.00 rows=1 width=56)
          Filter: (o_custkey = 1)
-   ->  Materialize  (cost=0.00..431.00 rows=1 width=24)
+   ->  Hash  (cost=431.00..431.00 rows=1 width=24)
          ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
                Filter: (n_regionkey = 1)
  Optimizer: pg_orca
 (8 rows)
 
+EXPLAIN SELECT * FROM orders JOIN nation ON orders.o_custkey = nation.n_regionkey WHERE nation.n_regionkey = 1;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- Nested Loop  (cost=0.00..1293.00 rows=1 width=80)
-   Join Filter: (orders.o_custkey = nation.n_regionkey)
+ Hash Join  (cost=0.00..862.00 rows=1 width=80)
+   Hash Cond: (orders.o_custkey = nation.n_regionkey)
    ->  Seq Scan on orders  (cost=0.00..431.00 rows=1 width=56)
          Filter: (o_custkey = 1)
-   ->  Materialize  (cost=0.00..431.00 rows=1 width=24)
+   ->  Hash  (cost=431.00..431.00 rows=1 width=24)
          ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
                Filter: (n_regionkey = 1)
  Optimizer: pg_orca
 (8 rows)
 
-                          QUERY PLAN                           
----------------------------------------------------------------
- Nested Loop Left Join  (cost=0.00..1293.00 rows=2 width=80)
-   Join Filter: (orders.o_custkey = nation.n_regionkey)
-   ->  Seq Scan on orders  (cost=0.00..431.00 rows=1 width=56)
-   ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
- Optimizer: pg_orca
-(5 rows)
-
+-- LEFT JOIN
+EXPLAIN SELECT * FROM orders LEFT JOIN nation ON orders.o_custkey = nation.n_regionkey;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- Nested Loop Left Join  (cost=0.00..1293.00 rows=2 width=80)
-   Join Filter: (orders.o_custkey = nation.n_regionkey)
+ Hash Left Join  (cost=0.00..862.00 rows=2 width=80)
+   Hash Cond: (orders.o_custkey = nation.n_regionkey)
    ->  Seq Scan on orders  (cost=0.00..431.00 rows=1 width=56)
-   ->  Materialize  (cost=0.00..431.00 rows=1 width=24)
+   ->  Hash  (cost=431.00..431.00 rows=1 width=24)
+         ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
+ Optimizer: pg_orca
+(6 rows)
+
+EXPLAIN SELECT * FROM orders LEFT JOIN nation ON orders.o_custkey = nation.n_regionkey AND nation.n_regionkey = 1;
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Hash Left Join  (cost=0.00..862.00 rows=2 width=80)
+   Hash Cond: (orders.o_custkey = nation.n_regionkey)
+   ->  Seq Scan on orders  (cost=0.00..431.00 rows=1 width=56)
+   ->  Hash  (cost=431.00..431.00 rows=1 width=24)
          ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
                Filter: (n_regionkey = 1)
  Optimizer: pg_orca
 (7 rows)
 
+EXPLAIN SELECT * FROM orders LEFT JOIN nation ON orders.o_custkey = nation.n_regionkey WHERE nation.n_regionkey = 1;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- Nested Loop  (cost=0.00..1293.00 rows=1 width=80)
-   Join Filter: (orders.o_custkey = nation.n_regionkey)
+ Hash Join  (cost=0.00..862.00 rows=1 width=80)
+   Hash Cond: (orders.o_custkey = nation.n_regionkey)
    ->  Seq Scan on orders  (cost=0.00..431.00 rows=1 width=56)
          Filter: (o_custkey = 1)
-   ->  Materialize  (cost=0.00..431.00 rows=1 width=24)
+   ->  Hash  (cost=431.00..431.00 rows=1 width=24)
          ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=24)
                Filter: (n_regionkey = 1)
  Optimizer: pg_orca
 (8 rows)
 
+-- Subqueries (IN / EXISTS)
+EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (SELECT c_custkey FROM nation);
                                                                                    QUERY PLAN                                                                                   
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Nested Loop Semi Join  (cost=0.00..1293.00 rows=1 width=56)
@@ -493,9 +671,11 @@ SET
          Filter: (customer.c_custkey = customer.c_custkey)
    ->  Limit  (cost=0.00..431.00 rows=1 width=1)
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=1)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(9 rows)
+(10 rows)
 
+EXPLAIN VERBOSE SELECT * FROM customer x WHERE c_custkey IN (SELECT x.c_nationkey FROM nation);
                                                        QUERY PLAN                                                       
 ------------------------------------------------------------------------------------------------------------------------
  Nested Loop Semi Join  (cost=0.00..1293.00 rows=1 width=56)
@@ -506,9 +686,12 @@ SET
          Filter: (x.c_custkey = x.c_nationkey)
    ->  Limit  (cost=0.00..431.00 rows=1 width=1)
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=1)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(9 rows)
+(10 rows)
 
+-- Self-join (non-equi)
+EXPLAIN VERBOSE SELECT * FROM customer a JOIN customer b ON a.c_custkey != b.c_custkey;
                                                                                                         QUERY PLAN                                                                                                        
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Nested Loop  (cost=0.00..1293.00 rows=1 width=112)
@@ -518,9 +701,14 @@ SET
          Output: a.c_custkey, a.c_name, a.c_address, a.c_nationkey, a.c_phone, a.c_acctbal, a.c_mktsegment, a.c_comment
    ->  Seq Scan on public.customer b  (cost=0.00..431.00 rows=1 width=56)
          Output: b.c_custkey, b.c_name, b.c_address, b.c_nationkey, b.c_phone, b.c_acctbal, b.c_mktsegment, b.c_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+-- Nested subquery
+EXPLAIN VERBOSE SELECT * FROM customer WHERE customer.c_custkey IN (SELECT customer.c_nationkey + 1 FROM (
+    SELECT * FROM nation WHERE nation.n_nationkey IN (SELECT nation.n_nationkey + 1 FROM orders)
+) i);
                                                                                    QUERY PLAN                                                                                   
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Nested Loop Semi Join  (cost=0.00..2155.00 rows=1 width=56)
@@ -537,52 +725,67 @@ SET
                            Filter: (nation.n_nationkey = (nation.n_nationkey + 1))
                      ->  Limit  (cost=0.00..431.00 rows=1 width=1)
                            ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=1)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(15 rows)
+(16 rows)
 
+-- CTEs
+EXPLAIN VERBOSE WITH cte AS (SELECT * FROM orders) SELECT * FROM cte;
                                                            QUERY PLAN                                                           
 --------------------------------------------------------------------------------------------------------------------------------
  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=56)
    Output: o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority, o_clerk, o_shippriority, o_comment
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(3 rows)
+(4 rows)
 
+EXPLAIN VERBOSE WITH x AS (SELECT o_custkey a1, o_custkey a2, o_custkey FROM orders) SELECT * FROM x WHERE a1 = 1 AND a2 = 2;
                       QUERY PLAN                       
 -------------------------------------------------------
  Result  (cost=0.00..0.00 rows=0 width=12)
    Output: NULL::integer, NULL::integer, NULL::integer
    One-Time Filter: false
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(4 rows)
+(5 rows)
 
+EXPLAIN VERBOSE WITH cte AS (SELECT * FROM orders LEFT JOIN nation ON orders.o_custkey = nation.n_regionkey WHERE nation.n_regionkey = 1) SELECT * FROM cte WHERE o_orderkey = 1;
                                                                                                                                QUERY PLAN                                                                                                                               
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Nested Loop  (cost=0.00..1293.00 rows=1 width=80)
+ Hash Join  (cost=0.00..862.00 rows=1 width=80)
    Output: orders.o_orderkey, orders.o_custkey, orders.o_orderstatus, orders.o_totalprice, orders.o_orderdate, orders.o_orderpriority, orders.o_clerk, orders.o_shippriority, orders.o_comment, nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
-   Join Filter: ((orders.o_custkey = nation.n_regionkey) AND (orders.o_custkey = nation.n_regionkey))
+   Hash Cond: ((orders.o_custkey = nation.n_regionkey) AND (orders.o_custkey = nation.n_regionkey))
    ->  Seq Scan on public.orders  (cost=0.00..431.00 rows=1 width=56)
          Output: orders.o_orderkey, orders.o_custkey, orders.o_orderstatus, orders.o_totalprice, orders.o_orderdate, orders.o_orderpriority, orders.o_clerk, orders.o_shippriority, orders.o_comment
          Filter: ((orders.o_custkey = 1) AND (orders.o_custkey = 1) AND (orders.o_orderkey = 1))
-   ->  Materialize  (cost=0.00..431.00 rows=1 width=24)
+   ->  Hash  (cost=431.00..431.00 rows=1 width=24)
          Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
          ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=24)
                Output: nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
                Filter: ((nation.n_regionkey = 1) AND (nation.n_regionkey = 1))
+ Query Identifier: -9223372036854775808
+ Optimizer: pg_orca
+(13 rows)
+
+-- Semi-join: EXISTS
+EXPLAIN VERBOSE SELECT * FROM customer WHERE EXISTS (SELECT * FROM nation WHERE c_custkey = n_nationkey AND c_nationkey <> n_regionkey);
+                                                                                   QUERY PLAN                                                                                   
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Hash Semi Join  (cost=0.00..862.00 rows=1 width=56)
+   Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
+   Hash Cond: (customer.c_custkey = nation.n_nationkey)
+   Join Filter: (customer.c_nationkey <> nation.n_regionkey)
+   ->  Seq Scan on public.customer  (cost=0.00..431.00 rows=1 width=56)
+         Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
+   ->  Hash  (cost=431.00..431.00 rows=1 width=8)
+         Output: nation.n_nationkey, nation.n_regionkey
+         ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=8)
+               Output: nation.n_nationkey, nation.n_regionkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
 (12 rows)
 
-                                                                                QUERY PLAN                                                                                
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Seq Scan on public.customer  (cost=0.00..1293.00 rows=1 width=56)
-   Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
-   Filter: EXISTS(SubPlan 1)
-   SubPlan 1
-     ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
-           Output: nation.n_nationkey
-           Filter: ((customer.c_custkey = nation.n_nationkey) AND (customer.c_nationkey <> nation.n_regionkey))
- Optimizer: pg_orca
-(8 rows)
-
+EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (SELECT DISTINCT c_custkey FROM nation);
                                                                                 QUERY PLAN                                                                                
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Seq Scan on public.customer  (cost=0.00..1293.00 rows=1 width=56)
@@ -592,20 +795,27 @@ SET
      ->  Result  (cost=0.00..431.00 rows=1 width=4)
            Output: customer.c_custkey
            ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=1)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
-                                                                                QUERY PLAN                                                                                
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Seq Scan on public.customer  (cost=0.00..1293.00 rows=1 width=56)
+EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (SELECT DISTINCT n_regionkey FROM nation);
+                                                                                   QUERY PLAN                                                                                   
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Hash Semi Join  (cost=0.00..862.00 rows=1 width=56)
    Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
-   Filter: (ANY (customer.c_custkey = (SubPlan 1).col1))
-   SubPlan 1
-     ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
-           Output: nation.n_regionkey
+   Hash Cond: (customer.c_custkey = nation.n_regionkey)
+   ->  Seq Scan on public.customer  (cost=0.00..431.00 rows=1 width=56)
+         Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
+   ->  Hash  (cost=431.00..431.00 rows=1 width=4)
+         Output: nation.n_regionkey
+         ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
+               Output: nation.n_regionkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(7 rows)
+(11 rows)
 
+EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (SELECT c_custkey FROM nation LIMIT 3);
                                                                                 QUERY PLAN                                                                                
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Seq Scan on public.customer  (cost=0.00..1293.00 rows=1 width=56)
@@ -617,9 +827,12 @@ SET
            ->  Result  (cost=0.00..431.00 rows=1 width=4)
                  Output: customer.c_custkey
                  ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=1)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(10 rows)
+(11 rows)
 
+-- Scalar subquery
+EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey > (SELECT sum(n_nationkey) FROM nation);
                                                                                 QUERY PLAN                                                                                
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Seq Scan on public.customer  (cost=0.00..1293.00 rows=1 width=56)
@@ -630,20 +843,27 @@ SET
            Output: sum(nation.n_nationkey)
            ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
                  Output: nation.n_nationkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(9 rows)
+(10 rows)
 
-                                                                                QUERY PLAN                                                                                
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Seq Scan on public.customer  (cost=0.00..1293.00 rows=1 width=56)
+EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (SELECT n_nationkey FROM nation);
+                                                                                   QUERY PLAN                                                                                   
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Hash Semi Join  (cost=0.00..862.00 rows=1 width=56)
    Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
-   Filter: (ANY (customer.c_custkey = (SubPlan 1).col1))
-   SubPlan 1
-     ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
-           Output: nation.n_nationkey
+   Hash Cond: (customer.c_custkey = nation.n_nationkey)
+   ->  Seq Scan on public.customer  (cost=0.00..431.00 rows=1 width=56)
+         Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
+   ->  Hash  (cost=431.00..431.00 rows=1 width=4)
+         Output: nation.n_nationkey
+         ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
+               Output: nation.n_nationkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(7 rows)
+(11 rows)
 
+EXPLAIN SELECT * FROM customer WHERE 1+c_custkey IN (SELECT c_nationkey+1 FROM nation);
                              QUERY PLAN                             
 --------------------------------------------------------------------
  Nested Loop Semi Join  (cost=0.00..1293.00 rows=1 width=56)
@@ -655,6 +875,7 @@ SET
  Optimizer: pg_orca
 (7 rows)
 
+EXPLAIN VERBOSE SELECT * FROM customer WHERE 2 IN (SELECT n_nationkey + 1 FROM nation);
                                                                                    QUERY PLAN                                                                                   
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Nested Loop Semi Join  (cost=0.00..1293.00 rows=1 width=56)
@@ -669,9 +890,12 @@ SET
                      Output: (nation.n_nationkey + 1)
                      ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
                            Output: nation.n_nationkey
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(13 rows)
+(14 rows)
 
+-- Correlated EXISTS
+EXPLAIN VERBOSE SELECT * FROM customer WHERE EXISTS(SELECT n_nationkey FROM nation WHERE nation.n_nationkey<>customer.c_custkey GROUP BY nation.n_nationkey);
                                                                                 QUERY PLAN                                                                                
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Seq Scan on public.customer  (cost=0.00..1293.00 rows=1 width=56)
@@ -681,9 +905,12 @@ SET
      ->  Seq Scan on public.nation  (cost=0.00..431.00 rows=1 width=4)
            Output: nation.n_nationkey
            Filter: (nation.n_nationkey <> customer.c_custkey)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(8 rows)
+(9 rows)
 
+-- Nested EXISTS
+EXPLAIN VERBOSE SELECT pn, cn, vn FROM sale s WHERE EXISTS (SELECT * FROM customer WHERE EXISTS (SELECT * FROM product WHERE pn = s.pn));
                                      QUERY PLAN                                     
 ------------------------------------------------------------------------------------
  Seq Scan on public.sale s  (cost=0.00..2155.00 rows=1 width=12)
@@ -698,9 +925,11 @@ SET
            ->  Materialize  (cost=0.00..431.00 rows=1 width=1)
                  ->  Seq Scan on public.product  (cost=0.00..431.00 rows=1 width=1)
                        Filter: (product.pn = s.pn)
+ Query Identifier: -9223372036854775808
  Optimizer: pg_orca
-(13 rows)
+(14 rows)
 
+EXPLAIN SELECT pn, cn, vn FROM sale s WHERE cn IN (SELECT s.pn FROM customer WHERE cn NOT IN (SELECT pn FROM product WHERE pn = s.pn));
                                                                                                                                                                                                 QUERY PLAN                                                                                                                                                                                                 
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Result  (cost=0.00..7327.00 rows=1 width=12)
@@ -721,29 +950,35 @@ SET
  Optimizer: pg_orca
 (16 rows)
 
-                                    QUERY PLAN                                    
-----------------------------------------------------------------------------------
- Seq Scan on customer  (cost=0.00..5172.00 rows=1 width=56)
-   Filter: ((c_custkey > 1) AND EXISTS(SubPlan 1))
-   SubPlan 1
-     ->  Result  (cost=0.00..431.00 rows=1 width=4)
-           ->  Result  (cost=0.00..431.00 rows=1 width=4)
-                 ->  Result  (cost=0.00..431.00 rows=1 width=4)
-                       One-Time Filter: (customer.c_custkey > 1)
-                       Filter: (nation.n_nationkey = customer.c_custkey)
-                       ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=4)
-                             Filter: (n_nationkey > 1)
+EXPLAIN SELECT * FROM customer WHERE EXISTS (SELECT 1 FROM nation WHERE nation.n_nationkey = customer.c_custkey AND customer.c_custkey > 1);
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Hash Semi Join  (cost=0.00..862.00 rows=1 width=56)
+   Hash Cond: (customer.c_custkey = nation.n_nationkey)
+   ->  Result  (cost=0.00..431.00 rows=1 width=56)
+         Filter: (customer.c_custkey > 1)
+         ->  Seq Scan on customer  (cost=0.00..431.00 rows=1 width=56)
+               Filter: (c_custkey > 1)
+   ->  Hash  (cost=431.00..431.00 rows=1 width=4)
+         ->  Result  (cost=0.00..431.00 rows=1 width=4)
+               ->  Seq Scan on nation  (cost=0.00..431.00 rows=1 width=4)
+                     Filter: (n_nationkey > 1)
  Optimizer: pg_orca
 (11 rows)
 
+-- Actual query execution with aggregate
+SELECT o_orderkey, sum(o_custkey + o_orderkey)/20 FROM orders GROUP BY o_orderkey ORDER BY o_orderkey LIMIT 10;
  o_orderkey | ?column? 
 ------------+----------
 (0 rows)
 
+-- Correlated subquery with execution
+SELECT * FROM orders WHERE EXISTS (SELECT 1 FROM nation WHERE nation.n_regionkey = orders.o_custkey AND nation.n_regionkey = 10);
  o_orderkey | o_custkey | o_orderstatus | o_totalprice | o_orderdate | o_orderpriority | o_clerk | o_shippriority | o_comment 
 ------------+-----------+---------------+--------------+-------------+-----------------+---------+----------------+-----------
 (0 rows)
 
+SELECT *, (SELECT 2 FROM nation WHERE nation.n_regionkey = orders.o_custkey AND nation.n_regionkey = 10) FROM orders WHERE EXISTS (SELECT 1 FROM nation WHERE nation.n_regionkey = orders.o_custkey AND nation.n_regionkey = 10);
  o_orderkey | o_custkey | o_orderstatus | o_totalprice | o_orderdate | o_orderpriority | o_clerk | o_shippriority | o_comment | ?column? 
 ------------+-----------+---------------+--------------+-------------+-----------------+---------+----------------+-----------+----------
 (0 rows)

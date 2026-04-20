@@ -75,7 +75,8 @@ public:
 					 CTableDescriptor *ptabdesc, ULONG ulOriginOpId,
 					 const CName *pnameAlias, CColRefArray *pdrgpcrOutput,
 					 ULONG ulUnindexedPredColCount,
-					 EIndexScanDirection scan_direction);
+					 EIndexScanDirection scan_direction,
+					 CColRefSet *pcrsEqCols = nullptr);
 
 	// dtor
 	~CLogicalIndexGet() override;

@@ -2502,6 +2502,27 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 		CUtils::PcrsExtractColumns(mp, pdrgpexprIndex);
 	outer_refs_in_index_get->Intersection(outer_refs);
 
+	// Collect index key columns that appear in equality predicates.
+	// These are used to trim the leading equal-key prefix from the index
+	// order spec so ORCA knows that the scan output is ordered by the
+	// remaining (non-fixed) keys.
+	CColRefSet *pcrsIndexEqCols = GPOS_NEW(mp) CColRefSet(mp);
+	for (ULONG ul = 0; ul < pdrgpexprIndex->Size(); ul++)
+	{
+		CExpression *pexprPred = (*pdrgpexprIndex)[ul];
+		if (CPredicateUtils::IsEqualityOp(pexprPred))
+		{
+			// gather the columns referenced by this equality predicate that
+			// also belong to the index key set
+			CColRefSet *pcrsPred = pexprPred->DeriveUsedColumns();
+			pcrsIndexEqCols->Include(pcrsPred);
+		}
+	}
+	// restrict to actual index key columns (exclude outer refs / non-key cols)
+	CColRefSet *pcrsIndexKeyCols = CUtils::PcrsExtractColumns(mp, pdrgpexprIndex);
+	pcrsIndexEqCols->Intersection(pcrsIndexKeyCols);
+	pcrsIndexKeyCols->Release();
+
 	// exit early if:
 	// (1) there are no index-able predicates or
 	// (2) there are no outer references in index-able predicates
@@ -2522,6 +2543,7 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 		pdrgpexprResidual->Release();
 		pdrgpexprIndex->Release();
 		outer_refs_in_index_get->Release();
+		pcrsIndexEqCols->Release();
 
 		return nullptr;
 	}
@@ -2571,6 +2593,7 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 				pdrgpexprResidual->Release();
 				pdrgpexprIndex->Release();
 				outer_refs_in_index_get->Release();
+				pcrsIndexEqCols->Release();
 				popLogicalGet->Release();
 				return nullptr;
 			}
@@ -2595,6 +2618,7 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 				pdrgpexprResidual->Release();
 				pdrgpexprIndex->Release();
 				outer_refs_in_index_get->Release();
+				pcrsIndexEqCols->Release();
 				popLogicalGet->Release();
 				return nullptr;
 			}
@@ -2608,7 +2632,8 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 				PopStaticBtreeIndexOpConstructor<CLogicalIndexOnlyGet>(
 					mp, pmdindex, ptabdesc, ulOriginOpId,
 					GPOS_NEW(mp) CName(mp, CName(alias)), pdrgpcrOutput,
-					ulUnindexedPredColCount, indexscanDirection);
+					ulUnindexedPredColCount, indexscanDirection,
+					pcrsIndexEqCols);
 			if (!CHintUtils::SatisfiesPlanHints(
 					CLogicalIndexOnlyGet::PopConvert(popLogicalGet),
 					COptCtxt::PoctxtFromTLS()
@@ -2621,6 +2646,7 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 				pdrgpexprResidual->Release();
 				pdrgpexprIndex->Release();
 				outer_refs_in_index_get->Release();
+				pcrsIndexEqCols->Release();
 				popLogicalGet->Release();
 				return nullptr;
 			}
@@ -2630,7 +2656,7 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 			popLogicalGet = PopStaticBtreeIndexOpConstructor<CLogicalIndexGet>(
 				mp, pmdindex, ptabdesc, ulOriginOpId,
 				GPOS_NEW(mp) CName(mp, CName(alias)), pdrgpcrOutput,
-				ulUnindexedPredColCount, indexscanDirection);
+				ulUnindexedPredColCount, indexscanDirection, pcrsIndexEqCols);
 			if (!CHintUtils::SatisfiesPlanHints(
 					CLogicalIndexGet::PopConvert(popLogicalGet),
 					COptCtxt::PoctxtFromTLS()
@@ -2643,6 +2669,7 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 				pdrgpexprResidual->Release();
 				pdrgpexprIndex->Release();
 				outer_refs_in_index_get->Release();
+				pcrsIndexEqCols->Release();
 				popLogicalGet->Release();
 				return nullptr;
 			}
@@ -2653,6 +2680,7 @@ CXformUtils::PexprBuildBtreeIndexPlan(CMemoryPool *mp, CMDAccessor *md_accessor,
 	GPOS_DELETE(alias);
 	pdrgppcrIndexCols->Release();
 	outer_refs_in_index_get->Release();
+	pcrsIndexEqCols->Release();
 
 	CExpression *pexprIndexCond =
 		CPredicateUtils::PexprConjunction(mp, pdrgpexprIndex);
