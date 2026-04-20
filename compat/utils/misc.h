@@ -72,6 +72,9 @@ List   *GetExtStatisticsKinds(Oid statOid);
 /* is_agg_repsafe (from lsyscache.c) */
 bool    is_agg_repsafe(Oid aggid);
 
+/* is_agg_partial_capable (from lsyscache.c) */
+bool    is_agg_partial_capable(Oid aggid);
+
 /* func_exec_location (from lsyscache.c) — PROEXECLOCATION_* defines */
 #define PROEXECLOCATION_ANY         'a'
 #define PROEXECLOCATION_COORDINATOR 'c'

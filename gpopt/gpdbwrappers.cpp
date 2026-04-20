@@ -788,13 +788,7 @@ gpdb::IsAggPartialCapable(Oid aggid)
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_aggregate */
-		/* PG18: check if aggregate has a combine function (aggcombinefn != InvalidOid) */
-		HeapTuple	htup3 = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggid));
-		if (!HeapTupleIsValid(htup3))
-			elog(ERROR, "cache lookup failed for aggregate %u", aggid);
-		Oid	combinefn = ((Form_pg_aggregate) GETSTRUCT(htup3))->aggcombinefn;
-		ReleaseSysCache(htup3);
-		return OidIsValid(combinefn);
+		return is_agg_partial_capable(aggid);
 	}
 	GP_WRAP_END;
 	return false;

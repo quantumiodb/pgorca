@@ -70,6 +70,9 @@
 #include "statistics/statistics.h"
 #include "utils/builtins.h"
 
+/* --- is_agg_partial_capable --- */
+#include "catalog/pg_aggregate.h"
+
 /* --- tlist_members --- */
 #include "nodes/parsenodes.h"
 #include "optimizer/tlist.h"
@@ -803,6 +806,46 @@ is_agg_repsafe(Oid aggid)
 {
 	(void) aggid;
 	return false;
+}
+
+/* ========================================================================
+ * is_agg_partial_capable
+ *
+ * Ported from Cloudberry src/backend/utils/cache/lsyscache.c.
+ * Called from gpdbwrappers.cpp: gpdb::IsAggPartialCapable.
+ *
+ * Given an aggregate OID, check if it can be used in 2-phase aggregation.
+ * It must have a combine function, and if the transition type is 'internal',
+ * also serial/deserial functions.
+ * ======================================================================== */
+
+bool
+is_agg_partial_capable(Oid aggid)
+{
+	HeapTuple	aggTuple;
+	Form_pg_aggregate aggform;
+	bool		result = true;
+
+	aggTuple = SearchSysCache1(AGGFNOID,
+							   ObjectIdGetDatum(aggid));
+	if (!HeapTupleIsValid(aggTuple))
+		elog(ERROR, "cache lookup failed for aggregate %u", aggid);
+	aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+
+	if (aggform->aggcombinefn == InvalidOid)
+		result = false;
+	else if (aggform->aggtranstype == INTERNALOID)
+	{
+		if (aggform->aggserialfn == InvalidOid ||
+			aggform->aggdeserialfn == InvalidOid)
+		{
+			result = false;
+		}
+	}
+
+	ReleaseSysCache(aggTuple);
+
+	return result;
 }
 
 /* ========================================================================
