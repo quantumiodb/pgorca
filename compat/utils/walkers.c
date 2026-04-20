@@ -423,6 +423,69 @@ extract_nodes_walker(Node *node, extract_context *context)
 }
 
 /* -----------------------------------------------------------------------
+ * find_nodes — public entry point
+ *
+ * Walk an expression/query tree rooted at 'node' and return the 0-based
+ * index of the first node whose NodeTag matches any tag in 'nodeTags', or
+ * -1 if no match is found.
+ *
+ * Ported from Cloudberry src/backend/optimizer/util/walkers.c.
+ * ----------------------------------------------------------------------- */
+
+typedef struct find_nodes_context
+{
+	List	   *nodeTags;
+	int			foundNode;
+} find_nodes_context;
+
+static bool find_nodes_walker(Node *node, find_nodes_context *context);
+
+int
+find_nodes(Node *node, List *nodeTags)
+{
+	find_nodes_context context;
+
+	Assert(NULL != node);
+	context.nodeTags = nodeTags;
+	context.foundNode = -1;
+	find_nodes_walker(node, &context);
+	return context.foundNode;
+}
+
+static bool
+find_nodes_walker(Node *node, find_nodes_context *context)
+{
+	if (NULL == node)
+		return false;
+
+	if (IsA(node, Query))
+	{
+		/* Recurse into subselects */
+		return query_tree_walker((Query *) node, find_nodes_walker,
+								 (void *) context, 0 /* flags */);
+	}
+
+	{
+		ListCell   *lc;
+		int			i = 0;
+
+		foreach(lc, context->nodeTags)
+		{
+			NodeTag		tag = (NodeTag) lfirst_int(lc);
+
+			if (nodeTag(node) == tag)
+			{
+				context->foundNode = i;
+				return true;
+			}
+			i++;
+		}
+	}
+
+	return expression_tree_walker(node, find_nodes_walker, (void *) context);
+}
+
+/* -----------------------------------------------------------------------
  * extract_nodes_plan — public entry point
  *
  * Walk a Plan tree rooted at 'pl' and collect all nodes whose NodeTag

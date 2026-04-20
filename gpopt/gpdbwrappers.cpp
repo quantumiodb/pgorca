@@ -515,6 +515,7 @@ gpdb::TypeCollation(Oid type)
 
 /* Declared in compat/utils/walkers.c */
 extern "C" List *extract_nodes_plan(Plan *pl, int nodeTag, bool descendIntoSubqueries);
+extern "C" int find_nodes(Node *node, List *nodeTags);
 
 List *
 gpdb::ExtractNodesPlan(Plan *pl, int node_tag, bool descend_into_subqueries)
@@ -2278,9 +2279,7 @@ gpdb::FindNodes(Node *node, List *nodeTags)
 {
 	GP_WRAP_START;
 	{
-		/* find_nodes from GPDB walkers.h — not in PG18; always return -1 (not found) */
-		(void) node; (void) nodeTags;
-		return -1;
+		return find_nodes(node, nodeTags);
 	}
 	GP_WRAP_END;
 	return -1;
