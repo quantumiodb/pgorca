@@ -69,6 +69,15 @@ List   *GetRelationExtStatistics(struct RelationData *relation);
 char   *GetExtStatisticsName(Oid statOid);
 List   *GetExtStatisticsKinds(Oid statOid);
 
+/* get_agg_transtype (from lsyscache.c) */
+Oid     get_agg_transtype(Oid aggid);
+
+/* is_agg_ordered (from lsyscache.c) */
+bool    is_agg_ordered(Oid aggid);
+
+/* get_aggregate (from lsyscache.c) */
+Oid     get_aggregate(const char *aggname, Oid oidType);
+
 /* is_agg_repsafe (from lsyscache.c) */
 bool    is_agg_repsafe(Oid aggid);
 

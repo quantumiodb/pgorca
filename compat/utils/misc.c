@@ -31,6 +31,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_operator.h"
+#include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -788,6 +789,108 @@ GetExtStatisticsKinds(Oid statOid)
 	ReleaseSysCache(htup);
 
 	return types;
+}
+
+/* ========================================================================
+ * get_agg_transtype
+ *
+ * Ported from Cloudberry src/backend/utils/cache/lsyscache.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetAggIntermediateResultType.
+ * ======================================================================== */
+
+/*
+ * get_agg_transtype
+ *		Given aggregate OID, return the aggregate transition function's
+ *		result type (aggtranstype from pg_aggregate).
+ */
+Oid
+get_agg_transtype(Oid aggid)
+{
+	HeapTuple	tp;
+	Oid			result;
+
+	tp = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggid));
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for aggregate %u", aggid);
+
+	result = ((Form_pg_aggregate) GETSTRUCT(tp))->aggtranstype;
+	ReleaseSysCache(tp);
+	return result;
+}
+
+/* ========================================================================
+ * is_agg_ordered
+ *
+ * Ported from Cloudberry src/backend/utils/cache/lsyscache.c.
+ * Called from gpdbwrappers.cpp: gpdb::IsOrderedAgg.
+ * ======================================================================== */
+
+/*
+ * is_agg_ordered
+ *		Given aggregate OID, check if it is an ordered-set aggregate.
+ */
+bool
+is_agg_ordered(Oid aggid)
+{
+	HeapTuple	aggTuple;
+	char		aggkind;
+	bool		isnull = false;
+
+	aggTuple = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggid));
+	if (!HeapTupleIsValid(aggTuple))
+		elog(ERROR, "cache lookup failed for aggregate %u", aggid);
+
+	aggkind = DatumGetChar(SysCacheGetAttr(AGGFNOID, aggTuple,
+										   Anum_pg_aggregate_aggkind, &isnull));
+	Assert(!isnull);
+
+	ReleaseSysCache(aggTuple);
+
+	return AGGKIND_IS_ORDERED_SET(aggkind);
+}
+
+/* ========================================================================
+ * get_aggregate
+ *
+ * Ported from Cloudberry src/backend/utils/cache/lsyscache.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetAggregate.
+ * ======================================================================== */
+
+/*
+ * get_aggregate
+ *		Get OID of aggregate with given name and single argument type.
+ *		Returns InvalidOid if no match is found.
+ */
+Oid
+get_aggregate(const char *aggname, Oid oidType)
+{
+	CatCList   *catlist;
+	int			i;
+	Oid			oidResult;
+
+	catlist = SearchSysCacheList1(PROCNAMEARGSNSP,
+								  CStringGetDatum((char *) aggname));
+
+	oidResult = InvalidOid;
+	for (i = 0; i < catlist->n_members; i++)
+	{
+		HeapTuple	htup = &catlist->members[i]->tuple;
+		Form_pg_proc proctuple = (Form_pg_proc) GETSTRUCT(htup);
+		Oid			oidProc = proctuple->oid;
+
+		if (1 != proctuple->pronargs || oidType != proctuple->proargtypes.values[0])
+			continue;
+
+		if (SearchSysCacheExists1(AGGFNOID, ObjectIdGetDatum(oidProc)))
+		{
+			oidResult = oidProc;
+			break;
+		}
+	}
+
+	ReleaseSysCacheList(catlist);
+
+	return oidResult;
 }
 
 /* ========================================================================

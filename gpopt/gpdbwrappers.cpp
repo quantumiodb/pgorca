@@ -701,17 +701,7 @@ gpdb::GetAggIntermediateResultType(Oid aggid)
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_aggregate */
-		/* PG18: look up aggtranstype from pg_aggregate catalog */
-		HeapTuple	htup;
-		Form_pg_aggregate aggform;
-		Oid			result;
-		htup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggid));
-		if (!HeapTupleIsValid(htup))
-			elog(ERROR, "cache lookup failed for aggregate %u", aggid);
-		aggform = (Form_pg_aggregate) GETSTRUCT(htup);
-		result = aggform->aggtranstype;
-		ReleaseSysCache(htup);
-		return result;
+		return get_agg_transtype(aggid);
 	}
 	GP_WRAP_END;
 	return 0;
@@ -759,13 +749,7 @@ gpdb::IsOrderedAgg(Oid aggid)
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_aggregate */
-		/* PG18: check aggkind in pg_aggregate */
-		HeapTuple	htup2 = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggid));
-		if (!HeapTupleIsValid(htup2))
-			elog(ERROR, "cache lookup failed for aggregate %u", aggid);
-		char	kind = ((Form_pg_aggregate) GETSTRUCT(htup2))->aggkind;
-		ReleaseSysCache(htup2);
-		return AGGKIND_IS_ORDERED_SET(kind);
+		return is_agg_ordered(aggid);
 	}
 	GP_WRAP_END;
 	return false;
@@ -800,9 +784,7 @@ gpdb::GetAggregate(const char *agg, Oid type_oid)
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_aggregate */
-		/* PG18: look up aggregate OID by name and argument type */
-		return LookupFuncName(list_make1(makeString((char *) agg)),
-							  1, &type_oid, true);
+		return get_aggregate(agg, type_oid);
 	}
 	GP_WRAP_END;
 	return 0;
