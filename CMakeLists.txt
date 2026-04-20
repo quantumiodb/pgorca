@@ -117,6 +117,7 @@ add_library(pg_orca MODULE
     $<TARGET_OBJECTS:orca_core>
     compat/utils/walkers.c
     compat/utils/misc.c
+    compat/utils/flatten_join_alias_var.c
 )
 
 set_target_properties(pg_orca PROPERTIES

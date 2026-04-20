@@ -8,6 +8,7 @@
 #define COMPAT_MISC_H
 
 #include "postgres.h"
+#include "nodes/parsenodes.h"
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
 #include "storage/block.h"
@@ -67,6 +68,9 @@ struct RelationData;
 List   *GetRelationExtStatistics(struct RelationData *relation);
 char   *GetExtStatisticsName(Oid statOid);
 List   *GetExtStatisticsKinds(Oid statOid);
+
+/* flatten_join_alias_var_optimizer (from clauses.c) */
+Query  *flatten_join_alias_var_optimizer(Query *query, int queryLevel);
 
 #ifdef __cplusplus
 }

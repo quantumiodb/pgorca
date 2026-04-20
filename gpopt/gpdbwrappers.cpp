@@ -748,9 +748,7 @@ gpdb::FlattenJoinAliasVar(Query *query, gpos::ULONG query_level)
 {
 	GP_WRAP_START;
 	{
-		/* PG18: flatten_join_alias_vars has different signature (no query_level) */
-		(void) query_level;
-		return (Query *) flatten_join_alias_vars(nullptr, query, (Node *) query);
+		return flatten_join_alias_var_optimizer(query, (int) query_level);
 	}
 	GP_WRAP_END;
 
