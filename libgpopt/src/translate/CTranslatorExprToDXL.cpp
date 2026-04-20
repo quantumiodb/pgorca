@@ -1978,25 +1978,23 @@ CTranslatorExprToDXL::PdxlnIndexScanWithInlinedCondition(
 				COperator::EopPhysicalDynamicIndexOnlyScan == op_id ||
 				COperator::EopPhysicalDynamicIndexScan == op_id);
 
-	// TODO: Index only scans work on GiST and SP-GiST only for specific operators
-	// check if index is of type GiST
+	// For GiST lossy indexes, the index filter (scalar condition / recheck) is
+	// needed only for IndexOnlyScan: because index-only scans don't fetch the
+	// heap tuple, we must re-evaluate the predicate on the index tuple.
+	// For regular IndexScan, PG executor already rechecks via xs_recheck +
+	// indexqualorig, so adding the same condition to plan->qual (IndexFilter)
+	// would double-filter and give wrong counts.
 	BOOL isGist = false;
-	if (COperator::EopPhysicalIndexScan == op_id)
+	if (COperator::EopPhysicalIndexOnlyScan == op_id)
 	{
-		CPhysicalIndexScan *indexScan =
-			CPhysicalIndexScan::PopConvert(pexprIndexScan->Pop());
+		CPhysicalIndexOnlyScan *indexScan =
+			CPhysicalIndexOnlyScan::PopConvert(pexprIndexScan->Pop());
 		isGist = (indexScan->Pindexdesc()->IndexType() == IMDIndex::EmdindGist);
 	}
 	else if (COperator::EopPhysicalDynamicIndexOnlyScan == op_id)
 	{
 		CPhysicalDynamicIndexOnlyScan *indexScan =
 			CPhysicalDynamicIndexOnlyScan::PopConvert(pexprIndexScan->Pop());
-		isGist = (indexScan->Pindexdesc()->IndexType() == IMDIndex::EmdindGist);
-	}
-	else if (COperator::EopPhysicalIndexOnlyScan != op_id)
-	{
-		CPhysicalDynamicIndexScan *indexScan =
-			CPhysicalDynamicIndexScan::PopConvert(pexprIndexScan->Pop());
 		isGist = (indexScan->Pindexdesc()->IndexType() == IMDIndex::EmdindGist);
 	}
 

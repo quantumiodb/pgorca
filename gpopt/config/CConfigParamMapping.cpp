@@ -8,6 +8,7 @@
 
 extern "C" {
 #include "postgres.h"
+#include "optimizer/cost.h"
 #include "utils/guc.h"
 }
 
@@ -26,7 +27,7 @@ static bool param_true  = true;
 
 // Motion nodes are irrelevant for single-node; disable them all.
 static bool enable_motions           = false;
-static bool enable_sort              = true;
+static bool orca_enable_sort         = true;
 static bool enable_materialize       = true;
 static bool enable_partition_prop    = true;
 static bool enable_partition_sel     = true;
@@ -72,25 +73,25 @@ static bool enable_range_pred_dpe    = true;
 static bool enable_redistribute_nlj_loj = false;
 static bool force_comprehensive_join = false;
 static bool enable_use_dist_in_dqa   = false;
-static bool enable_hashjoin          = true;
+static bool orca_enable_hashjoin     = true;
 static bool enable_nljoin            = true;
 
 // Scan / join controls
 static bool enable_indexjoin         = true;
-static bool enable_bitmapscan        = true;
+static bool orca_enable_bitmapscan   = true;
 static bool enable_dynamic_bitmapscan = true;
 static bool enable_oj2unionall       = true;
 static bool enable_assert_maxonerow  = false;
 static bool enable_dynamic_tablescan = false; // no partitioning in single-node mode
 static bool enable_tablescan         = true;
 static bool enable_push_join_unionall = true;
-static bool enable_indexscan         = true;
-static bool enable_indexonlyscan     = true;
+static bool orca_enable_indexscan    = true;
+static bool orca_enable_indexonlyscan = true;
 static bool enable_dynamic_indexscan = false;
 static bool enable_dynamic_indexonlyscan = false;
-static bool enable_hashagg           = true;
+static bool orca_enable_hashagg      = true;
 static bool enable_groupagg          = true;
-static bool enable_mergejoin         = true;
+static bool orca_enable_mergejoin    = true;
 static bool enable_associativity     = true;
 static bool enable_right_outer_join  = true;
 
@@ -159,7 +160,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttraceDisableMotionRountedDistribute, &enable_motions,
 	 true,  GPOS_WSZ_LIT("Disable motion routed-distribute nodes in optimizer.")},
 
-	{EopttraceDisableSort, &enable_sort,
+	{EopttraceDisableSort, &orca_enable_sort,
 	 true,  GPOS_WSZ_LIT("Disable sort nodes in optimizer.")},
 
 	{EopttraceDisableSpool, &enable_materialize,
@@ -282,7 +283,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttraceEnableUseDistributionInDQA, &enable_use_dist_in_dqa,
 	 false, GPOS_WSZ_LIT("Enable use the distribution key in DQA.")},
 
-	{EopttraceDisableInnerHashJoin, &enable_hashjoin,
+	{EopttraceDisableInnerHashJoin, &orca_enable_hashjoin,
 	 true,  GPOS_WSZ_LIT("Explore hash join alternatives.")},
 
 	{EopttraceDisableInnerNLJ, &enable_nljoin,
@@ -295,6 +296,20 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 CBitSet *
 CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 {
+	// Sync scan/join enable flags from PG GUCs so ORCA respects settings like
+	// enable_seqscan=off, enable_indexscan=off, etc.
+	// Use :: prefix to reference PG's global PGDLLIMPORT variables, which
+	// shadow the local statics of the same name.
+	enable_tablescan     = ::enable_seqscan;
+	orca_enable_indexscan     = ::enable_indexscan;
+	orca_enable_indexonlyscan = ::enable_indexonlyscan;
+	orca_enable_bitmapscan    = ::enable_bitmapscan;
+	orca_enable_hashjoin      = ::enable_hashjoin;
+	orca_enable_mergejoin     = ::enable_mergejoin;
+	orca_enable_sort          = ::enable_sort;
+	orca_enable_hashagg       = ::enable_hashagg;
+	enable_nljoin             = ::enable_nestloop;
+
 	CBitSet *traceflag_bitset = GPOS_NEW(mp) CBitSet(mp, EopttraceSentinel);
 
 	for (ULONG ul = 0; ul < GPOS_ARRAY_SIZE(m_elements); ul++)
@@ -343,7 +358,7 @@ CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 		index_join_bitset->Release();
 	}
 
-	if (!enable_bitmapscan)
+	if (!orca_enable_bitmapscan)
 	{
 		CBitSet *bitmap_index_bitset = CXform::PbsBitmapIndexXforms(mp);
 		traceflag_bitset->Union(bitmap_index_bitset);
@@ -368,7 +383,7 @@ CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfMaxOneRow2Assert));
 	}
 
-	if (!enable_hashjoin)
+	if (!orca_enable_hashjoin)
 	{
 		CBitSet *hash_join_bitset = CXform::PbsHashJoinXforms(mp);
 		traceflag_bitset->Union(hash_join_bitset);
@@ -395,13 +410,13 @@ CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfPushJoinBelowRightUnionAll));
 	}
 
-	if (!enable_indexscan)
+	if (!orca_enable_indexscan)
 	{
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfIndexGet2IndexScan));
 	}
 
-	if (!enable_indexonlyscan)
+	if (!orca_enable_indexonlyscan)
 	{
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfIndexOnlyGet2IndexOnlyScan));
@@ -419,7 +434,7 @@ CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 			CXform::ExfDynamicIndexOnlyGet2DynamicIndexOnlyScan));
 	}
 
-	if (!enable_hashagg)
+	if (!orca_enable_hashagg)
 	{
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfGbAgg2HashAgg));
@@ -435,7 +450,7 @@ CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfGbAggDedup2StreamAggDedup));
 	}
 
-	if (!enable_mergejoin)
+	if (!orca_enable_mergejoin)
 	{
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfImplementFullOuterMergeJoin));
