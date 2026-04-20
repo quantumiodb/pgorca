@@ -69,6 +69,9 @@ List   *GetRelationExtStatistics(struct RelationData *relation);
 char   *GetExtStatisticsName(Oid statOid);
 List   *GetExtStatisticsKinds(Oid statOid);
 
+/* is_agg_repsafe (from lsyscache.c) */
+bool    is_agg_repsafe(Oid aggid);
+
 /* flatten_join_alias_var_optimizer (from clauses.c) */
 Query  *flatten_join_alias_var_optimizer(Query *query, int queryLevel);
 

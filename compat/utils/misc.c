@@ -782,3 +782,21 @@ GetExtStatisticsKinds(Oid statOid)
 
 	return types;
 }
+
+/* ========================================================================
+ * is_agg_repsafe
+ *
+ * Ported from Cloudberry src/backend/utils/cache/lsyscache.c.
+ * Called from gpdbwrappers.cpp: gpdb::IsRepSafeAgg.
+ *
+ * In Cloudberry, this reads the aggrepsafeexec column from pg_aggregate,
+ * which is a CBDB-only column that does not exist in upstream PG18.
+ * For single-node pg_orca, always return false.
+ * ======================================================================== */
+
+bool
+is_agg_repsafe(Oid aggid)
+{
+	(void) aggid;
+	return false;
+}

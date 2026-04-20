@@ -778,10 +778,7 @@ gpdb::IsRepSafeAgg(Oid aggid)
 {
 	GP_WRAP_START;
 	{
-		/* catalog tables: pg_aggregate */
-		/* PG18: no repsafe concept for single-node, always false */
-		(void) aggid;
-		return false;
+		return is_agg_repsafe(aggid);
 	}
 	GP_WRAP_END;
 	return false;
