@@ -2041,8 +2041,7 @@ gpdb::CdbEstimatePartitionedNumTuples(Relation rel)
 {
 	GP_WRAP_START;
 	{
-		/* cdb_estimate_partitioned_numtuples is GPDB-only; use reltuples */
-		return rel->rd_rel->reltuples;
+		return cdb_estimate_partitioned_numtuples(rel);
 	}
 	GP_WRAP_END;
 }
@@ -2517,9 +2516,7 @@ gpdb::TransformArrayConstToArrayExpr(Const *c)
 {
 	GP_WRAP_START;
 	{
-		/* transform_array_Const_to_ArrayExpr is GPDB-only — return as-is */
-		(void) c;
-		return nullptr;
+		return transform_array_Const_to_ArrayExpr(c);
 	}
 	GP_WRAP_END;
 	return nullptr;

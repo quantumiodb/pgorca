@@ -125,6 +125,10 @@ bool    isLegacyCdbHashFunction(Oid funcid);
 /* cdb_estimate_partitioned_numtuples (from plancat.c) */
 double  cdb_estimate_partitioned_numtuples(Relation rel);
 
+/* transform_array_Const_to_ArrayExpr (from clauses.c) */
+struct Const;
+Expr   *transform_array_Const_to_ArrayExpr(struct Const *c);
+
 #ifdef __cplusplus
 }
 #endif

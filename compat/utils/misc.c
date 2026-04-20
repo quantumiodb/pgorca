@@ -83,6 +83,12 @@
 /* --- get_index_opfamilies --- */
 #include "catalog/pg_index.h"
 
+/* --- transform_array_Const_to_ArrayExpr --- */
+#include "nodes/makefuncs.h"
+#include "utils/array.h"
+#include "utils/lsyscache.h"
+#include "utils/typcache.h"
+
 /* --- cdb_default_distribution_opfamily_for_type, cdb_default_distribution_opclass_for_type,
        cdb_get_opclass_for_column_def, cdb_hashproc_in_opfamily,
        default_partition_opfamily_for_type, get_legacy_cdbhash_opclass_for_base_type,
@@ -1330,4 +1336,70 @@ cdb_estimate_partitioned_numtuples(Relation rel)
 	density = (BLCKSZ - SizeOfPageHeaderData) / tuple_width;
 
 	return rint(density * (double) estimate.totalpages);
+}
+
+/* ========================================================================
+ * transform_array_Const_to_ArrayExpr
+ *
+ * Ported from Cloudberry src/backend/optimizer/util/clauses.c.
+ * Called from gpdbwrappers.cpp: gpdb::TransformArrayConstToArrayExpr.
+ *
+ * Convert an array-typed Const node into an ArrayExpr with individual Const
+ * elements.  This allows ORCA to decompose the array for statistics
+ * estimation and ScalarArrayOpExpr optimization.
+ *
+ * If the argument is not an array constant, return the original Const unmodified.
+ * ======================================================================== */
+
+Expr *
+transform_array_Const_to_ArrayExpr(Const *c)
+{
+	Oid			elemtype;
+	int16		elemlen;
+	bool		elembyval;
+	char		elemalign;
+	int			nelems;
+	Datum	   *elems;
+	bool	   *nulls;
+	ArrayType  *ac;
+	ArrayExpr  *aexpr;
+	int			i;
+
+	Assert(IsA(c, Const));
+
+	/* Does it look like the right kind of an array Const? */
+	if (c->constisnull)
+		return (Expr *) c;		/* NULL const */
+
+	elemtype = get_element_type(c->consttype);
+	if (elemtype == InvalidOid)
+		return (Expr *) c;		/* not an array */
+
+	ac = DatumGetArrayTypeP(c->constvalue);
+	nelems = ArrayGetNItems(ARR_NDIM(ac), ARR_DIMS(ac));
+
+	/* All set, extract the elements, and build an ArrayExpr to hold them. */
+	get_typlenbyvalalign(elemtype, &elemlen, &elembyval, &elemalign);
+	deconstruct_array(ac, elemtype, elemlen, elembyval, elemalign,
+					  &elems, &nulls, &nelems);
+
+	aexpr = makeNode(ArrayExpr);
+	aexpr->array_typeid = c->consttype;
+	aexpr->element_typeid = elemtype;
+	aexpr->multidims = false;
+	aexpr->location = c->location;
+
+	for (i = 0; i < nelems; i++)
+	{
+		aexpr->elements = lappend(aexpr->elements,
+								  makeConst(elemtype,
+											-1,
+											c->constcollid,
+											elemlen,
+											elems[i],
+											nulls[i],
+											elembyval));
+	}
+
+	return (Expr *) aexpr;
 }
