@@ -70,6 +70,7 @@ extern "C" {
 #include "compat/utils/cmp_type.h"
 #include "compat/utils/relation_keys.h"
 #include "compat/utils/subselect_hashable.h"
+#include "compat/utils/func_output_arg_types.h"
 }
 #define GP_WRAP_START                                            \
 	sigjmp_buf local_sigjmp_buf;                                 \
@@ -1132,9 +1133,7 @@ gpdb::GetFuncOutputArgTypes(Oid funcid)
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_proc */
-		/* PG18: get output argument types from pg_proc */
-		(void) funcid;
-		return NIL; /* stub */
+		return get_func_output_arg_types(funcid);
 	}
 	GP_WRAP_END;
 	return NIL;
