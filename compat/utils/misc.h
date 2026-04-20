@@ -122,6 +122,9 @@ Oid     get_legacy_cdbhash_opclass_for_base_type(Oid orig_typid);
 /* isLegacyCdbHashFunction (from cdblegacyhash.c) */
 bool    isLegacyCdbHashFunction(Oid funcid);
 
+/* cdb_estimate_partitioned_numtuples (from plancat.c) */
+double  cdb_estimate_partitioned_numtuples(Relation rel);
+
 #ifdef __cplusplus
 }
 #endif

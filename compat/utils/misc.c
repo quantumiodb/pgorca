@@ -1290,3 +1290,56 @@ isLegacyCdbHashFunction(Oid funcid)
 	(void) funcid;
 	return false;
 }
+
+/* ========================================================================
+ * cdb_estimate_partitioned_numtuples
+ *
+ * Ported from Cloudberry src/backend/optimizer/util/plancat.c.
+ * Called from gpdbwrappers.cpp: gpdb::CdbEstimatePartitionedNumTuples.
+ *
+ * For single-node pg_orca, we skip the gp_enable_relsize_collection /
+ * cdb_estimate_rel_size path and simply sum reltuples from child partitions.
+ * ======================================================================== */
+
+double
+cdb_estimate_partitioned_numtuples(Relation rel)
+{
+	List	   *inheritors;
+	ListCell   *lc;
+	double		totaltuples;
+
+	if (rel->rd_rel->reltuples > 0)
+		return rel->rd_rel->reltuples;
+
+	inheritors = find_all_inheritors(RelationGetRelid(rel), NoLock, NULL);
+	totaltuples = 0;
+
+	foreach(lc, inheritors)
+	{
+		Oid			childid = lfirst_oid(lc);
+		Relation	childrel;
+		double		childtuples;
+
+		if (childid != RelationGetRelid(rel))
+			childrel = RelationIdGetRelation(childid);
+		else
+			childrel = rel;
+
+		/* If child relation could not be opened, assume 0 tuples. */
+		if (childrel == NULL)
+			continue;
+
+		childtuples = childrel->rd_rel->reltuples;
+		if (childtuples < 0)
+			childtuples = 0;
+
+		totaltuples += childtuples;
+
+		if (childrel != rel)
+			RelationClose(childrel);
+	}
+
+	list_free(inheritors);
+
+	return totaltuples;
+}
