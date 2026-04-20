@@ -70,6 +70,10 @@
 #include "statistics/statistics.h"
 #include "utils/builtins.h"
 
+/* --- tlist_members --- */
+#include "nodes/parsenodes.h"
+#include "optimizer/tlist.h"
+
 #include "compat/utils/misc.h"
 
 /* ========================================================================
@@ -799,4 +803,54 @@ is_agg_repsafe(Oid aggid)
 {
 	(void) aggid;
 	return false;
+}
+
+/* ========================================================================
+ * func_exec_location
+ *
+ * Ported from Cloudberry src/backend/utils/cache/lsyscache.c.
+ * Called from gpdbwrappers.cpp: gpdb::FuncExecLocation.
+ *
+ * In Cloudberry, this reads the proexeclocation column from pg_proc,
+ * which is a CBDB-only MPP column that does not exist in upstream PG18.
+ * For single-node pg_orca, always return PROEXECLOCATION_ANY ('a').
+ * ======================================================================== */
+
+char
+func_exec_location(Oid funcid)
+{
+	(void) funcid;
+	return PROEXECLOCATION_ANY;
+}
+
+/* ========================================================================
+ * tlist_members
+ *
+ * Ported from Cloudberry src/backend/optimizer/util/tlist.c.
+ * PG18 removed this function; it only has tlist_member (single match).
+ * Called from gpdbwrappers.cpp: gpdb::FindMatchingMembersInTargetList.
+ * ======================================================================== */
+
+/*
+ * tlist_members
+ *	  Finds all members of the given tlist whose expression is
+ *	  equal() to the given expression.  Result is NIL if no such member.
+ */
+List *
+tlist_members(Node *node, List *targetlist)
+{
+	List	   *tlist = NIL;
+	ListCell   *temp;
+
+	foreach(temp, targetlist)
+	{
+		TargetEntry *tlentry = (TargetEntry *) lfirst(temp);
+
+		Assert(IsA(tlentry, TargetEntry));
+
+		if (equal(node, tlentry->expr))
+			tlist = lappend(tlist, tlentry);
+	}
+
+	return tlist;
 }

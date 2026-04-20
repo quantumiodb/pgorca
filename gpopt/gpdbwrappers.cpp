@@ -677,9 +677,7 @@ gpdb::FuncExecLocation(Oid funcid)
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_proc */
-		/* PG18: all functions execute anywhere (single node), return 'a' */
-		(void) funcid;
-		return 'a'; /* PROEXECLOCATION_ANY */
+		return func_exec_location(funcid);
 	}
 	GP_WRAP_END;
 	return '\0';
@@ -2192,9 +2190,7 @@ gpdb::FindMatchingMembersInTargetList(Node *node, List *targetlist)
 {
 	GP_WRAP_START;
 	{
-		/* tlist_members not in PG18 — return the single match as a list */
-		TargetEntry *te = tlist_member((Expr *) node, targetlist);
-		return te ? list_make1(te) : NIL;
+		return tlist_members(node, targetlist);
 	}
 	GP_WRAP_END;
 

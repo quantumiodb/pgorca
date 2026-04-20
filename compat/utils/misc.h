@@ -72,8 +72,19 @@ List   *GetExtStatisticsKinds(Oid statOid);
 /* is_agg_repsafe (from lsyscache.c) */
 bool    is_agg_repsafe(Oid aggid);
 
+/* func_exec_location (from lsyscache.c) — PROEXECLOCATION_* defines */
+#define PROEXECLOCATION_ANY         'a'
+#define PROEXECLOCATION_COORDINATOR 'c'
+#define PROEXECLOCATION_INITPLAN    'i'
+#define PROEXECLOCATION_ALL_SEGMENTS 's'
+
+char    func_exec_location(Oid funcid);
+
 /* flatten_join_alias_var_optimizer (from clauses.c) */
 Query  *flatten_join_alias_var_optimizer(Query *query, int queryLevel);
+
+/* tlist_members (from tlist.c) */
+List   *tlist_members(Node *node, List *targetlist);
 
 #ifdef __cplusplus
 }
