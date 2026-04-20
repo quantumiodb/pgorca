@@ -36,9 +36,15 @@ brew install xerces-c cmake
 
 ```bash
 mkdir build && cd build
-cmake .. -DPG_CONFIG=/Users/jianghua/pg-install/bin/pg_config -DCMAKE_BUILD_TYPE=Debug
-make -j$(nproc)
-make install
+cmake .. -DPG_CONFIG=/Users/jianghua/pg-install/bin/pg_config -DCMAKE_BUILD_TYPE=Debug -GNinja
+ninja -j$(nproc)
+ninja install
+```
+
+To rebuild after source changes:
+
+```bash
+cd build && ninja -j$(nproc)
 ```
 
 ## Usage

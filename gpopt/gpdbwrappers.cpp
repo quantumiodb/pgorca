@@ -68,6 +68,7 @@ extern "C" {
 #include "utils/memutils.h"
 #include "utils/partcache.h"
 #include "compat/utils/cmp_type.h"
+#include "compat/utils/relation_keys.h"
 }
 #define GP_WRAP_START                                            \
 	sigjmp_buf local_sigjmp_buf;                                 \
@@ -1279,9 +1280,7 @@ gpdb::GetRelationKeys(Oid relid)
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_constraint */
-		/* PG18: stub - return empty list (use standard PG key discovery) */
-		(void) relid;
-		return NIL;
+		return get_relation_keys(relid);
 	}
 	GP_WRAP_END;
 	return NIL;

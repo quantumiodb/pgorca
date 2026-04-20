@@ -118,6 +118,7 @@ add_library(pg_orca MODULE
     compat/utils/walkers.c
     compat/utils/ext_stats.c
     compat/utils/cmp_type.c
+    compat/utils/relation_keys.c
 )
 
 set_target_properties(pg_orca PROPERTIES
