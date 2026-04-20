@@ -50,6 +50,8 @@
 #include "catalog/pg_inherits.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
+#include "optimizer/plancat.h"
+#include "storage/itemptr.h"
 
 /* --- get_relation_keys --- */
 #include "catalog/indexing.h"
@@ -1297,49 +1299,35 @@ isLegacyCdbHashFunction(Oid funcid)
  * Ported from Cloudberry src/backend/optimizer/util/plancat.c.
  * Called from gpdbwrappers.cpp: gpdb::CdbEstimatePartitionedNumTuples.
  *
- * For single-node pg_orca, we skip the gp_enable_relsize_collection /
- * cdb_estimate_rel_size path and simply sum reltuples from child partitions.
+ * Reuses cdb_estimate_partitioned_numpages for the early-return check and
+ * child partition traversal, then estimates tuples from the total pages
+ * using a simple density calculation.
  * ======================================================================== */
 
 double
 cdb_estimate_partitioned_numtuples(Relation rel)
 {
-	List	   *inheritors;
-	ListCell   *lc;
-	double		totaltuples;
+	PageEstimate	estimate;
+	double			tuple_width;
+	double			density;
 
 	if (rel->rd_rel->reltuples > 0)
 		return rel->rd_rel->reltuples;
 
-	inheritors = find_all_inheritors(RelationGetRelid(rel), NoLock, NULL);
-	totaltuples = 0;
+	estimate = cdb_estimate_partitioned_numpages(rel);
 
-	foreach(lc, inheritors)
-	{
-		Oid			childid = lfirst_oid(lc);
-		Relation	childrel;
-		double		childtuples;
+	if (estimate.totalpages == 0)
+		return 0;
 
-		if (childid != RelationGetRelid(rel))
-			childrel = RelationIdGetRelation(childid);
-		else
-			childrel = rel;
+	/*
+	 * Estimate tuple count from total pages using average tuple width.
+	 * This matches the density calculation in get_relation_info().
+	 */
+	tuple_width = get_rel_data_width(rel, NULL);
+	tuple_width += sizeof(HeapTupleHeaderData);
+	tuple_width += sizeof(ItemPointerData);
 
-		/* If child relation could not be opened, assume 0 tuples. */
-		if (childrel == NULL)
-			continue;
+	density = (BLCKSZ - SizeOfPageHeaderData) / tuple_width;
 
-		childtuples = childrel->rd_rel->reltuples;
-		if (childtuples < 0)
-			childtuples = 0;
-
-		totaltuples += childtuples;
-
-		if (childrel != rel)
-			RelationClose(childrel);
-	}
-
-	list_free(inheritors);
-
-	return totaltuples;
+	return rint(density * (double) estimate.totalpages);
 }
