@@ -520,6 +520,7 @@ gpdb::TypeCollation(Oid type)
 /* Declared in compat/utils/walkers.c */
 extern "C" List *extract_nodes_plan(Plan *pl, int nodeTag, bool descendIntoSubqueries);
 extern "C" int find_nodes(Node *node, List *nodeTags);
+extern "C" int check_collation(Node *node);
 
 List *
 gpdb::ExtractNodesPlan(Plan *pl, int node_tag, bool descend_into_subqueries)
@@ -2287,9 +2288,7 @@ gpdb::CheckCollation(Node *node)
 {
 	GP_WRAP_START;
 	{
-		/* check_collation from GPDB walkers.h — not in PG18; stub returns 0 */
-		(void) node;
-		return 0;
+		return check_collation(node);
 	}
 	GP_WRAP_END;
 	return -1;
