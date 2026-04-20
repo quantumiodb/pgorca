@@ -67,6 +67,7 @@ extern "C" {
 #include "utils/fmgroids.h"
 #include "utils/memutils.h"
 #include "utils/partcache.h"
+#include "compat/utils/cmp_type.h"
 }
 #define GP_WRAP_START                                            \
 	sigjmp_buf local_sigjmp_buf;                                 \
@@ -1050,23 +1051,11 @@ gpdb::GetComparisonType(Oid op_oid)
 {
 	GP_WRAP_START;
 	{
-		/* catalog tables: pg_amop */
-		/* PG18: derive comparison type from operator name */
-		HeapTuple	htup_op = SearchSysCache1(OPEROID, ObjectIdGetDatum(op_oid));
-		if (!HeapTupleIsValid(htup_op)) return 6; /* CmptOther */
-		const char *opname = NameStr(((Form_pg_operator) GETSTRUCT(htup_op))->oprname);
-		unsigned int cmptype = 6; /* CmptOther */
-		if (strcmp(opname, "=") == 0)       cmptype = 0; /* CmptEq */
-		else if (strcmp(opname, "<>") == 0) cmptype = 1; /* CmptNEq */
-		else if (strcmp(opname, "<") == 0)  cmptype = 2; /* CmptLT */
-		else if (strcmp(opname, ">") == 0)  cmptype = 3; /* CmptGT */
-		else if (strcmp(opname, "<=") == 0) cmptype = 4; /* CmptLEq */
-		else if (strcmp(opname, ">=") == 0) cmptype = 5; /* CmptGEq */
-		ReleaseSysCache(htup_op);
-		return cmptype;
+		/* catalog tables: pg_operator */
+		return (unsigned int) get_comparison_type(op_oid);
 	}
 	GP_WRAP_END;
-	return 6; /* CmptOther */
+	return (unsigned int) CmptOther;
 }
 
 Oid
@@ -1074,13 +1063,8 @@ gpdb::GetComparisonOperator(Oid left_oid, Oid right_oid, unsigned int cmpt)
 {
 	GP_WRAP_START;
 	{
-#ifdef FAULT_INJECTOR
-		SIMPLE_FAULT_INJECTOR("gpdbwrappers_get_comparison_operator");
-#endif
 		/* catalog tables: pg_amop */
-		/* PG18: stub - return invalid OID (caller handles fallback) */
-		(void) left_oid; (void) right_oid; (void) cmpt;
-		return InvalidOid;
+		return get_comparison_operator(left_oid, right_oid, (CmpType) cmpt);
 	}
 	GP_WRAP_END;
 	return InvalidOid;
