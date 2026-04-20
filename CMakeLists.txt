@@ -116,13 +116,7 @@ add_library(pg_orca MODULE
     ${GPOPT_SRC}
     $<TARGET_OBJECTS:orca_core>
     compat/utils/walkers.c
-    compat/utils/ext_stats.c
-    compat/utils/cmp_type.c
-    compat/utils/relation_keys.c
-    compat/utils/subselect_hashable.c
-    compat/utils/func_output_arg_types.c
-    compat/utils/convert_timevalue_to_scalar.c
-    compat/utils/partitioned_numpages.c
+    compat/utils/misc.c
 )
 
 set_target_properties(pg_orca PROPERTIES
