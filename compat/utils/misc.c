@@ -78,6 +78,9 @@
 #include "nodes/parsenodes.h"
 #include "optimizer/tlist.h"
 
+/* --- get_index_opfamilies --- */
+#include "catalog/pg_index.h"
+
 #include "compat/utils/misc.h"
 
 /* ========================================================================
@@ -999,4 +1002,61 @@ tlist_members(Node *node, List *targetlist)
 	}
 
 	return tlist;
+}
+
+/* ========================================================================
+ * get_index_opfamilies
+ *
+ * Ported from Cloudberry src/backend/utils/cache/lsyscache.c.
+ * Called from gpdbwrappers.cpp: gpdb::GetIndexOpFamilies.
+ *
+ * PG18 does not have this function; we port it directly.
+ * ======================================================================== */
+
+/*
+ * get_index_opfamilies
+ *		Get the OIDs of operator families for the index keys.
+ *
+ * For each index key column, look up its opclass from pg_index.indclass,
+ * then resolve the opclass to its opfamily via get_opclass_family().
+ */
+List *
+get_index_opfamilies(Oid oidIndex)
+{
+	HeapTuple	htup;
+	List	   *opfam_oids;
+	bool		isnull = false;
+	int			indnkeyatts;
+	Datum		indclassDatum;
+	oidvector  *indclass;
+
+	htup = SearchSysCache1(INDEXRELID,
+						   ObjectIdGetDatum(oidIndex));
+	if (!HeapTupleIsValid(htup))
+		elog(ERROR, "Index %u not found", oidIndex);
+
+	indnkeyatts = DatumGetInt16(SysCacheGetAttr(INDEXRELID, htup,
+												Anum_pg_index_indnkeyatts, &isnull));
+	Assert(!isnull);
+
+	indclassDatum = SysCacheGetAttr(INDEXRELID, htup,
+									Anum_pg_index_indclass, &isnull);
+	if (isnull)
+	{
+		ReleaseSysCache(htup);
+		return NIL;
+	}
+	indclass = (oidvector *) DatumGetPointer(indclassDatum);
+
+	opfam_oids = NIL;
+	for (int i = 0; i < indnkeyatts; i++)
+	{
+		Oid		oidOpClass = indclass->values[i];
+		Oid		opfam = get_opclass_family(oidOpClass);
+
+		opfam_oids = lappend_oid(opfam_oids, opfam);
+	}
+
+	ReleaseSysCache(htup);
+	return opfam_oids;
 }

@@ -2392,18 +2392,8 @@ gpdb::GetIndexOpFamilies(Oid index_oid)
 	{
 		/* catalog tables: pg_index */
 
-		/* get_index_opfamilies is GPDB-only; query pg_index directly */
-		List *result = NIL;
-		HeapTuple htup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
-		if (HeapTupleIsValid(htup))
-		{
-			Form_pg_index indexform = (Form_pg_index) GETSTRUCT(htup);
-			int nkeys = indexform->indnatts;
-			for (int i = 0; i < nkeys; i++)
-				result = lappend_oid(result, InvalidOid); /* no per-key opfamily in PG18 */
-			ReleaseSysCache(htup);
-		}
-		return result;
+		// We return the operator families of the index keys.
+		return get_index_opfamilies(index_oid);
 	}
 	GP_WRAP_END;
 

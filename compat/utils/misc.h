@@ -98,6 +98,9 @@ Query  *flatten_join_alias_var_optimizer(Query *query, int queryLevel);
 /* tlist_members (from tlist.c) */
 List   *tlist_members(Node *node, List *targetlist);
 
+/* get_index_opfamilies (from lsyscache.c) */
+List   *get_index_opfamilies(Oid index_oid);
+
 #ifdef __cplusplus
 }
 #endif
