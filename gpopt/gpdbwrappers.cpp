@@ -72,6 +72,7 @@ extern "C" {
 #include "compat/utils/subselect_hashable.h"
 #include "compat/utils/func_output_arg_types.h"
 #include "compat/utils/convert_timevalue_to_scalar.h"
+#include "compat/utils/partitioned_numpages.h"
 }
 #define GP_WRAP_START                                            \
 	sigjmp_buf local_sigjmp_buf;                                 \
@@ -2103,11 +2104,7 @@ gpdb::CdbEstimatePartitionedNumPages(Relation rel)
 {
 	GP_WRAP_START;
 	{
-		/* cdb_estimate_partitioned_numpages is GPDB-only */
-		PageEstimate pe;
-		pe.totalpages = rel->rd_rel->relpages;
-		pe.totalallvisiblepages = 0;
-		return pe;
+		return cdb_estimate_partitioned_numpages(rel);
 	}
 	GP_WRAP_END;
 }

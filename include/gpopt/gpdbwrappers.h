@@ -35,13 +35,7 @@ extern "C" {
 #include "catalog/gp_distribution_policy.h"  // from compat/
 #include "utils/compat_memset.h"              // from compat/
 #include "utils/cmp_type.h"                   // from compat/
-
-// PageEstimate: used by CdbEstimatePartitionedNumPages stub
-typedef struct PageEstimate
-{
-	BlockNumber totalpages;
-	BlockNumber totalallvisiblepages;
-} PageEstimate;
+#include "utils/partitioned_numpages.h"       // from compat/
 
 #include "gpos/types.h"
 

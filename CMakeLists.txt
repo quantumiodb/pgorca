@@ -122,6 +122,7 @@ add_library(pg_orca MODULE
     compat/utils/subselect_hashable.c
     compat/utils/func_output_arg_types.c
     compat/utils/convert_timevalue_to_scalar.c
+    compat/utils/partitioned_numpages.c
 )
 
 set_target_properties(pg_orca PROPERTIES
