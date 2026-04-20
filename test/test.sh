@@ -32,6 +32,7 @@ if [[ ${#TEST_NAMES[@]} -gt 0 ]]; then
         --inputdir="$PG_REGRESS_SQL" \
         --outputdir="$OUTPUT_DIR" \
         --load-extension=pg_orca \
+        --max-connections=1 \
         "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}" \
         "${TEST_NAMES[@]+"${TEST_NAMES[@]}"}"
 else
@@ -41,6 +42,7 @@ else
         --inputdir="$PG_REGRESS_SQL" \
         --outputdir="$OUTPUT_DIR" \
         --load-extension=pg_orca \
+        --max-connections=1 \
         --schedule="$PG_REGRESS_SQL/parallel_schedule" \
         "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}"
 fi

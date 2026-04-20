@@ -1695,6 +1695,31 @@ CTranslatorScalarToDXL::TranslateWindowFrameToDXL(
 		CDXLNode(m_mp, GPOS_NEW(m_mp) CDXLScalarWindowFrameEdge(
 						   m_mp, false /* fLeading */, trailing_boundary));
 
+	// Subqueries in window frame bounds cannot be handled by ORCA: the
+	// SubLink would end up as a Var(OUTER_VAR) in the plan, but WindowAgg's
+	// calculate_frame_offsets evaluates offsets with ecxt_outertuple=NULL.
+	// Fall back to the standard planner which converts them to InitPlans.
+	struct SContainsSubLink
+	{
+		static bool
+		Walk(Node *node, void *)
+		{
+			if (node == nullptr)
+				return false;
+			if (IsA(node, SubLink))
+				return true;
+			return gpdb::WalkExpressionTree(node, SContainsSubLink::Walk, nullptr);
+		}
+	};
+	if ((start_offset != nullptr &&
+		 SContainsSubLink::Walk(const_cast<Node *>(start_offset), nullptr)) ||
+		(end_offset != nullptr &&
+		 SContainsSubLink::Walk(const_cast<Node *>(end_offset), nullptr)))
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+				   GPOS_WSZ_LIT("Subquery in window frame bound"));
+	}
+
 	// translate the lead and trail value
 	if (nullptr != start_offset)
 	{
