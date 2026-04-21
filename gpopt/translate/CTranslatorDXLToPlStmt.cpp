@@ -19,7 +19,10 @@ extern "C" {
 
 #include "access/sysattr.h"
 #include "catalog/gp_distribution_policy.h"
+#include "catalog/pg_aggregate.h"
 #include "catalog/pg_collation.h"
+#include "utils/datum.h"
+#include "utils/lsyscache.h"
 /* cdb/cdbutil.h not present in PG18 — using compat stubs */
 #include "cdb/cdb_plan_nodes.h"
 /* cdb/cdbvars.h not present in PG18 */
@@ -2880,12 +2883,118 @@ CTranslatorDXLToPlStmt::TranslateDXLAgg(
 							   &plan->targetlist, &plan->qual, output_context);
 
 	/*
-	 * GPDB_14_MERGE_FIXME: TODO Deduplicate aggregates and transition functions in orca
+	 * Assign aggno/aggtransno to each Aggref, deduplicating identical
+	 * aggregates so they share transition state.  This mirrors PostgreSQL's
+	 * preprocess_aggref / find_compatible_agg / find_compatible_trans logic
+	 * in prepagg.c.
+	 *
+	 * Case 1 (aggno sharing): two Aggrefs are identical — same function,
+	 * result type, collations, transition type, kind, args, filters etc.
+	 * They get the same aggno AND aggtransno.
+	 *
+	 * Case 2 (aggtransno sharing): two Aggrefs differ only in their final
+	 * function but share the same inputs, transition function, transition
+	 * type, and initial value.  They get distinct aggno values but the same
+	 * aggtransno, so the executor computes the transition state only once.
 	 */
-	// Set the aggsplit for the agg node
+
+	/* Per-agg info used for deduplication */
+	struct AggEntry {
+		Aggref *aggref;		/* the translated Aggref */
+		Oid     transfn;	/* pg_aggregate.aggtransfn */
+		bool    init_isnull;
+		Datum   init_value;
+		bool    shareable;	/* finalfn is not AGGMODIFY_READ_WRITE */
+	};
+
 	ListCell *lc;
 	INT aggsplit = 0;
-	int idx = 0;
+	int aggno_idx  = 0;
+	int transno_idx = 0;
+	List *seen_entries = NIL;   /* List of AggEntry* */
+
+	auto assign_aggno = [&](Aggref *aggref) {
+		/*
+		 * Case 1: look for an identical aggregate (same aggno + aggtransno).
+		 */
+		ListCell *lc2;
+		foreach(lc2, seen_entries)
+		{
+			AggEntry *e = (AggEntry *) lfirst(lc2);
+			Aggref   *ex = e->aggref;
+			if (aggref->aggfnoid     == ex->aggfnoid     &&
+				aggref->aggtype      == ex->aggtype       &&
+				aggref->aggcollid    == ex->aggcollid     &&
+				aggref->inputcollid  == ex->inputcollid   &&
+				aggref->aggtranstype == ex->aggtranstype  &&
+				aggref->aggkind      == ex->aggkind       &&
+				aggref->aggstar      == ex->aggstar       &&
+				aggref->aggvariadic  == ex->aggvariadic   &&
+				aggref->aggsplit     == ex->aggsplit      &&
+				equal(aggref->args,         ex->args)         &&
+				equal(aggref->aggorder,     ex->aggorder)     &&
+				equal(aggref->aggdistinct,  ex->aggdistinct)  &&
+				equal(aggref->aggdirectargs,ex->aggdirectargs)&&
+				equal(aggref->aggfilter,    ex->aggfilter))
+			{
+				aggref->aggno     = ex->aggno;
+				aggref->aggtransno = ex->aggtransno;
+				return;
+			}
+		}
+
+		/*
+		 * New aggno.  Look up pg_aggregate fields needed for trans sharing.
+		 */
+		gpdb::AggTransInfo tinfo = gpdb::GetAggTransInfo(aggref->aggfnoid);
+		int new_aggno  = aggno_idx++;
+
+		/*
+		 * Case 2: look for an existing entry with same inputs and same
+		 * transition function that is willing to share its state.
+		 */
+		int new_transno = -1;
+		foreach(lc2, seen_entries)
+		{
+			AggEntry *e = (AggEntry *) lfirst(lc2);
+			Aggref   *ex = e->aggref;
+
+			if (!e->shareable)
+				continue;
+			if (aggref->aggtranstype != ex->aggtranstype)
+				continue;
+			if (tinfo.transfn_oid != e->transfn)
+				continue;
+			if (tinfo.init_isnull != e->init_isnull)
+				continue;
+			if (!tinfo.init_isnull &&
+				!datumIsEqual(tinfo.init_value, e->init_value,
+							  get_typbyval(aggref->aggtranstype),
+							  get_typlen(aggref->aggtranstype)))
+				continue;
+			/* inputs must match too */
+			if (!equal(aggref->args,       ex->args)      ||
+				!equal(aggref->aggfilter,  ex->aggfilter))
+				continue;
+
+			new_transno = ex->aggtransno;
+			break;
+		}
+		if (new_transno == -1)
+			new_transno = transno_idx++;
+
+		aggref->aggno     = new_aggno;
+		aggref->aggtransno = new_transno;
+
+		AggEntry *entry = (AggEntry *) palloc(sizeof(AggEntry));
+		entry->aggref    = aggref;
+		entry->transfn   = tinfo.transfn_oid;
+		entry->init_isnull = tinfo.init_isnull;
+		entry->init_value  = tinfo.init_value;
+		entry->shareable = (tinfo.finalmodify != AGGMODIFY_READ_WRITE);
+		seen_entries = lappend(seen_entries, entry);
+	};
+
 	ForEach (lc, plan->targetlist)
 	{
 		TargetEntry *te = (TargetEntry *) lfirst(lc);
@@ -2894,13 +3003,9 @@ CTranslatorDXLToPlStmt::TranslateDXLAgg(
 			Aggref *aggref = (Aggref *) te->expr;
 
 			if (AGGSPLIT_INTERMEDIATE != aggsplit)
-			{
 				aggsplit |= aggref->aggsplit;
-			}
 
-			aggref->aggno = idx;
-			aggref->aggtransno = idx;
-			idx++;
+			assign_aggno(aggref);
 		}
 	}
 	agg->aggsplit = (AggSplit) aggsplit;
@@ -2909,13 +3014,10 @@ CTranslatorDXLToPlStmt::TranslateDXLAgg(
 	{
 		Expr *expr = (Expr *) lfirst(lc);
 		if (IsA(expr, Aggref))
-		{
-			Aggref *aggref = (Aggref *) expr;
-			aggref->aggno = idx;
-			aggref->aggtransno = idx;
-			idx++;
-		}
+			assign_aggno((Aggref *) expr);
 	}
+
+	list_free(seen_entries);
 
 	plan->lefttree = child_plan;
 

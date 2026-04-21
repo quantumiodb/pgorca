@@ -707,6 +707,51 @@ gpdb::GetAggIntermediateResultType(Oid aggid)
 	return 0;
 }
 
+gpdb::AggTransInfo
+gpdb::GetAggTransInfo(Oid aggfnoid)
+{
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_aggregate */
+		HeapTuple	aggTuple;
+		Form_pg_aggregate aggform;
+		AggTransInfo info;
+		bool		isNull;
+
+		aggTuple = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggfnoid));
+		if (!HeapTupleIsValid(aggTuple))
+			elog(ERROR, "cache lookup failed for aggregate %u", aggfnoid);
+		aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+
+		info.transfn_oid  = aggform->aggtransfn;
+		info.finalmodify  = aggform->aggfinalmodify;
+
+		Datum textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
+											Anum_pg_aggregate_agginitval,
+											&isNull);
+		info.init_isnull = isNull;
+		if (isNull)
+		{
+			info.init_value = (Datum) 0;
+		}
+		else
+		{
+			/* Replicate GetAggInitVal (static in prepagg.c) */
+			Oid		typinput, typioparam;
+			char   *strInitVal;
+			getTypeInputInfo(aggform->aggtranstype, &typinput, &typioparam);
+			strInitVal = TextDatumGetCString(textInitVal);
+			info.init_value = OidInputFunctionCall(typinput, strInitVal,
+												   typioparam, -1);
+			pfree(strInitVal);
+		}
+		ReleaseSysCache(aggTuple);
+		return info;
+	}
+	GP_WRAP_END;
+	return {InvalidOid, AGGMODIFY_READ_ONLY, (Datum) 0, true};
+}
+
 int
 gpdb::GetAggregateArgTypes(Aggref *aggref, Oid *inputTypes)
 {
