@@ -66,6 +66,9 @@ export GPD_INIT_FILES="${GPD_INIT_FILES:+$GPD_INIT_FILES:}$SCRIPT_DIR/init_file"
 # Prepend test/bin to PATH so pg_regress picks up our gpdiff-backed diff wrapper.
 export PATH="$SCRIPT_DIR/bin:$PATH"
 
+# Disable parallel query workers so ORCA plans are not mixed with parallel plans.
+#export PGOPTIONS="${PGOPTIONS:+$PGOPTIONS }-c max_parallel_workers_per_gather=0"
+
 # Common pg_regress arguments
 COMMON_OPTS=(
     --temp-config="$SCRIPT_DIR/regression.conf"

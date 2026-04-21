@@ -2,7 +2,7 @@
  * compat/utils/compat_memset.h
  *
  * Cloudberry MemSetTest/MemSetLoop macros that were removed from PG18's c.h.
- * Used by translate/*.cpp files.
+ * Used by translate/ .cpp files.
  */
 #ifndef COMPAT_MEMSET_H
 #define COMPAT_MEMSET_H
