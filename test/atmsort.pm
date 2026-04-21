@@ -591,6 +591,9 @@ sub atmsort_bigloop
                     $t =~ s/over\s*\((?:partition\s+by.*?)?order\s+by/xx/isg;
                     $t =~ s/window\s+\w+\s+as\s*\((?:partition\s+by.*?)?order\s+by/xx/isg;
                     $t =~ s/within\s+group\s*\(order\s+by.*?\)/xx/isg;
+                    # Strip all parenthesized groups (subqueries) so that
+                    # ORDER BY inside a subquery does not fool the detector.
+                    1 while $t =~ s/\([^()]*\)//g;
                     $has_order = ($t =~ m/order\s+by/is) ? 1 : 0;
                 }
                 else
