@@ -26,6 +26,10 @@
  *
  * Ported from Cloudberry src/backend/optimizer/util/clauses.c.
  * scatterClause handling is omitted (CBDB-only, does not exist in PG18).
+ *
+ * NOTE: flatten_join_alias_vars() may return the input pointer unchanged
+ * when no substitution is needed (e.g. outer-ref Vars with varlevelsup > 0).
+ * We must not pfree/list_free the old node in that case.
  */
 Query *
 flatten_join_alias_var_optimizer(Query *query, int queryLevel)
@@ -61,28 +65,37 @@ flatten_join_alias_var_optimizer(Query *query, int queryLevel)
 	if (NIL != targetList)
 	{
 		queryNew->targetList = (List *) flatten_join_alias_vars(NULL, queryNew, (Node *) targetList);
-		list_free(targetList);
+		if (targetList != queryNew->targetList)
+			list_free(targetList);
 	}
 
 	List *returningList = queryNew->returningList;
 	if (NIL != returningList)
 	{
 		queryNew->returningList = (List *) flatten_join_alias_vars(NULL, queryNew, (Node *) returningList);
-		list_free(returningList);
+		if (returningList != queryNew->returningList)
+			list_free(returningList);
 	}
 
 	Node *havingQual = queryNew->havingQual;
 	if (NULL != havingQual)
 	{
 		queryNew->havingQual = flatten_join_alias_vars(NULL, queryNew, havingQual);
-		pfree(havingQual);
+		if (havingQual != queryNew->havingQual)
+		{
+			if (IsA(havingQual, List))
+				list_free((List *) havingQual);
+			else
+				pfree(havingQual);
+		}
 	}
 
 	Node *limitOffset = queryNew->limitOffset;
 	if (NULL != limitOffset)
 	{
 		queryNew->limitOffset = flatten_join_alias_vars(NULL, queryNew, limitOffset);
-		pfree(limitOffset);
+		if (queryNew->limitOffset != limitOffset)
+			pfree(limitOffset);
 	}
 
 	List *windowClause = queryNew->windowClause;
@@ -109,7 +122,8 @@ flatten_join_alias_var_optimizer(Query *query, int queryLevel)
 	if (NULL != limitCount)
 	{
 		queryNew->limitCount = flatten_join_alias_vars(NULL, queryNew, limitCount);
-		pfree(limitCount);
+		if (queryNew->limitCount != limitCount)
+			pfree(limitCount);
 	}
 
 	return queryNew;
