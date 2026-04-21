@@ -403,16 +403,19 @@ CExpressionPreprocessor::PexprRemoveSuperfluousLimit(CMemoryPool *mp,
 	GPOS_ASSERT(nullptr != pexpr);
 
 	COperator *pop = pexpr->Pop();
-	// if current operator is a logical limit with zero offset, and no specified
-	// row count, skip to limit's logical child
+	// if current operator is a logical limit with zero offset, no specified
+	// row count, AND no ORDER BY columns, skip to limit's logical child.
+	// A limit with ORDER BY but no count represents a subquery sort that
+	// an ancestor (e.g. outer LIMIT) may depend on, so we must keep it.
 	if (COperator::EopLogicalLimit == pop->Eopid() &&
 		CUtils::FHasZeroOffset(pexpr) &&
 		!CLogicalLimit::PopConvert(pop)->FHasCount())
 	{
 		CLogicalLimit *popLgLimit = CLogicalLimit::PopConvert(pop);
-		if (!popLgLimit->IsTopLimitUnderDMLorCTAS() ||
-			(popLgLimit->IsTopLimitUnderDMLorCTAS() &&
-			 GPOS_FTRACE(EopttraceRemoveOrderBelowDML)))
+		if (popLgLimit->Pos()->IsEmpty() &&
+			(!popLgLimit->IsTopLimitUnderDMLorCTAS() ||
+			 (popLgLimit->IsTopLimitUnderDMLorCTAS() &&
+			  GPOS_FTRACE(EopttraceRemoveOrderBelowDML))))
 		{
 			return PexprRemoveSuperfluousLimit(mp, (*pexpr)[0]);
 		}
