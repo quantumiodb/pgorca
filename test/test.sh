@@ -12,37 +12,88 @@ OUTPUT_DIR="$BUILD_DIR/test_parallel"
 
 mkdir -p "$OUTPUT_DIR"
 
-# Separate pg_regress options (--foo) from test names (positional args).
+# ---------------------------------------------------------------------------
+# Parse our own options before forwarding the rest to pg_regress.
+#
+#   --ignore-plans         Pass --gpd_ignore_plans to gpdiff.pl
+#   --init-file=FILE       Pass FILE as --gpd_init to gpdiff.pl (repeatable)
+#   --pg-tests             Run PG's own parallel_schedule (default)
+#   --orca-tests           Run pg_orca's own test/schedule
+#   --use-existing         Use a running PG instance instead of --temp-instance
+#
+# All other --foo options are forwarded to pg_regress.
+# Positional args are treated as test names (run without --schedule).
+# ---------------------------------------------------------------------------
 PG_REGRESS_OPTS=()
 TEST_NAMES=()
+USE_EXISTING=0
+RUN_PG_TESTS=1   # default: run PG's parallel_schedule
+
 for arg in "$@"; do
-    if [[ "$arg" == --* ]]; then
-        PG_REGRESS_OPTS+=("$arg")
-    else
-        TEST_NAMES+=("$arg")
-    fi
+    case "$arg" in
+        --ignore-plans)
+            export GPD_IGNORE_PLANS=1
+            ;;
+        --init-file=*)
+            f="${arg#--init-file=}"
+            export GPD_INIT_FILES="${GPD_INIT_FILES:+$GPD_INIT_FILES:}$f"
+            ;;
+        --pg-tests)
+            RUN_PG_TESTS=1
+            ;;
+        --orca-tests)
+            RUN_PG_TESTS=0
+            ;;
+        --use-existing)
+            USE_EXISTING=1
+            PG_REGRESS_OPTS+=(--use-existing)
+            ;;
+        --*)
+            PG_REGRESS_OPTS+=("$arg")
+            ;;
+        *)
+            TEST_NAMES+=("$arg")
+            ;;
+    esac
 done
 
-# If specific test names were given, run only those (no --schedule).
-# Otherwise fall back to the default parallel schedule.
+# Export gpdiff.pl path so bin/diff can find it regardless of CWD.
+export GPDIFF_PATH="$SCRIPT_DIR/gpdiff.pl"
+
+# Prepend test/bin to PATH so pg_regress picks up our gpdiff-backed diff wrapper.
+export PATH="$SCRIPT_DIR/bin:$PATH"
+
+# Common pg_regress arguments
+COMMON_OPTS=(
+    --temp-config="$SCRIPT_DIR/regression.conf"
+    --outputdir="$OUTPUT_DIR"
+    --load-extension=pg_orca
+    --max-connections=4
+)
+
+if [[ $USE_EXISTING -eq 0 ]]; then
+    COMMON_OPTS+=(--temp-instance="$TEMP_INSTANCE")
+fi
+
 if [[ ${#TEST_NAMES[@]} -gt 0 ]]; then
+    # Run only the named tests against the PG regress SQL dir
     exec "$PG_REGRESS" \
-        --temp-instance="$TEMP_INSTANCE" \
-        --temp-config="$SCRIPT_DIR/regression.conf" \
+        "${COMMON_OPTS[@]}" \
         --inputdir="$PG_REGRESS_SQL" \
-        --outputdir="$OUTPUT_DIR" \
-        --load-extension=pg_orca \
-        --max-connections=1 \
         "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}" \
-        "${TEST_NAMES[@]+"${TEST_NAMES[@]}"}"
-else
+        "${TEST_NAMES[@]}"
+elif [[ $RUN_PG_TESTS -eq 1 ]]; then
+    # Run PG's full parallel_schedule with pg_orca loaded
     exec "$PG_REGRESS" \
-        --temp-instance="$TEMP_INSTANCE" \
-        --temp-config="$SCRIPT_DIR/regression.conf" \
+        "${COMMON_OPTS[@]}" \
         --inputdir="$PG_REGRESS_SQL" \
-        --outputdir="$OUTPUT_DIR" \
-        --load-extension=pg_orca \
-        --max-connections=1 \
         --schedule="$PG_REGRESS_SQL/parallel_schedule" \
+        "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}"
+else
+    # Run pg_orca's own test schedule
+    exec "$PG_REGRESS" \
+        "${COMMON_OPTS[@]}" \
+        --inputdir="$SCRIPT_DIR" \
+        --schedule="$SCRIPT_DIR/schedule" \
         "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}"
 fi

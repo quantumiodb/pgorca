@@ -1,0 +1,32 @@
+-- pg_orca default init file for gpdiff.pl
+--
+-- Format: SQL-style comments containing perl regex operators.
+-- Use -- start_matchsubs / -- end_matchsubs blocks for line substitutions.
+-- Use -- start_matchignore / -- end_matchignore blocks for lines to drop.
+--
+-- To activate: pass --init-file=test/init_file to test.sh,
+-- or set GPD_INIT_FILES=test/init_file before running.
+
+-- start_matchsubs
+--
+-- # Normalize EXPLAIN cost estimates so plan-shape tests are cost-agnostic.
+-- # Uncomment to enable:
+-- # m/\(cost=[\d.]+\.\.[\d.]+\s+rows=\d+\s+width=\d+\)/
+-- # s/\(cost=[\d.]+\.\.[\d.]+\s+rows=\d+\s+width=\d+\)/(cost=###..### rows=### width=###)/g
+--
+-- # Normalize actual timing from EXPLAIN ANALYZE:
+-- # m/actual time=[\d.]+\.\.[\d.]+\s+rows=\d+\s+loops=\d+/
+-- # s/actual time=[\d.]+\.\.[\d.]+\s+rows=\d+\s+loops=\d+/actual time=###..### rows=### loops=###/g
+--
+-- # Normalize Planning/Execution Time lines:
+-- # m/^(?:Planning|Execution) Time: [\d.]+ ms/
+-- # s/^((?:Planning|Execution) Time): [\d.]+ ms$/$1: ### ms/
+--
+-- end_matchsubs
+
+-- start_matchignore
+--
+-- # Ignore "Optimizer: ..." lines in EXPLAIN output when ORCA is active.
+-- m/^ Optimizer: pg_orca/
+--
+-- end_matchignore

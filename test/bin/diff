@@ -1,0 +1,26 @@
+#!/usr/bin/env perl
+#
+# diff wrapper for pg_orca regression tests.
+#
+# Intercepts pg_regress diff calls and routes them through gpdiff.pl.
+# Uses exec() — no extra fork needed, avoids macOS process-limit issues.
+#
+# Environment variables (set by test.sh):
+#   GPDIFF_PATH        Full path to gpdiff.pl  (required)
+#   GPD_IGNORE_PLANS   If set, pass --gpd_ignore_plans
+#   GPD_INIT_FILES     Colon-separated init file paths
+
+use strict;
+use warnings;
+
+my $gpdiff = $ENV{GPDIFF_PATH}
+    or do { warn "bin/diff: GPDIFF_PATH not set\n"; exit 2; };
+
+my @opts;
+push @opts, '--gpd_ignore_plans' if $ENV{GPD_IGNORE_PLANS};
+for my $f (split /:/, $ENV{GPD_INIT_FILES} // '') {
+    push @opts, '--gpd_init', $f if length $f;
+}
+
+exec 'perl', $gpdiff, @opts, @ARGV
+    or do { warn "bin/diff: exec failed: $!\n"; exit 2; };
