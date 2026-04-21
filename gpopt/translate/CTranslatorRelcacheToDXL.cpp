@@ -1588,8 +1588,9 @@ CTranslatorRelcacheToDXL::RetrieveAgg(CMemoryPool *mp, IMDId *mdid)
 	// combine function
 	BOOL is_splittable = !is_ordered && gpdb::IsAggPartialCapable(agg_oid);
 
-	// cannot use hash agg for ordered aggs or aggs without a combine func
-	// due to the fact that hashAgg may spill
+	// Ordered-set aggregates cannot use hash agg. For all others,
+	// single-node PG's HashAgg spills via the transition function and
+	// does not require a combine function (unlike GPDB's distributed agg).
 	BOOL is_hash_agg_capable =
 		!is_ordered && gpdb::IsAggPartialCapable(agg_oid);
 

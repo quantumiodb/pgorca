@@ -962,9 +962,7 @@ is_agg_partial_capable(Oid aggid)
 		elog(ERROR, "cache lookup failed for aggregate %u", aggid);
 	aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
 
-	if (aggform->aggcombinefn == InvalidOid)
-		result = false;
-	else if (aggform->aggtranstype == INTERNALOID)
+	if (aggform->aggtranstype == INTERNALOID)
 	{
 		if (aggform->aggserialfn == InvalidOid ||
 			aggform->aggdeserialfn == InvalidOid)
