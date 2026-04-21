@@ -1098,6 +1098,13 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexOnlyScan(
 	}
 
 	index_scan->indexqual = index_cond;
+	// recheckqual is used by the executor for lossy index operators (e.g. GiST
+	// <@ polygon).  When xs_recheck is set, the executor rechecks each
+	// candidate tuple using recheckqual.  Without it, the lossy recheck is
+	// skipped and the qual falls through to plan->qual which operates on the
+	// index tuple (not the heap tuple), producing wrong results for non-exact
+	// index types.  Mirror what TranslateDXLIndexScan does with indexqualorig.
+	index_scan->recheckqual = index_orig_cond;
 	SetParamIds(plan);
 
 	return (Plan *) index_scan;
