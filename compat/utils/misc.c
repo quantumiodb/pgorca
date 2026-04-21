@@ -1311,29 +1311,56 @@ isLegacyCdbHashFunction(Oid funcid)
 double
 cdb_estimate_partitioned_numtuples(Relation rel)
 {
-	PageEstimate	estimate;
-	double			tuple_width;
-	double			density;
+	List	   *inheritors;
+	ListCell   *lc;
+	double		totaltuples;
 
 	if (rel->rd_rel->reltuples > 0)
 		return rel->rd_rel->reltuples;
 
-	estimate = cdb_estimate_partitioned_numpages(rel);
-
-	if (estimate.totalpages == 0)
-		return 0;
-
 	/*
-	 * Estimate tuple count from total pages using average tuple width.
-	 * This matches the density calculation in get_relation_info().
+	 * Walk the partition hierarchy (or just the table itself for non-partitioned
+	 * relations) and sum up tuple estimates. For each child with reltuples == -1
+	 * (never analyzed), delegate to estimate_rel_size() which correctly accounts
+	 * for fillfactor via the heap AM callback (table_block_relation_estimate_size).
+	 * This matches Cloudberry's behavior when gp_enable_relsize_collection is on.
 	 */
-	tuple_width = get_rel_data_width(rel, NULL);
-	tuple_width += sizeof(HeapTupleHeaderData);
-	tuple_width += sizeof(ItemPointerData);
+	inheritors = find_all_inheritors(RelationGetRelid(rel), NoLock, NULL);
+	totaltuples = 0;
+	foreach(lc, inheritors)
+	{
+		Oid			childid = lfirst_oid(lc);
+		Relation	childrel;
+		double		childtuples;
 
-	density = (BLCKSZ - SizeOfPageHeaderData) / tuple_width;
+		if (childid != RelationGetRelid(rel))
+			childrel = RelationIdGetRelation(childid);
+		else
+			childrel = rel;
 
-	return rint(density * (double) estimate.totalpages);
+		if (childrel == NULL)
+			continue;
+
+		childtuples = childrel->rd_rel->reltuples;
+
+		if (childtuples == -1)
+		{
+			/* Never analyzed — ask the AM for a physical estimate. */
+			BlockNumber	numpages;
+			double		allvisfrac;
+
+			estimate_rel_size(childrel, NULL, &numpages, &childtuples, &allvisfrac);
+		}
+
+		if (childtuples > 0)
+			totaltuples += childtuples;
+
+		if (childrel != rel)
+			RelationClose(childrel);
+	}
+	list_free(inheritors);
+
+	return totaltuples;
 }
 
 /* ========================================================================
