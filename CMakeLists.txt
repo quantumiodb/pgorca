@@ -88,6 +88,7 @@ target_include_directories(orca_core PUBLIC
     ${CMAKE_SOURCE_DIR}/libgpopt/include
     ${CMAKE_SOURCE_DIR}/libgpdbcost/include
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}           # allows "compat/utils/foo.h" style includes
     ${CMAKE_SOURCE_DIR}/compat   # stub headers replacing GPDB-specific includes
     SYSTEM
     ${PG_SERVER_INCLUDEDIR}
@@ -150,6 +151,7 @@ target_include_directories(pg_orca PRIVATE
     ${CMAKE_SOURCE_DIR}/libnaucrates/include
     ${CMAKE_SOURCE_DIR}/libgpopt/include
     ${CMAKE_SOURCE_DIR}/libgpdbcost/include
+    ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/compat
     SYSTEM
     ${PG_SERVER_INCLUDEDIR}
