@@ -144,6 +144,14 @@ CMappingColIdVarPlStmt::VarFromDXLNodeScId(const CDXLScalarIdent *dxlop)
 	}
 
 	// if lookup has failed in the first step, attempt lookup again using outer and inner contexts
+	if (0 == attno && nullptr == m_child_contexts)
+	{
+		// column not found in base table and no child contexts to search;
+		// this must be an outer reference (e.g. a skip-level correlated
+		// subquery parameter)
+		return nullptr;
+	}
+
 	if (0 == attno && nullptr != m_child_contexts)
 	{
 		GPOS_ASSERT(0 != m_child_contexts->Size());
