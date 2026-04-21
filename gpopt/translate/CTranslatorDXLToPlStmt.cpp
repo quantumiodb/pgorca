@@ -740,11 +740,31 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 		// the security_query_quals list.
 		AddSecurityQuals(oidRel, &security_query_quals, &index);
 
-		// The security quals should always be executed first when
-		// compared to other quals. So appending query quals to the
-		// security_query_quals list after the security quals.
+		// PostgreSQL's security barrier distinguishes two cases:
+		// (1) Quals referencing table Vars (e.g. f_leak(col)) must be
+		//     evaluated AFTER the security barrier to prevent data leakage.
+		// (2) Quals with no Var references (e.g. f_leak('const')) are safe
+		//     to evaluate BEFORE the security barrier since they cannot
+		//     expose filtered row data.
+		// Partition query_quals accordingly and build:
+		//   [pre_security_quals, security_quals, post_security_quals]
+		List *pre_security_quals = NIL;
+		List *post_security_quals = NIL;
+		ListCell *lc;
+		foreach (lc, query_quals)
+		{
+			Node *qual = (Node *) lfirst(lc);
+			if (gpdb::ContainVarClause(qual))
+				post_security_quals =
+					gpdb::LAppend(post_security_quals, qual);
+			else
+				pre_security_quals =
+					gpdb::LAppend(pre_security_quals, qual);
+		}
 		security_query_quals =
-			gpdb::ListConcat(security_query_quals, query_quals);
+			gpdb::ListConcat(pre_security_quals, security_query_quals);
+		security_query_quals =
+			gpdb::ListConcat(security_query_quals, post_security_quals);
 		plan->qual = security_query_quals;
 	}
 
@@ -4510,10 +4530,22 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 		nullptr,			  // translate_ctxt_left and pdxltrctxRight,
 		&plan->targetlist, &query_quals, output_context);
 
-	// The security quals should always be executed first when compared to
-	// other quals. So appending query quals to the security_query_quals
-	// list after the security quals.
-	security_query_quals = gpdb::ListConcat(security_query_quals, query_quals);
+	// See SeqScan path above for explanation of the partitioning logic.
+	List *pre_security_quals = NIL;
+	List *post_security_quals = NIL;
+	ListCell *lc;
+	foreach (lc, query_quals)
+	{
+		Node *qual = (Node *) lfirst(lc);
+		if (gpdb::ContainVarClause(qual))
+			post_security_quals = gpdb::LAppend(post_security_quals, qual);
+		else
+			pre_security_quals = gpdb::LAppend(pre_security_quals, qual);
+	}
+	security_query_quals =
+		gpdb::ListConcat(pre_security_quals, security_query_quals);
+	security_query_quals =
+		gpdb::ListConcat(security_query_quals, post_security_quals);
 	plan->qual = security_query_quals;
 
 	SetParamIds(plan);

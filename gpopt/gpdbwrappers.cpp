@@ -3226,6 +3226,17 @@ gpdb::TestexprIsHashable(Node *testexpr, List *param_ids)
 	return false;
 }
 
+bool
+gpdb::ContainVarClause(Node *node)
+{
+	GP_WRAP_START;
+	{
+		return contain_var_clause(node);
+	}
+	GP_WRAP_END;
+	return false;
+}
+
 RTEPermissionInfo *
 gpdb::GetRTEPermissionInfo(List *rteperminfos, const RangeTblEntry *rte)
 {

@@ -719,6 +719,8 @@ IndexAmRoutine *GetIndexAmRoutineFromAmHandler(Oid am_handler);
 
 bool TestexprIsHashable(Node *testexpr, List *param_ids);
 
+bool ContainVarClause(Node *node);
+
 RTEPermissionInfo *
 GetRTEPermissionInfo(List *rteperminfos, const RangeTblEntry *rte);
 
