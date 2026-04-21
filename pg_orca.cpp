@@ -132,7 +132,10 @@ pg_orca_ExecResult(PlanState *pstate)
 
             /* Per-tuple qual — ORCA places correlated filters here */
             if (node->ps.qual && !ExecQual(node->ps.qual, econtext))
+            {
+                InstrCountFiltered1(node, 1);
                 continue;
+            }
         }
         else
         {
@@ -159,12 +162,26 @@ pg_orca_patch_result_nodes(PlanState *ps)
     {
         ResultState *rs = (ResultState *) ps;
         if (rs->ps.qual != NULL)
-            rs->ps.ExecProcNode = pg_orca_ExecResult;
+            ExecSetExecProcNode(&rs->ps, pg_orca_ExecResult);
     }
 
     /* Recurse into children */
     pg_orca_patch_result_nodes(ps->lefttree);
     pg_orca_patch_result_nodes(ps->righttree);
+
+    /* Recurse into Append / MergeAppend children (stored separately) */
+    if (IsA(ps, AppendState))
+    {
+        AppendState *as = (AppendState *) ps;
+        for (int i = 0; i < as->as_nplans; i++)
+            pg_orca_patch_result_nodes(as->appendplans[i]);
+    }
+    else if (IsA(ps, MergeAppendState))
+    {
+        MergeAppendState *ms = (MergeAppendState *) ps;
+        for (int i = 0; i < ms->ms_nplans; i++)
+            pg_orca_patch_result_nodes(ms->mergeplans[i]);
+    }
 
     /* Recurse into subplans */
     ListCell *lc;
