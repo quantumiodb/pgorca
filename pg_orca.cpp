@@ -254,10 +254,15 @@ pg_orca_planner(Query *parse, const char *query_string,
                 int cursorOptions, ParamListInfo boundParams)
 {
     /* Pure-expression queries (no rtable): ORCA would produce a plan that
-     * breaks plpgsql's exec_simple_check_plan assertion — fall back. */
+     * breaks plpgsql's exec_simple_check_plan assertion — fall back.
+     * Queries with row-locking clauses (FOR UPDATE/SHARE/etc.): ORCA does not
+     * translate rowMarks, so no LockRows node is emitted and the executor
+     * never validates that locking is allowed (e.g. it would silently skip
+     * the "cannot lock rows in materialized view" check) — fall back. */
     if (pg_orca_enabled &&
         parse->commandType == CMD_SELECT &&
-        parse->rtable != NIL)
+        parse->rtable != NIL &&
+        parse->rowMarks == NIL)
     {
         if (!orca_initialized)
         {
