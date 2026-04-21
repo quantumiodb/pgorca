@@ -22,6 +22,11 @@
 -- # m/^(?:Planning|Execution) Time: [\d.]+ ms/
 -- # s/^((?:Planning|Execution) Time): [\d.]+ ms$/$1: ### ms/
 --
+-- # ORCA does not inline SQL SRFs, so error context says "statement 1"
+-- # instead of "during inlining". Normalize to the ORCA form.
+-- m/CONTEXT:.*SQL function .* during inlining/
+-- s/during inlining/statement 1/
+--
 -- end_matchsubs
 
 -- start_matchignore

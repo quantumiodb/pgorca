@@ -60,6 +60,9 @@ done
 # Export gpdiff.pl path so bin/diff can find it regardless of CWD.
 export GPDIFF_PATH="$SCRIPT_DIR/gpdiff.pl"
 
+# Always load the default init file (can be supplemented with --init-file).
+export GPD_INIT_FILES="${GPD_INIT_FILES:+$GPD_INIT_FILES:}$SCRIPT_DIR/init_file"
+
 # Prepend test/bin to PATH so pg_regress picks up our gpdiff-backed diff wrapper.
 export PATH="$SCRIPT_DIR/bin:$PATH"
 
