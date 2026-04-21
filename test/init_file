@@ -34,4 +34,10 @@
 -- # Ignore "Optimizer: ..." lines in EXPLAIN output when ORCA is active.
 -- m/^ Optimizer: pg_orca/
 --
+-- # ORCA does not push outer quals below the view's own filter, so snoop()
+-- # is never evaluated on private rows (e.g. 'Dick' with visibility='private').
+-- # The standard planner leaks this via low-COST predicate reordering;
+-- # ORCA's conservative pushdown is actually safer. Ignore the extra NOTICE.
+-- m/^NOTICE:  snooped value: Dick$/
+--
 -- end_matchignore
