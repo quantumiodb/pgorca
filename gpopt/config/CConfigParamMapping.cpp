@@ -75,6 +75,7 @@ static bool force_comprehensive_join = false;
 static bool enable_use_dist_in_dqa   = false;
 static bool orca_enable_hashjoin     = true;
 static bool enable_nljoin            = true;
+extern bool optimizer_use_streaming_hashagg;
 
 // Scan / join controls
 static bool enable_indexjoin         = true;
@@ -288,6 +289,10 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 
 	{EopttraceDisableInnerNLJ, &enable_nljoin,
 	 true,  GPOS_WSZ_LIT("Enable nested loop join alternatives.")},
+
+	{EopttraceDisableStreamingHashAgg, &optimizer_use_streaming_hashagg,
+	 true,  GPOS_WSZ_LIT(
+		 "Disable streaming hash agg in ORCA-generated local partial aggregations.")},
 };
 
 //---------------------------------------------------------------------------

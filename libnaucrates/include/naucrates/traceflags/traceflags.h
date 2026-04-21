@@ -232,6 +232,9 @@ enum EOptTraceFlag
 	// Force split the window function
 	EopttraceForceSplitWindowFunc = 103048,
 
+	// Disable streaming hash agg in ORCA-generated local partial aggregations
+	EopttraceDisableStreamingHashAgg = 103049,
+
 	///////////////////////////////////////////////////////
 	///////////////////// statistics flags ////////////////
 	//////////////////////////////////////////////////////

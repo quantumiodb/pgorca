@@ -56,6 +56,7 @@ bool  optimizer_enable_multiple_distinct_aggs   = true;
 bool  optimizer_enable_motions                  = true;
 bool  optimizer_enable_motions_masteronly_queries = true;
 bool  optimizer_metadata_caching                = true;
+bool  optimizer_use_streaming_hashagg           = true;
 
 int   optimizer_mdcache_size                    = 16384;  /* KB */
 int   optimizer_segments                        = 1;
@@ -433,6 +434,12 @@ void _PG_init(void)
         "optimizer_cte_inlining",
         "Enable CTE inlining in ORCA.",
         NULL, &optimizer_cte_inlining, true,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_use_streaming_hashagg",
+        "Use streaming hash agg in ORCA-generated local partial hash aggregations.",
+        NULL, &optimizer_use_streaming_hashagg, true,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     MarkGUCPrefixReserved("optimizer");
