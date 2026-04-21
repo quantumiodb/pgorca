@@ -20,6 +20,7 @@ extern "C" {
 #include "catalog/heap.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_statistic_ext.h"
@@ -1451,6 +1452,23 @@ CTranslatorRelcacheToDXL::LookupFuncProps(
 	GPOS_ASSERT(nullptr != returns_set);
 
 	*stability = GetFuncStability(gpdb::FuncStability(func_oid));
+
+	RegProcedure prosupport = gpdb::FuncSupport(func_oid);
+	if (OidIsValid(prosupport))
+	{
+		/*
+		 * ORCA does not implement PostgreSQL's prosupport mechanism.
+		 * Reject functions with a support function unless they are in
+		 * pg_catalog (built-in functions whose support behavior ORCA
+		 * already handles via other means).
+		 */
+		Oid func_namespace = gpdb::FuncNamespace(func_oid);
+		if (func_namespace != PG_CATALOG_NAMESPACE)
+		{
+			GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+					   GPOS_WSZ_LIT("extension functions with prosupport unsupported"));
+		}
+	}
 
 	/* PROEXECLOCATION_ANY / FuncExecLocation are GPDB MPP-only;
 	 * in PG18 all functions are always executable. */
