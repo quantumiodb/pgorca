@@ -68,6 +68,7 @@ extern "C" {
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/partcache.h"
+#include "utils/datum.h"
 #include "compat/utils/misc.h"
 }
 #define GP_WRAP_START                                            \
@@ -755,6 +756,205 @@ gpdb::ResolveAggregateTransType(Oid aggfnoid, Oid aggtranstype, Oid *inputTypes,
 	GP_WRAP_END;
 	return 0;
 }
+
+void
+gpdb::TypLenByVal(Oid typid, int16 *typlen, bool *typbyval)
+{
+	GP_WRAP_START;
+	{
+		get_typlenbyval(typid, typlen, typbyval);
+	}
+	GP_WRAP_END;
+}
+
+static Datum
+GetAggInitVal(Datum textInitVal, Oid transtype)
+{
+	Oid			typinput,
+				typioparam;
+	char	   *strInitVal;
+	Datum		initVal;
+
+	getTypeInputInfo(transtype, &typinput, &typioparam);
+	strInitVal = TextDatumGetCString(textInitVal);
+	initVal = OidInputFunctionCall(typinput, strInitVal,
+								   typioparam, -1);
+	pfree(strInitVal);
+	return initVal;
+}
+
+void
+gpdb::GetAggregateInfo(Aggref *aggref, Oid *aggtransfn,
+					   Oid *aggfinalfn, Oid *aggcombinefn,
+					   Oid *aggserialfn, Oid *aggdeserialfn,
+					   Oid *aggtranstype, int *aggtransspace,
+					   Datum *initValue, bool *initValueIsNull,
+					   bool *shareable)
+{
+	GP_WRAP_START;
+	{
+		HeapTuple	aggTuple;
+		Form_pg_aggregate aggform;
+		Datum		textInitVal;
+		Oid			inputTypes[FUNC_MAX_ARGS];
+		int			numArguments;
+
+		aggTuple = SearchSysCache1(AGGFNOID,
+							   ObjectIdGetDatum(aggref->aggfnoid));
+		if (!HeapTupleIsValid(aggTuple))
+			elog(ERROR, "cache lookup failed for aggregate %u",
+				 aggref->aggfnoid);
+
+		aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+		*aggtransfn = aggform->aggtransfn;
+		*aggfinalfn = aggform->aggfinalfn;
+		*aggcombinefn = aggform->aggcombinefn;
+		*aggserialfn = aggform->aggserialfn;
+		*aggdeserialfn = aggform->aggdeserialfn;
+		*aggtranstype = aggform->aggtranstype;
+		*aggtransspace = aggform->aggtransspace;
+
+		/*
+		 * Resolve the possibly-polymorphic aggregate transition type.
+		 */
+		numArguments = get_aggregate_argtypes(aggref, inputTypes);
+		*aggtranstype = resolve_aggregate_transtype(aggref->aggfnoid,
+												   *aggtranstype,
+												   inputTypes,
+												   numArguments);
+
+		/* get initial value */
+		textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
+									Anum_pg_aggregate_agginitval,
+									initValueIsNull);
+
+		if (*initValueIsNull)
+			*initValue = (Datum) 0;
+		else
+			*initValue = GetAggInitVal(textInitVal, *aggtranstype);
+
+		/*
+		 * If finalfn is marked read-write, we can't share transition states; but
+		 * it is okay to share states for AGGMODIFY_SHAREABLE aggs.
+		 */
+		*shareable = (aggform->aggfinalmodify != AGGMODIFY_READ_WRITE);
+
+		ReleaseSysCache(aggTuple);
+	}
+	GP_WRAP_END;
+}
+
+
+int
+gpdb::FindCompatibleAgg(List *agginfos, Aggref *newagg,
+						List **same_input_transnos)
+{
+	GP_WRAP_START;
+	{
+		ListCell   *lc;
+		int			aggno;
+
+		*same_input_transnos = NIL;
+
+		/* we mustn't reuse the aggref if it contains volatile function calls */
+		if (contain_volatile_functions((Node *) newagg))
+			return -1;
+
+		aggno = -1;
+		foreach(lc, agginfos)
+		{
+			AggInfo    *agginfo = (AggInfo *) lfirst(lc);
+			Aggref	   *existingRef;
+
+			aggno++;
+
+			existingRef = linitial_node(Aggref, agginfo->aggrefs);
+
+			/* all of the following must be the same or it's no match */
+			if (newagg->inputcollid != existingRef->inputcollid ||
+				newagg->aggtranstype != existingRef->aggtranstype ||
+				newagg->aggstar != existingRef->aggstar ||
+				newagg->aggvariadic != existingRef->aggvariadic ||
+				newagg->aggkind != existingRef->aggkind ||
+				!equal(newagg->args, existingRef->args) ||
+				!equal(newagg->aggorder, existingRef->aggorder) ||
+				!equal(newagg->aggdistinct, existingRef->aggdistinct) ||
+				!equal(newagg->aggfilter, existingRef->aggfilter))
+				continue;
+
+			/* if it's the same aggregate function then report exact match */
+			if (newagg->aggfnoid == existingRef->aggfnoid &&
+				newagg->aggtype == existingRef->aggtype &&
+				newagg->aggcollid == existingRef->aggcollid &&
+				equal(newagg->aggdirectargs, existingRef->aggdirectargs))
+			{
+				list_free(*same_input_transnos);
+				*same_input_transnos = NIL;
+				return aggno;
+			}
+
+			/*
+			 * Not identical, but it had the same inputs.  If the final function
+			 * permits sharing, return its transno to the caller, in case we can
+			 * re-use its per-trans state.
+			 */
+			if (agginfo->shareable)
+				*same_input_transnos = lappend_int(*same_input_transnos,
+												   agginfo->transno);
+		}
+
+		return -1;
+	}
+	GP_WRAP_END;
+	return -1;
+}
+
+int
+gpdb::FindCompatibleTrans(List *aggtransinfos, bool shareable,
+						  Oid aggtransfn, Oid aggtranstype,
+						  int transtypeLen, bool transtypeByVal,
+						  Oid aggcombinefn, Oid aggserialfn,
+						  Oid aggdeserialfn, Datum initValue,
+						  bool initValueIsNull, List *transnos)
+{
+	GP_WRAP_START;
+	{
+		ListCell   *lc;
+
+		/* If this aggregate can't share transition states, give up */
+		if (!shareable)
+			return -1;
+
+		foreach(lc, transnos)
+		{
+			int			transno = lfirst_int(lc);
+			AggTransInfo *pertrans = (AggTransInfo *) list_nth(aggtransinfos, transno);
+
+			if (aggtransfn != pertrans->transfn_oid ||
+				aggtranstype != pertrans->aggtranstype)
+				continue;
+
+			if (aggserialfn != pertrans->serialfn_oid ||
+				aggdeserialfn != pertrans->deserialfn_oid)
+				continue;
+
+			if (aggcombinefn != pertrans->combinefn_oid)
+				continue;
+
+			if (initValueIsNull && pertrans->initValueIsNull)
+				return transno;
+
+			if (!initValueIsNull && !pertrans->initValueIsNull &&
+				datumIsEqual(initValue, pertrans->initValue,
+							 transtypeByVal, transtypeLen))
+				return transno;
+		}
+		return -1;
+	}
+	GP_WRAP_END;
+	return -1;
+}
+
 
 Query *
 gpdb::FlattenJoinAliasVar(Query *query, gpos::ULONG query_level)

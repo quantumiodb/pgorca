@@ -57,7 +57,9 @@ CContextDXLToPlStmt::CContextDXLToPlStmt(
 	  m_slices_list(nullptr),
 	  m_result_relation_index(0),
 	  m_distribution_policy(nullptr),
-	  m_part_selector_to_param_map(nullptr)
+	  m_part_selector_to_param_map(nullptr),
+	  m_agg_infos(nullptr),
+	  m_agg_trans_infos(nullptr)
 {
 	m_cte_consumer_info = GPOS_NEW(m_mp) HMUlCTEConsumerInfo(m_mp);
 	m_part_selector_to_param_map = GPOS_NEW(m_mp) UlongToUlongMap(m_mp);
@@ -614,6 +616,28 @@ CContextDXLToPlStmt::GetPermInfoByIndex(Index index)
 
 	return (RTEPermissionInfo *) gpdb::ListNth(m_perminfo_list,
 										   int(index - 1));
+}
+
+void
+CContextDXLToPlStmt::AppendAggInfos(AggInfo *agginfo)
+{
+	m_agg_infos = gpdb::LAppend(m_agg_infos, agginfo);
+}
+
+void
+CContextDXLToPlStmt::AppendAggTransInfos(AggTransInfo *transinfo)
+{
+	m_agg_trans_infos = gpdb::LAppend(m_agg_trans_infos, transinfo);
+}
+
+void
+CContextDXLToPlStmt::ResetAggInfosAndTransInfos()
+{
+	gpdb::ListFree(m_agg_infos);
+	gpdb::ListFree(m_agg_trans_infos);
+
+	m_agg_infos = nullptr;
+	m_agg_trans_infos = nullptr;
 }
 
 // EOF

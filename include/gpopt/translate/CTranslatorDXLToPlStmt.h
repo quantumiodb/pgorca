@@ -641,6 +641,9 @@ private:
 	
 	static Node *FixUpperExprMutatorProjectSet(Node *node, List *context);
 
+	// fill the aggno and transno for the aggnode
+	static void TranslateAggFillInfo(CContextDXLToPlStmt *context, Aggref *aggref);
+
 	// checks if index is used for Order by.
 	bool IsIndexForOrderBy(
 		CDXLTranslateContextBaseTable *base_table_context,

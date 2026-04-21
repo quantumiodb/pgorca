@@ -190,6 +190,29 @@ int GetAggregateArgTypes(Aggref *aggref, Oid *inputTypes);
 Oid ResolveAggregateTransType(Oid aggfnoid, Oid aggtranstype, Oid *inputTypes,
 							  int numArguments);
 
+// Byval type get len
+void TypLenByVal(Oid typid, int16 *typlen, bool *typbyval);
+
+// Get detailed aggregate info (transfn, finalfn, combinefn, etc.)
+void GetAggregateInfo(Aggref *aggref, Oid *aggtransfn,
+					  Oid *aggfinalfn, Oid *aggcombinefn,
+					  Oid *aggserialfn, Oid *aggdeserialfn,
+					  Oid *aggtranstype, int *aggtransspace,
+					  Datum *initValue, bool *initValueIsNull,
+					  bool *shareable);
+
+// Find a compatible aggregate in the list (returns aggno, or -1)
+int FindCompatibleAgg(List *agginfos, Aggref *newagg,
+					  List **same_input_transnos);
+
+// Find a compatible transition state (returns transno, or -1)
+int FindCompatibleTrans(List *aggtransinfos, bool shareable,
+						Oid aggtransfn, Oid aggtranstype,
+						int transtypeLen, bool transtypeByVal,
+						Oid aggcombinefn, Oid aggserialfn,
+						Oid aggdeserialfn, Datum initValue,
+						bool initValueIsNull, List *transnos);
+
 // replace Vars that reference JOIN outputs with references to the original
 // relation variables instead
 Query *FlattenJoinAliasVar(Query *query, gpos::ULONG query_level);
