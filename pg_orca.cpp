@@ -83,11 +83,10 @@ static explain_per_plan_hook_type    prev_per_plan_hook       = nullptr;
 static ExecutorStart_hook_type       prev_executor_start_hook = nullptr;
 
 /*
- * High bit of PlannedStmt->queryId used to flag ORCA-generated plans.
- * queryId is normally a hash set by pg_stat_statements; hash functions
- * never set the sign bit, so this bit is safe to borrow.
+ * PlannedStmt->planId marker for ORCA-generated plans.
+ * planId is reserved for plugins by PostgreSQL (see plannodes.h).
  */
-#define ORCA_QUERY_ID_FLAG  (INT64CONST(1) << 63)
+#define ORCA_PLAN_ID  (INT64CONST(0x4F524341))  /* "ORCA" in ASCII */
 
 /*
  * pg_orca_ExecResult
@@ -202,7 +201,7 @@ pg_orca_patch_result_nodes(PlanState *ps)
 static void
 pg_orca_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-    bool is_orca_plan = (queryDesc->plannedstmt->queryId & ORCA_QUERY_ID_FLAG) != 0;
+    bool is_orca_plan = (queryDesc->plannedstmt->planId == ORCA_PLAN_ID);
 
     /* Let standard startup run first so the PlanState tree is built */
     if (prev_executor_start_hook)
@@ -287,7 +286,7 @@ pg_orca_planner(Query *parse, const char *query_string,
 
         if (result != nullptr)
         {
-            result->queryId |= ORCA_QUERY_ID_FLAG;
+            result->planId = ORCA_PLAN_ID;
             return result;
         }
 
@@ -327,7 +326,7 @@ pg_orca_ExplainPerPlan(PlannedStmt *plannedstmt, IntoClause *into,
         prev_per_plan_hook(plannedstmt, into, es, queryString, params, queryEnv);
 
     if (pg_orca_enabled && plannedstmt &&
-        (plannedstmt->queryId & ORCA_QUERY_ID_FLAG) != 0)
+        (plannedstmt->planId == ORCA_PLAN_ID))
         ExplainPropertyText("Optimizer", "pg_orca", es);
 }
 
