@@ -90,7 +90,7 @@ elif [[ $RUN_PG_TESTS -eq 1 ]]; then
     exec "$PG_REGRESS" \
         "${COMMON_OPTS[@]}" \
         --inputdir="$PG_REGRESS_SQL" \
-        --schedule="$PG_REGRESS_SQL/parallel_schedule" \
+        --schedule="$SCRIPT_DIR/parallel_schedule" \
         "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}"
 else
     # Run pg_orca's own test schedule
