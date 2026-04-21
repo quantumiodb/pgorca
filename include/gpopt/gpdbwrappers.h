@@ -183,16 +183,6 @@ List *ExtractNodesExpression(Node *node, int node_tag,
 // intermediate result type of given aggregate
 Oid GetAggIntermediateResultType(Oid aggid);
 
-// transition function OID, finalfn modify flag, and initval for an aggregate
-struct AggTransInfo
-{
-	Oid		transfn_oid;
-	char	finalmodify;	/* AGGMODIFY_* */
-	Datum	init_value;
-	bool	init_isnull;
-};
-AggTransInfo GetAggTransInfo(Oid aggfnoid);
-
 // Identify the specific datatypes passed to an aggregate call.
 int GetAggregateArgTypes(Aggref *aggref, Oid *inputTypes);
 
