@@ -77,9 +77,10 @@ bool  optimizer_xforms[512] = {false};
 
 static bool orca_initialized = false;
 
-static planner_hook_type         prev_planner_hook  = nullptr;
-static ExplainOneQuery_hook_type prev_explain_hook  = nullptr;
-static ExecutorStart_hook_type   prev_executor_start_hook = nullptr;
+static planner_hook_type             prev_planner_hook        = nullptr;
+static ExplainOneQuery_hook_type     prev_explain_hook        = nullptr;
+static explain_per_plan_hook_type    prev_per_plan_hook       = nullptr;
+static ExecutorStart_hook_type       prev_executor_start_hook = nullptr;
 
 /*
  * High bit of PlannedStmt->queryId used to flag ORCA-generated plans.
@@ -279,7 +280,7 @@ pg_orca_planner(Query *parse, const char *query_string,
 }
 
 /* ----------------------------------------------------------------
- * pg_orca_ExplainOneQuery  -- annotate EXPLAIN output with optimizer name
+ * pg_orca_ExplainOneQuery  -- delegate to prev hook / standard
  * ---------------------------------------------------------------- */
 static void
 pg_orca_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into,
@@ -287,8 +288,24 @@ pg_orca_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into,
                         ParamListInfo params, QueryEnvironment *queryEnv)
 {
     prev_explain_hook(query, cursorOptions, into, es, queryString, params, queryEnv);
-    if (pg_orca_enabled && es->pstmt &&
-        (es->pstmt->queryId & ORCA_QUERY_ID_FLAG) != 0)
+}
+
+/* ----------------------------------------------------------------
+ * pg_orca_ExplainPerPlan  -- annotate EXPLAIN output with optimizer name
+ *
+ * Called via explain_per_plan_hook, which fires inside ExplainOnePlan
+ * while the "Query" JSON group is still open — safe for all formats.
+ * ---------------------------------------------------------------- */
+static void
+pg_orca_ExplainPerPlan(PlannedStmt *plannedstmt, IntoClause *into,
+                       ExplainState *es, const char *queryString,
+                       ParamListInfo params, QueryEnvironment *queryEnv)
+{
+    if (prev_per_plan_hook)
+        prev_per_plan_hook(plannedstmt, into, es, queryString, params, queryEnv);
+
+    if (pg_orca_enabled && plannedstmt &&
+        (plannedstmt->queryId & ORCA_QUERY_ID_FLAG) != 0)
         ExplainPropertyText("Optimizer", "pg_orca", es);
 }
 
@@ -406,6 +423,9 @@ void _PG_init(void)
     prev_explain_hook    = ExplainOneQuery_hook ? ExplainOneQuery_hook : standard_ExplainOneQuery;
     ExplainOneQuery_hook = pg_orca_ExplainOneQuery;
 
+    prev_per_plan_hook       = explain_per_plan_hook;
+    explain_per_plan_hook    = pg_orca_ExplainPerPlan;
+
     prev_executor_start_hook = ExecutorStart_hook;
     ExecutorStart_hook       = pg_orca_ExecutorStart;
 }
@@ -415,6 +435,7 @@ void _PG_fini(void)
     planner_hook         = prev_planner_hook;
     ExplainOneQuery_hook = (prev_explain_hook == standard_ExplainOneQuery)
                            ? nullptr : prev_explain_hook;
+    explain_per_plan_hook = prev_per_plan_hook;
     ExecutorStart_hook   = prev_executor_start_hook;
 
     if (orca_initialized)
