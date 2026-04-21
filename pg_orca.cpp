@@ -24,6 +24,11 @@ extern "C" {
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
 #include "compat/utils/misc.h"
+#include "utils/rel.h"
+#include "access/table.h"
+#include "catalog/pg_attribute.h"
+#include "rewrite/rewriteHandler.h"
+#include "rewrite/rewriteManip.h"
 }
 
 /* ORCA entry points (C linkage, defined in gpopt/CGPOptimizer.cpp) */
@@ -216,6 +221,141 @@ pg_orca_ExecutorStart(QueryDesc *queryDesc, int eflags)
 }
 
 /* ----------------------------------------------------------------
+ * expand_virtual_generated_columns_for_orca
+ *
+ * Replace Var nodes that reference virtual generated columns with their
+ * generation expressions.  ORCA is unaware of PG18 virtual generated
+ * columns (attgenerated = 'v') and would read NULL from the heap.
+ *
+ * This mirrors what the standard planner does in
+ * expand_virtual_generated_columns() (prepjointree.c), but without
+ * requiring a PlannerInfo — we use a simple Var-replacement mutator.
+ * ---------------------------------------------------------------- */
+typedef struct
+{
+    int     rt_index;
+    int     natts;
+    Node  **gen_exprs;      /* indexed by attno-1; NULL if not virtual */
+    int     sublevels_up;   /* current subquery nesting depth */
+} replace_vgc_context;
+
+static Node *
+replace_vgc_mutator(Node *node, void *context)
+{
+    replace_vgc_context *ctx = (replace_vgc_context *) context;
+
+    if (node == NULL)
+        return NULL;
+
+    /* Descend into sub-Queries with incremented depth. */
+    if (IsA(node, Query))
+    {
+        replace_vgc_context subctx = *ctx;
+        subctx.sublevels_up++;
+        return (Node *) query_tree_mutator((Query *) node,
+                                           replace_vgc_mutator,
+                                           &subctx, 0);
+    }
+
+    if (IsA(node, Var))
+    {
+        Var *var = (Var *) node;
+        if (var->varno == (Index) ctx->rt_index &&
+            var->varattno > 0 &&
+            var->varattno <= ctx->natts &&
+            var->varlevelsup == (Index) ctx->sublevels_up &&
+            ctx->gen_exprs[var->varattno - 1] != NULL)
+        {
+            Node *expr = copyObject(ctx->gen_exprs[var->varattno - 1]);
+            /* The gen_exprs have varlevelsup=0; adjust for nesting depth. */
+            if (ctx->sublevels_up > 0)
+                IncrementVarSublevelsUp(expr, ctx->sublevels_up, 0);
+            return expr;
+        }
+        return node;
+    }
+
+    return expression_tree_mutator(node, replace_vgc_mutator, context);
+}
+
+static Query *
+expand_virtual_generated_columns_for_orca(Query *query)
+{
+    int         rt_index = 0;
+    ListCell   *lc;
+
+    /* First, recurse into subqueries (RTEs and CTEs) so inner relations
+     * get their virtual columns expanded too. */
+    foreach(lc, query->rtable)
+    {
+        RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+        if (rte->rtekind == RTE_SUBQUERY && rte->subquery)
+            rte->subquery = expand_virtual_generated_columns_for_orca(rte->subquery);
+    }
+    foreach(lc, query->cteList)
+    {
+        CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+        if (cte->ctequery && IsA(cte->ctequery, Query))
+            cte->ctequery = (Node *) expand_virtual_generated_columns_for_orca(
+                                         (Query *) cte->ctequery);
+    }
+
+    /* When GROUPING SETS are present, virtual generated columns that expand
+     * to constants need PlaceHolderVar wrapping to get correct NULL behavior
+     * for non-key columns.  ORCA doesn't understand PlaceHolderVars, so skip
+     * expansion here and let ORCA's translation layer reject the unexpanded
+     * virtual columns, triggering a natural fallback to the standard planner. */
+    if (query->groupingSets != NIL)
+        return query;
+
+    /* Now expand virtual generated columns for relations at this level. */
+    rt_index = 0;
+    foreach(lc, query->rtable)
+    {
+        RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+
+        ++rt_index;
+
+        if (rte->rtekind != RTE_RELATION)
+            continue;
+
+        Relation rel = table_open(rte->relid, NoLock);
+        TupleDesc tupdesc = RelationGetDescr(rel);
+
+        if (tupdesc->constr && tupdesc->constr->has_generated_virtual)
+        {
+            Node  **gen_exprs = (Node **) palloc0(tupdesc->natts * sizeof(Node *));
+
+            for (int i = 0; i < tupdesc->natts; i++)
+            {
+                Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+                if (attr->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+                {
+                    Node *defexpr = build_generation_expression(rel, i + 1);
+                    ChangeVarNodes(defexpr, 1, rt_index, 0);
+                    gen_exprs[i] = defexpr;
+                }
+            }
+
+            replace_vgc_context ctx;
+            ctx.rt_index = rt_index;
+            ctx.natts = tupdesc->natts;
+            ctx.gen_exprs = gen_exprs;
+            ctx.sublevels_up = 0;
+
+            query = (Query *) query_tree_mutator(query,
+                                                 replace_vgc_mutator,
+                                                 &ctx, 0);
+            pfree(gen_exprs);
+        }
+
+        table_close(rel, NoLock);
+    }
+
+    return query;
+}
+
+/* ----------------------------------------------------------------
  * fold_query_constants
  *
  * Recursively constant-fold all expressions within a Query tree.
@@ -270,11 +410,17 @@ pg_orca_planner(Query *parse, const char *query_string,
             orca_initialized = true;
         }
 
+        /* Expand virtual generated columns before ORCA sees the query.
+         * ORCA doesn't know about PG18 virtual generated columns and would
+         * read NULL from the heap instead of computing the expression. */
+        Query *pqueryCopy = expand_virtual_generated_columns_for_orca(
+                                (Query *) copyObject(parse));
+
         /* Fold constants (e.g. similar_to_escape with literal args) before
          * handing the query tree to ORCA.  eval_const_expressions() is a no-op
          * when called directly on a Query node, so we use query_tree_mutator to
          * descend into the Query structure and fold each expression sub-tree. */
-        Query *pqueryCopy = fold_query_constants(parse);
+        pqueryCopy = fold_query_constants(pqueryCopy);
 
         /*
          * If the query mixes window functions and aggregates/GROUP BY,

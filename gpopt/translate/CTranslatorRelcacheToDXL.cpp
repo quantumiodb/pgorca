@@ -20,6 +20,7 @@ extern "C" {
 #include "catalog/heap.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_attribute.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic.h"
@@ -673,6 +674,25 @@ CTranslatorRelcacheToDXL::RetrieveRelColumns(CMemoryPool *mp,
 	for (ULONG ul = 0; ul < (ULONG) rel->rd_att->natts; ul++)
 	{
 		Form_pg_attribute att = TupleDescAttr(rel->rd_att, ul);
+
+		// PG18 virtual generated columns are not stored on disk; their
+		// Var references are expanded into generation expressions before
+		// the query reaches ORCA (see expand_virtual_generated_columns_for_orca).
+		// Mark them as dropped so ORCA never tries to read them.
+		if (att->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+		{
+			CMDName *md_colname =
+				CDXLUtils::CreateMDNameFromCharArray(mp, NameStr(att->attname));
+			CMDIdGPDB *mdid_col =
+				GPOS_NEW(mp) CMDIdGPDB(IMDId::EmdidGeneral, att->atttypid);
+			CMDColumn *md_col = GPOS_NEW(mp)
+				CMDColumn(md_colname, att->attnum, mdid_col, att->atttypmod,
+						  true /* is_nullable */, true /* is_dropped */,
+						  CStatistics::DefaultColumnWidth.Get());
+			mdcol_array->Append(md_col);
+			continue;
+		}
+
 		CMDName *md_colname =
 			CDXLUtils::CreateMDNameFromCharArray(mp, NameStr(att->attname));
 
