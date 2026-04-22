@@ -25,6 +25,8 @@ extern "C" {
 /* cdb/cdbvars.h not present in PG18 */
 #include "executor/execPartition.h"
 #include "executor/executor.h"
+#include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "nodes/nodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/primnodes.h"
@@ -1475,6 +1477,59 @@ CTranslatorDXLToPlStmt::TranslateDXLLimit(
 
 //---------------------------------------------------------------------------
 //	@function:
+//		WrapHashKeyWithCoalesce (file-local helper)
+//
+//	Wrap a hash key expression with COALESCE(expr, typed_zero) so that NULL
+//	inputs produce a non-null hash value.  This is needed for INDF (IS NOT
+//	DISTINCT FROM) hash joins: the inner side uses keep_nulls=false, which
+//	causes NULL keys to be excluded from the hash table via the STRICT opcode.
+//	By replacing NULL with a typed zero we bypass the STRICT early-exit path
+//	while keeping the hash value consistent between inner and outer sides
+//	(both wrap the same way, so NULL on both sides lands in the same bucket).
+//---------------------------------------------------------------------------
+static Expr *
+WrapHashKeyWithCoalesce(Expr *key_expr)
+{
+	Oid typeoid = exprType((Node *) key_expr);
+
+	int16 typlen;
+	bool typbyval;
+	gpdb::TypLenByVal(typeoid, &typlen, &typbyval);
+
+	Datum zero_datum;
+	if (typbyval)
+	{
+		zero_datum = (Datum) 0;
+	}
+	else if (typlen > 0)
+	{
+		/* Fixed-length pass-by-reference type: zero-fill a typlen buffer */
+		char *p = (char *) palloc0(typlen);
+		zero_datum = PointerGetDatum(p);
+	}
+	else
+	{
+		/* Variable-length type (typlen == -1): minimal empty varlena */
+		char *p = (char *) palloc0(VARHDRSZ);
+		SET_VARSIZE(p, VARHDRSZ);
+		zero_datum = PointerGetDatum(p);
+	}
+
+	Oid collid = gpdb::TypeCollation(typeoid);
+	Const *zero_const = makeConst(typeoid, -1 /* typmod */, collid,
+								  typlen, zero_datum,
+								  false /* constisnull */, typbyval);
+
+	CoalesceExpr *coalesce = MakeNode(CoalesceExpr);
+	coalesce->coalescetype = typeoid;
+	coalesce->coalescecollid = collid;
+	coalesce->args = list_make2(key_expr, zero_const);
+	coalesce->location = -1;
+
+	return (Expr *) coalesce;
+}
+
+//---------------------------------------------------------------------------
 //		CTranslatorDXLToPlStmt::TranslateDXLHashJoin
 //
 //	@doc:
@@ -1630,9 +1685,10 @@ CTranslatorDXLToPlStmt::TranslateDXLHashJoin(
 				gpdb::LAppend(hash_clauses_list, hash_clause_expr);
 		}
 
-		hashjoin->hashclauses = hash_clauses_list;
-		/* hashqualclauses is GPDB-only, not in PG18 */
-		(void) hash_conditions_list;
+		// Use the original INDF conditions as hashclauses so that
+		// ExecScanHashBucket performs NULL-safe matching
+		// (NOT (a IS DISTINCT FROM b) returns true for NULL = NULL).
+		hashjoin->hashclauses = hash_conditions_list;
 	}
 
 	GPOS_ASSERT(NIL != hashjoin->hashclauses);
@@ -1693,8 +1749,24 @@ CTranslatorDXLToPlStmt::TranslateDXLHashJoin(
 		hashoperators = gpdb::LAppendOid(hashoperators, hclause->opno);
 		hashcollations = gpdb::LAppendOid(hashcollations, hclause->inputcollid);
 
-		outer_hashkeys = gpdb::LAppend(outer_hashkeys, linitial(hclause->args));
-		inner_hashkeys = gpdb::LAppend(inner_hashkeys, lsecond(hclause->args));
+		Expr *outer_key = (Expr *) linitial(hclause->args);
+		Expr *inner_key = (Expr *) lsecond(hclause->args);
+
+		if (has_is_not_distinct_from_cond)
+		{
+			// Wrap both sides with COALESCE(key, typed_zero) so that NULL
+			// inputs produce a non-null hash value.  Without this, the inner
+			// side (keep_nulls=false for JOIN_ANTI) uses EEOP_HASHDATUM_FIRST_STRICT
+			// which sets isnull=true for NULL keys, causing ExecHashTableInsert
+			// to skip the row.  With COALESCE the input is never NULL, so STRICT
+			// never fires and inner NULL rows enter the hash table.
+			// Both sides use the same wrapping so NULL maps to the same bucket.
+			outer_key = WrapHashKeyWithCoalesce(outer_key);
+			inner_key = WrapHashKeyWithCoalesce(inner_key);
+		}
+
+		outer_hashkeys = gpdb::LAppend(outer_hashkeys, outer_key);
+		inner_hashkeys = gpdb::LAppend(inner_hashkeys, inner_key);
 	}
 
 	hashjoin->hashoperators = hashoperators;

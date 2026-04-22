@@ -41,5 +41,5 @@ MCV lists (`m`) 和 expression statistics (`e`) 未实现。
 
 
 ## Current Status (Phase 3)
-- [ ] MPP motion nodes disabled cleanly (no crashes on partitioned tables)
+- [ ] partitioned tables
 - [ ] Parallel query support
