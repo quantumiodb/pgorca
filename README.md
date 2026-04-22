@@ -34,18 +34,54 @@ brew install xerces-c cmake
 
 ## Build & Install
 
+### 1. Locate pg_config
+
+CMake needs `pg_config` from your PostgreSQL 18 installation to find headers,
+libraries, and install paths. Either add the PG `bin/` directory to `PATH`:
+
+```bash
+export PATH="/path/to/pg18/bin:$PATH"
+# verify
+pg_config --version   # should print "PostgreSQL 18.x"
+```
+
+Or pass it explicitly on the CMake command line with `-DPG_CONFIG=...` (see below).
+
+### 2. Configure
+
 ```bash
 mkdir build && cd build
-cmake .. -DPG_CONFIG=/Users/jianghua/pg-install/bin/pg_config -DCMAKE_BUILD_TYPE=Debug -GNinja
+
+# pg_config is on PATH — Debug build (default)
+cmake .. -DCMAKE_BUILD_TYPE=Debug -GNinja
+
+# pg_config NOT on PATH — pass it explicitly
+cmake .. -DPG_CONFIG=/path/to/pg18/bin/pg_config -DCMAKE_BUILD_TYPE=Debug -GNinja
+```
+
+### 3. Build and install
+
+```bash
 ninja -j$(nproc)
 ninja install
 ```
 
-To rebuild after source changes:
+To rebuild after source changes (no reconfigure needed):
 
 ```bash
-cd build && ninja -j$(nproc)
+ninja -j$(nproc) -C build
 ```
+
+### Release build
+
+```bash
+mkdir build-release && cd build-release
+cmake .. -DPG_CONFIG=/path/to/pg18/bin/pg_config -DCMAKE_BUILD_TYPE=Release -GNinja
+ninja -j$(nproc)
+ninja install
+```
+
+Release mode enables `-O3 -DNDEBUG` and disables ORCA internal assertions (`GPOS_DEBUG`).
 
 ## Usage
 - Configure shared_preload_libraries = 'pg_orca', or manually load 'pg_orca.so';
