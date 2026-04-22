@@ -1925,9 +1925,6 @@ CXformUtils::FIndexApplicable(CMemoryPool *mp, const IMDIndex *pmdindex,
 							  IMDIndex::EmdindexType emdindtype,
 							  IMDIndex::EmdindexType altindtype)
 {
-	BOOL possible_ao_table = pmdrel->IsNonBlockTable() ||
-							 pmdrel->RetrieveRelStorageType() ==
-								 IMDRelation::ErelstorageMixedPartitioned;
 	// GiST and Hash can match with either Btree or Bitmap indexes
 	if (pmdindex->IndexType() == IMDIndex::EmdindGist ||
 		pmdindex->IndexType() == IMDIndex::EmdindHash ||
@@ -1939,10 +1936,9 @@ CXformUtils::FIndexApplicable(CMemoryPool *mp, const IMDIndex *pmdindex,
 		// continue
 	}
 	else if (emdindtype == IMDIndex::EmdindBitmap &&
-			 pmdindex->IndexType() == IMDIndex::EmdindBtree &&
-			 possible_ao_table)
+			 pmdindex->IndexType() == IMDIndex::EmdindBtree)
 	{
-		// continue, Btree indexes on AO tables can be treated as Bitmap tables
+		// continue, Btree indexes can be used as Bitmap scan source
 	}
 	else if (
 		(emdindtype != pmdindex->IndexType() &&
