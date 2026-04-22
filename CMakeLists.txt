@@ -18,20 +18,30 @@ find_program(_PG_CONFIG_DEFAULT pg_config)
 set(PG_CONFIG "${_PG_CONFIG_DEFAULT}"
     CACHE PATH "Path to pg_config")
 
-execute_process(COMMAND ${PG_CONFIG} --includedir-server
-    OUTPUT_VARIABLE PG_SERVER_INCLUDEDIR OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${PG_CONFIG} --includedir
-    OUTPUT_VARIABLE PG_INCLUDEDIR OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${PG_CONFIG} --pkglibdir
-    OUTPUT_VARIABLE PG_PKGLIBDIR OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${PG_CONFIG} --bindir
-    OUTPUT_VARIABLE PG_BINDIR OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${PG_CONFIG} --sharedir
-    OUTPUT_VARIABLE PG_SHAREDIR OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${PG_CONFIG} --ldflags_sl
-    OUTPUT_VARIABLE PG_LDFLAGS_SL OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${PG_CONFIG} --version
-    OUTPUT_VARIABLE PG_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE)
+# execute_process results are not cached across cmake regeneration
+# (e.g. when ninja detects CMakeLists.txt changed and re-invokes cmake).
+# Store every pg_config output in the CACHE so they survive re-runs
+# even when pg_config is not on PATH in the cmake subprocess.
+macro(pg_config_query FLAG VAR DOC)
+    if(NOT ${VAR})   # skip if already in cache from a prior run
+        execute_process(COMMAND ${PG_CONFIG} ${FLAG}
+            OUTPUT_VARIABLE ${VAR} OUTPUT_STRIP_TRAILING_WHITESPACE)
+    endif()
+    set(${VAR} "${${VAR}}" CACHE STRING "${DOC}" FORCE)
+endmacro()
+
+pg_config_query(--includedir-server PG_SERVER_INCLUDEDIR "PG server include dir")
+pg_config_query(--includedir        PG_INCLUDEDIR        "PG include dir")
+pg_config_query(--pkglibdir         PG_PKGLIBDIR         "PG pkglibdir")
+pg_config_query(--bindir            PG_BINDIR            "PG bindir")
+pg_config_query(--sharedir          PG_SHAREDIR          "PG sharedir")
+pg_config_query(--ldflags_sl        PG_LDFLAGS_SL        "PG shared-lib ldflags")
+pg_config_query(--version           PG_VERSION           "PG version string")
+
+if(NOT PG_PKGLIBDIR)
+    message(FATAL_ERROR "pg_config not found or returned empty output. "
+        "Set -DPG_CONFIG=/path/to/pg_config explicitly.")
+endif()
 
 message(STATUS "PostgreSQL: ${PG_VERSION}")
 message(STATUS "  server headers: ${PG_SERVER_INCLUDEDIR}")
