@@ -90,6 +90,9 @@ extern "C" {
 
 using namespace gpos;
 
+/* Forward declaration — defined in pg_orca.cpp, set before InitGPOPT(). */
+extern MemoryContext OptimizerMemoryContext;
+
 bool
 gpdb::BoolFromDatum(Datum d)
 {
@@ -3012,9 +3015,14 @@ gpdb::GPDBAllocSetContextCreate()
 	{
 		MemoryContext cxt;
 
-		cxt =
-			AllocSetContextCreate(TopMemoryContext, "GPORCA memory pool",
-								  ALLOCSET_DEFAULT_SIZES);
+		/* Use the ORCA top-level context as parent when available so all
+		 * per-query memory pools are nested under OptimizerMemoryContext. */
+		MemoryContext parent = (::OptimizerMemoryContext != NULL)
+								   ? OptimizerMemoryContext
+								   : TopMemoryContext;
+
+		cxt = AllocSetContextCreate(parent, "GPORCA memory pool",
+									ALLOCSET_DEFAULT_SIZES);
 		/* MemoryContextDeclareAccountingRoot is GPDB-only — no-op in PG18 */
 
 		return cxt;

@@ -12,6 +12,7 @@ extern "C" {
 #include "fmgr.h"
 #include "optimizer/planner.h"
 #include "utils/guc.h"
+#include "utils/memutils.h"
 #include "commands/explain.h"
 #if PG_VERSION_NUM >= 180000
 #include "commands/explain_format.h"
@@ -83,6 +84,13 @@ bool  optimizer_cte_inlining                    = true;
 bool  optimizer_xforms[512] = {false};
 
 static bool orca_initialized = false;
+
+/*
+ * OptimizerMemoryContext — top-level memory context for all ORCA allocations.
+ * Created once at first ORCA initialization; used by CMemoryPoolPalloc via
+ * gpdb::GPDBAllocSetContextCreate() as the parent for per-query memory pools.
+ */
+MemoryContext OptimizerMemoryContext = NULL;
 
 static planner_hook_type             prev_planner_hook        = nullptr;
 static ExplainOneQuery_hook_type     prev_explain_hook        = nullptr;
@@ -408,6 +416,10 @@ pg_orca_planner(Query *parse, const char *query_string,
     {
         if (!orca_initialized)
         {
+            OptimizerMemoryContext =
+                AllocSetContextCreate(TopMemoryContext,
+                                      "GPORCA Top-level Memory Context",
+                                      ALLOCSET_DEFAULT_SIZES);
             InitGPOPT();
             orca_initialized = true;
         }
