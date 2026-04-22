@@ -1048,10 +1048,10 @@ gpdb::GetAttStats(Oid relid, AttrNumber attnum)
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_statistic */
-		/* PG18: use SearchSysCache to look up pg_statistic */
-		return SearchSysCache2(STATRELATTINH,
+		return SearchSysCache3(STATRELATTINH,
 							   ObjectIdGetDatum(relid),
-							   Int16GetDatum(attnum));
+							   Int16GetDatum(attnum),
+							   BoolGetDatum(false));
 	}
 	GP_WRAP_END;
 	return nullptr;
@@ -1223,6 +1223,11 @@ gpdb::RelationGetPartitionDesc(Relation rel, bool omit_detached)
 {
 	GP_WRAP_START;
 	{
+		if (rel == nullptr ||
+			rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		{
+			return nullptr;
+		}
 		return ::RelationGetPartitionDesc(rel, omit_detached);
 	}
 	GP_WRAP_END;
