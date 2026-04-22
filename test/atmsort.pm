@@ -456,10 +456,11 @@ sub atmsort_bigloop
             if ($end_of_table)
             {
                 format_query_output($glob_fqo, $has_order, \@outarr, $directive);
-                $directive = {};
-                @outarr    = ();
-                $getrows   = 0;
-                $has_order = 0;
+                $directive     = {};
+                @outarr        = ();
+                $getrows       = 0;
+                $has_order     = 0;
+                $describe_mode = 0;
             }
         }
         else
