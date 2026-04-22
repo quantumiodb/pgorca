@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PG_INSTALL=${PG_INSTALL:-/Users/jianghua/pg-install}
-PG_REGRESS=${PG_REGRESS:-$PG_INSTALL/lib/postgresql/pgxs/src/test/regress/pg_regress}
-PG_REGRESS_SQL=${PG_REGRESS_SQL:-/Users/jianghua/code/postgresql/src/test/regress}
+PG_CONFIG=${PG_CONFIG:-$(command -v pg_config)}
+_PGXS=$("$PG_CONFIG" --pgxs)                          # .../pgxs/src/makefiles/pgxs.mk
+_PGXS_REGRESS=${_PGXS%/src/makefiles/pgxs.mk}/src/test/regress
+PG_REGRESS=${PG_REGRESS:-$_PGXS_REGRESS/pg_regress}
+# PG_REGRESS_SQL must point to the PostgreSQL source tree's src/test/regress
+# (SQL/expected files are not installed). Set this env var before running.
+# e.g.: export PG_REGRESS_SQL=/path/to/postgresql/src/test/regress
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/../build"
@@ -83,6 +87,11 @@ fi
 
 if [[ ${#TEST_NAMES[@]} -gt 0 ]]; then
     # Run only the named tests against the PG regress SQL dir
+    if [[ -z "${PG_REGRESS_SQL:-}" ]]; then
+        echo "ERROR: PG_REGRESS_SQL is not set. Point it to the PostgreSQL source tree:" >&2
+        echo "  export PG_REGRESS_SQL=/path/to/postgresql/src/test/regress" >&2
+        exit 1
+    fi
     exec "$PG_REGRESS" \
         "${COMMON_OPTS[@]}" \
         --inputdir="$PG_REGRESS_SQL" \
@@ -90,6 +99,11 @@ if [[ ${#TEST_NAMES[@]} -gt 0 ]]; then
         "${TEST_NAMES[@]}"
 elif [[ $RUN_PG_TESTS -eq 1 ]]; then
     # Run PG's full parallel_schedule with pg_orca loaded
+    if [[ -z "${PG_REGRESS_SQL:-}" ]]; then
+        echo "ERROR: PG_REGRESS_SQL is not set. Point it to the PostgreSQL source tree:" >&2
+        echo "  export PG_REGRESS_SQL=/path/to/postgresql/src/test/regress" >&2
+        exit 1
+    fi
     exec "$PG_REGRESS" \
         "${COMMON_OPTS[@]}" \
         --inputdir="$PG_REGRESS_SQL" \
