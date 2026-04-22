@@ -23,6 +23,7 @@ extern "C" {
 #include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/planmain.h"
 #include "compat/utils/misc.h"
 #include "utils/rel.h"
 #include "access/table.h"
@@ -434,6 +435,22 @@ pg_orca_planner(Query *parse, const char *query_string,
         if (result != nullptr)
         {
             result->planId = ORCA_PLAN_ID;
+
+            /*
+             * Like standard_planner, add a Material node on top if this is a
+             * scrollable cursor and the plan doesn't support backward scans.
+             * ORCA-generated plans may contain SubPlan expressions (e.g. for
+             * <> ALL (VALUES ...)) which force es_direction = Forward in the
+             * executor (bug #15336), but ExecSupportsBackwardScan doesn't look
+             * inside subplan expressions — so the plan root may appear to
+             * support backward scans even though rescanning from the cursor
+             * position would yield 0 rows.  Materializing the top node makes
+             * backward-cursor semantics work correctly regardless.
+             */
+            if ((cursorOptions & CURSOR_OPT_SCROLL) &&
+                !ExecSupportsBackwardScan(result->planTree))
+                result->planTree = materialize_finished_plan(result->planTree);
+
             return result;
         }
 
