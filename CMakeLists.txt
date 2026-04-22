@@ -39,18 +39,56 @@ message(STATUS "  pkglibdir:      ${PG_PKGLIBDIR}")
 
 # -------------------------------------------------------------------
 # xerces-c (needed by ORCA for DXL XML parsing)
+# Prefer pkg-config (works on Linux and Homebrew macOS); fall back to
+# manual find_library + find_path for installations without .pc files.
 # -------------------------------------------------------------------
-find_library(XERCES_LIB xerces-c
-    PATHS /opt/homebrew/opt/xerces-c/lib /usr/local/lib REQUIRED)
-set(XERCES_INCLUDE "/opt/homebrew/opt/xerces-c/include")
-message(STATUS "xerces-c: ${XERCES_LIB}")
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(XERCES xerces-c)
+endif()
+
+if(XERCES_FOUND)
+    # pkg-config succeeded — use its results directly
+    set(XERCES_LIB   ${XERCES_LIBRARIES})
+    set(XERCES_INCLUDE ${XERCES_INCLUDE_DIRS})
+    message(STATUS "xerces-c (pkg-config): ${XERCES_LIB}")
+else()
+    # Fall back to manual search
+    find_library(XERCES_LIB xerces-c
+        PATHS
+            /opt/homebrew/opt/xerces-c/lib   # Apple Silicon Homebrew
+            /usr/local/opt/xerces-c/lib      # Intel Homebrew
+            /usr/local/lib                   # Linux generic
+            /usr/lib
+            /usr/lib/x86_64-linux-gnu        # Debian/Ubuntu amd64
+            /usr/lib/aarch64-linux-gnu       # Debian/Ubuntu arm64
+    )
+    find_path(XERCES_INCLUDE xercesc/util/XercesDefs.hpp
+        PATHS
+            /opt/homebrew/opt/xerces-c/include
+            /usr/local/opt/xerces-c/include
+            /usr/local/include
+            /usr/include
+    )
+    if(NOT XERCES_LIB OR NOT XERCES_INCLUDE)
+        message(FATAL_ERROR
+            "xerces-c not found. Install it (e.g. 'apt install libxerces-c-dev' "
+            "or 'brew install xerces-c') or set -DXERCES_LIB= and "
+            "-DXERCES_INCLUDE= manually.")
+    endif()
+    message(STATUS "xerces-c (manual): ${XERCES_LIB}, headers: ${XERCES_INCLUDE}")
+endif()
 
 # -------------------------------------------------------------------
-# macOS: gettext headers (needed by libintl used in gpos)
+# gettext/libintl headers (needed by libintl used in gpos)
+# On Linux, libintl.h is part of glibc and always in the standard
+# include path. On macOS it is a separate Homebrew formula.
 # -------------------------------------------------------------------
 set(EXTRA_SYSTEM_INCLUDES "")
 if(APPLE)
-    foreach(DIR /opt/homebrew/opt/gettext/include /usr/local/opt/gettext/include)
+    foreach(DIR
+            /opt/homebrew/opt/gettext/include   # Apple Silicon Homebrew
+            /usr/local/opt/gettext/include)     # Intel Homebrew
         if(EXISTS "${DIR}/libintl.h")
             list(APPEND EXTRA_SYSTEM_INCLUDES "${DIR}")
             break()
