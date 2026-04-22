@@ -721,6 +721,8 @@ bool TestexprIsHashable(Node *testexpr, List *param_ids);
 
 bool ContainVarClause(Node *node);
 
+bool ContainVolatileFunctions(Node *node);
+
 RTEPermissionInfo *
 GetRTEPermissionInfo(List *rteperminfos, const RangeTblEntry *rte);
 

@@ -3237,6 +3237,17 @@ gpdb::ContainVarClause(Node *node)
 	return false;
 }
 
+bool
+gpdb::ContainVolatileFunctions(Node *node)
+{
+	GP_WRAP_START;
+	{
+		return contain_volatile_functions(node);
+	}
+	GP_WRAP_END;
+	return false;
+}
+
 RTEPermissionInfo *
 gpdb::GetRTEPermissionInfo(List *rteperminfos, const RangeTblEntry *rte)
 {
