@@ -419,6 +419,11 @@ CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 	{
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfIndexGet2IndexScan));
+		/* PG's cost_index() applies the enable_indexscan penalty to both
+		 * IndexScan and IndexOnlyScan paths (disabled_nodes = 1 for both
+		 * when enable_indexscan = off).  Mirror that here. */
+		traceflag_bitset->ExchangeSet(
+			GPOPT_DISABLE_XFORM_TF(CXform::ExfIndexOnlyGet2IndexOnlyScan));
 	}
 
 	if (!orca_enable_indexonlyscan)
