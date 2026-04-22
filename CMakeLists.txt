@@ -14,7 +14,8 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 # -------------------------------------------------------------------
 # PostgreSQL
 # -------------------------------------------------------------------
-set(PG_CONFIG "/Users/jianghua/pg-install/bin/pg_config"
+find_program(_PG_CONFIG_DEFAULT pg_config)
+set(PG_CONFIG "${_PG_CONFIG_DEFAULT}"
     CACHE PATH "Path to pg_config")
 
 execute_process(COMMAND ${PG_CONFIG} --includedir-server
@@ -72,7 +73,7 @@ file(GLOB_RECURSE ORCA_CORE_SRC CONFIGURE_DEPENDS
 add_library(orca_core OBJECT ${ORCA_CORE_SRC})
 
 target_compile_definitions(orca_core PUBLIC
-    GPOS_DEBUG
+    $<$<CONFIG:Debug>:GPOS_DEBUG>
     USE_CMAKE
 )
 
@@ -134,7 +135,7 @@ if(APPLE)
 endif()
 
 target_compile_definitions(pg_orca PRIVATE
-    GPOS_DEBUG
+    $<$<CONFIG:Debug>:GPOS_DEBUG>
     USE_CMAKE
 )
 
