@@ -9,6 +9,12 @@
 
 -- start_matchsubs
 --
+-- # GROUP BY CUBE/ROLLUP with a partial ORDER BY produces non-deterministic
+-- # secondary row ordering from MixedAggregate hash tables.  Append
+-- # "-- order none" so atmsort sorts all result rows before comparing.
+-- m/FROM few GROUP BY CUBE\(.*?\) ORDER BY \S+;$/
+-- s/(FROM few GROUP BY CUBE\(.*?\) ORDER BY \S+;)$/$1 -- order none/
+--
 -- # Normalize EXPLAIN cost estimates so plan-shape tests are cost-agnostic.
 -- # Uncomment to enable:
 -- # m/\(cost=[\d.]+\.\.[\d.]+\s+rows=\d+\s+width=\d+\)/
