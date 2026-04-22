@@ -75,17 +75,6 @@ If ORCA cannot handle a query (unsupported feature or internal error) it falls b
 | `optimizer_mdcache_size` | `16384` | Metadata cache size (KB) |
 | `optimizer_search_strategy_path` | `""` | Path to custom search strategy XML (empty = built-in) |
 
-## Current Status (Phase 1)
-
-Phase 1 goal: **compile and load on PG18 single-node**.
-
-- [x] All four ORCA libraries compile against PG18 headers
-- [x] DXL ↔ PG plan translation layer compiles
-- [x] Extension loads via `CREATE EXTENSION`
-- [x] Basic `SELECT`, `WHERE`, `GROUP BY`, `JOIN` queries produce valid plans
-- [ ] Full regression test suite
-- [ ] MPP motion nodes disabled cleanly (no crashes on partitioned tables)
-- [ ] Parallel query support
 
 ## Architecture Notes
 
