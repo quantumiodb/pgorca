@@ -605,7 +605,10 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 			partition_oids->Append(GPOS_NEW(mp)
 									   CMDIdGPDB(IMDId::EmdidRel, oid));
 			gpdb::RelationWrapper rel_part = gpdb::GetRelation(oid);
-			if (gpdb::RelationGetPartitionDesc(rel_part.get(), true))
+			/* Only call RelationGetPartitionDesc on partitioned tables —
+			 * PG18 asserts RELKIND_PARTITIONED_TABLE inside it. */
+			if (rel_part->rd_rel->relkind == RELKIND_PARTITIONED_TABLE &&
+				gpdb::RelationGetPartitionDesc(rel_part.get(), true))
 			{
 				// Multi-level partitioned tables are unsupported - fall back
 				GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
