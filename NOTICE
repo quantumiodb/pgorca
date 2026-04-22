@@ -1,0 +1,22 @@
+pg_orca
+Copyright (C) 2024 Jianghua Yang
+
+This product includes software developed by Jianghua Yang.
+
+---
+
+This product includes code from the ORCA query optimizer, originally
+developed as part of Greenplum Database and subsequently maintained in
+Apache Cloudberry.
+
+  Greenplum Database
+  Copyright (C) 2008-2010 Greenplum Inc.
+  Copyright (C) 2011 EMC Corp.
+  Copyright (C) 2015-2021 VMware, Inc. or its affiliates.
+  Copyright (C) 2021-present Apache Cloudberry contributors.
+
+The ORCA libraries (libgpos, libnaucrates, libgpopt, libgpdbcost) are
+licensed under the Apache License, Version 2.0.
+
+The original source is available at:
+  https://github.com/apache/cloudberry
