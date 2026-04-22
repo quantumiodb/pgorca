@@ -44,8 +44,4 @@ MCV lists (`m`) 和 expression statistics (`e`) 未实现。
 - [ ] partitioned tables
 - [ ] Parallel query support
 - [ ] Bitmap scan cost model
-- [ ] Doubly-correlated EXISTS/NOT EXISTS: ORCA generates O(N³) nested SubPlan
-      when inner subquery references outer-outer column (skip-level correlation).
-      Fix: detect m_fHasSkipLevelCorrelations in FRemoveExistentialSubquery and
-      fall back to standard_planner. Cloudberry works around this by explicitly
-      disabling the optimizer for such queries in tests.
+- [ ] NOT_EXISTS_SUBLINK

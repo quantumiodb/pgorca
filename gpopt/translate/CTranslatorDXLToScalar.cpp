@@ -904,6 +904,19 @@ CTranslatorDXLToScalar::TranslateDXLScalarSubplanToScalar(
 	GPOS_ASSERT(nullptr != plan_child->targetlist &&
 				1 <= gpdb::ListLength(plan_child->targetlist));
 
+	// NOT_EXISTS_SUBLINK means ORCA could not decorrelate the NOT EXISTS
+	// into an anti-join (e.g. due to LIMIT or skip-level correlations).
+	// PG18's executor has no native support for this subplan type, and any
+	// workaround here produces either incorrect semantics or O(N^k) plans.
+	// Signal failure so pg_orca falls back to standard_planner, which
+	// handles all NOT EXISTS cases correctly (anti-join or safe subplan).
+	if (slink == NOT_EXISTS_SUBLINK)
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+				   GPOS_WSZ_LIT("NOT EXISTS correlated subplan not supported; "
+								"falling back to standard planner"));
+	}
+
 	// translate subplan and set test expression
 	SubPlan *subplan =
 		TranslateSubplanFromChildPlan(plan_child, slink, dxl_to_plstmt_ctxt);
@@ -921,7 +934,6 @@ CTranslatorDXLToScalar::TranslateDXLScalarSubplanToScalar(
 	{
 		subplan->useHashTable = true;
 	}
-
 
 	return (Expr *) subplan;
 }

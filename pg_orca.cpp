@@ -154,6 +154,7 @@ pg_orca_ExecResult(PlanState *pstate)
     return NULL;
 }
 
+
 /*
  * Walk the PlanState tree and replace ExecProcNode on every ResultState
  * that has a non-empty qual list (i.e. ORCA put a per-tuple filter there).
