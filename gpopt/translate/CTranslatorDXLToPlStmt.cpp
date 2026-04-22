@@ -6757,6 +6757,13 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 	{
 		GPOS_ASSERT(EdxlopPhysicalDynamicBitmapTableScan ==
 					dxl_operator->GetDXLOperator());
+		// DynamicBitmapTableScan is a CBDB/GPDB-specific plan node for
+		// partitioned tables that does not exist in single-node PG18.
+		// Raise an unsupported-op error so ORCA falls back to standard_planner.
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+				   GPOS_WSZ_LIT(
+					   "DynamicBitmapTableScan not supported in PG18"));
+
 		CDXLPhysicalDynamicBitmapTableScan *phy_dyn_bitmap_tblscan_dxlop =
 			CDXLPhysicalDynamicBitmapTableScan::Cast(dxl_operator);
 		table_descr = phy_dyn_bitmap_tblscan_dxlop->GetDXLTableDescr();
