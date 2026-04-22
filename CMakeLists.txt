@@ -20,14 +20,19 @@ set(PG_CONFIG "${_PG_CONFIG_DEFAULT}"
 
 # execute_process results are not cached across cmake regeneration
 # (e.g. when ninja detects CMakeLists.txt changed and re-invokes cmake).
-# Store every pg_config output in the CACHE so they survive re-runs
-# even when pg_config is not on PATH in the cmake subprocess.
+# Strategy: always run pg_config; if it succeeds update the cache so
+# changing PG_CONFIG is picked up immediately; if it fails (pg_config
+# not on PATH during regeneration) keep the existing cached value.
 macro(pg_config_query FLAG VAR DOC)
-    if(NOT ${VAR})   # skip if already in cache from a prior run
-        execute_process(COMMAND ${PG_CONFIG} ${FLAG}
-            OUTPUT_VARIABLE ${VAR} OUTPUT_STRIP_TRAILING_WHITESPACE)
+    execute_process(COMMAND ${PG_CONFIG} ${FLAG}
+        OUTPUT_VARIABLE _pgcfg_result OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET RESULT_VARIABLE _pgcfg_rc)
+    if(NOT _pgcfg_rc AND _pgcfg_result)
+        set(${VAR} "${_pgcfg_result}" CACHE STRING "${DOC}" FORCE)
+    elseif(NOT DEFINED ${VAR})
+        set(${VAR} "" CACHE STRING "${DOC}")
     endif()
-    set(${VAR} "${${VAR}}" CACHE STRING "${DOC}" FORCE)
+    # else: pg_config failed but cache already has a value — keep it
 endmacro()
 
 pg_config_query(--includedir-server PG_SERVER_INCLUDEDIR "PG server include dir")
