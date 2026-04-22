@@ -28,9 +28,6 @@ extern "C" {
 #ifndef JOIN_LASJ_NOTIN
 #define JOIN_LASJ_NOTIN 100
 #endif
-#ifndef NOT_EXISTS_SUBLINK
-#define NOT_EXISTS_SUBLINK 100
-#endif
 #define query_or_expression_tree_walker(n,w,c,f) \
 	query_or_expression_tree_walker_impl(n,(bool(*)(Node*,void*))w,c,f)
 #define expression_tree_walker(n,w,c) \

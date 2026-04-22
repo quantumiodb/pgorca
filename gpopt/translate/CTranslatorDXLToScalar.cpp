@@ -28,10 +28,6 @@ extern "C" {
 #define AGGSPLIT_INTERMEDIATE AGGSPLIT_INITIAL_SERIAL
 #endif
 
-/* PG18 compat: NOT_EXISTS_SUBLINK added in GPDB — use EXPR_SUBLINK as fallback */
-#ifndef NOT_EXISTS_SUBLINK
-#define NOT_EXISTS_SUBLINK 9999
-#endif
 }
 
 #include <vector>

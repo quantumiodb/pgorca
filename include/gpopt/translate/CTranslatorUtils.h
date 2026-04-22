@@ -25,6 +25,12 @@ extern "C" {
 #include "nodes/parsenodes.h"
 }
 
+// NOT_EXISTS_SUBLINK is a GPDB extension not present in stock PostgreSQL.
+// Define it as 100 (matching GPDB's value) so ORCA's subplan translation works.
+#ifndef NOT_EXISTS_SUBLINK
+#define NOT_EXISTS_SUBLINK ((SubLinkType) 100)
+#endif
+
 #include "gpos/base.h"
 #include "gpos/common/CBitSet.h"
 

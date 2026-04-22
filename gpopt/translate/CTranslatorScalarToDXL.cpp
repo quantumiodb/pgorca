@@ -28,9 +28,6 @@ extern "C" {
 #ifndef optimizer_enable_query_parameter
 static const bool optimizer_enable_query_parameter = false;
 #endif
-#ifndef NOT_EXISTS_SUBLINK
-#define NOT_EXISTS_SUBLINK ((SubLinkType)100)
-#endif
 }
 
 #include <vector>

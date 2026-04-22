@@ -46,9 +46,6 @@ extern "C" {
 #ifndef AGGSPLIT_INTERMEDIATE
 #define AGGSPLIT_INTERMEDIATE AGGSPLIT_INITIAL_SERIAL
 #endif
-#ifndef NOT_EXISTS_SUBLINK
-#define NOT_EXISTS_SUBLINK ((SubLinkType)100)
-#endif
 #ifndef PG_FUNCNAME_MACRO
 #define PG_FUNCNAME_MACRO __func__
 #endif
