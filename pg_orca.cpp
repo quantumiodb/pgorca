@@ -74,7 +74,12 @@ double optimizer_spilling_mem_threshold         = 0.0;
 char *optimizer_search_strategy_path           = NULL;
 
 /* ORCA debug/print GUCs */
+bool  optimizer_print_query                     = false;
 bool  optimizer_print_plan                      = false;
+bool  optimizer_print_xform                     = false;
+bool  optimizer_print_xform_results             = false;
+bool  optimizer_print_job_scheduler             = false;
+bool  optimizer_print_optimization_stats        = false;
 bool  optimizer_print_memo_after_exploration    = false;
 bool  optimizer_print_memo_after_implementation = false;
 bool  optimizer_print_memo_after_optimization   = false;
@@ -584,9 +589,39 @@ void _PG_init(void)
 
     /* ORCA debug GUCs */
     DefineCustomBoolVariable(
+        "optimizer_print_query",
+        "Print the ORCA input query expression tree.",
+        NULL, &optimizer_print_query, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
         "optimizer_print_plan",
         "Print the DXL plan expression tree produced by ORCA.",
         NULL, &optimizer_print_plan, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_print_xform",
+        "Print input/output expression trees of ORCA transformations.",
+        NULL, &optimizer_print_xform, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_print_xform_results",
+        "Print the full results of each ORCA xform.",
+        NULL, &optimizer_print_xform_results, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_print_job_scheduler",
+        "Print ORCA job scheduler state machine transitions.",
+        NULL, &optimizer_print_job_scheduler, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_print_optimization_stats",
+        "Print ORCA optimization statistics (memo groups, cache hits, etc.).",
+        NULL, &optimizer_print_optimization_stats, false,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     DefineCustomBoolVariable(

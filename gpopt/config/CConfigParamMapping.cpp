@@ -43,7 +43,12 @@ static bool dpe_stats                = true;
 static bool enumerate_plans          = false;
 static bool sample_plans             = false;
 extern bool optimizer_cte_inlining;
+extern bool optimizer_print_query;
 extern bool optimizer_print_plan;
+extern bool optimizer_print_xform;
+extern bool optimizer_print_xform_results;
+extern bool optimizer_print_job_scheduler;
+extern bool optimizer_print_optimization_stats;
 extern bool optimizer_print_memo_after_exploration;
 extern bool optimizer_print_memo_after_implementation;
 extern bool optimizer_print_memo_after_optimization;
@@ -104,16 +109,16 @@ static bool optimizer_xforms[CXform::ExfSentinel] = {};
 // Mapping table
 // ---------------------------------------------------------------------------
 CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
-	{EopttracePrintQuery, &param_false,
+	{EopttracePrintQuery, &optimizer_print_query,
 	 false, GPOS_WSZ_LIT("Prints the optimizer's input query expression tree.")},
 
 	{EopttracePrintPlan, &optimizer_print_plan,
 	 false, GPOS_WSZ_LIT("Prints the plan expression tree produced by the optimizer.")},
 
-	{EopttracePrintXform, &param_false,
+	{EopttracePrintXform, &optimizer_print_xform,
 	 false, GPOS_WSZ_LIT("Prints input/output expression trees of optimizer transformations.")},
 
-	{EopttracePrintXformResults, &param_false,
+	{EopttracePrintXformResults, &optimizer_print_xform_results,
 	 false, GPOS_WSZ_LIT("Print input and output of xforms.")},
 
 	{EopttracePrintMemoAfterExploration, &optimizer_print_memo_after_exploration,
@@ -125,7 +130,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttracePrintMemoAfterOptimization, &optimizer_print_memo_after_optimization,
 	 false, GPOS_WSZ_LIT("Prints MEMO after optimization.")},
 
-	{EopttracePrintJobScheduler, &param_false,
+	{EopttracePrintJobScheduler, &optimizer_print_job_scheduler,
 	 false, GPOS_WSZ_LIT("Prints jobs in scheduler on each job completion.")},
 
 	{EopttracePrintExpressionProperties, &param_false,
@@ -137,7 +142,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttracePrintOptimizationContext, &optimizer_print_optimization_context,
 	 false, GPOS_WSZ_LIT("Prints optimization context.")},
 
-	{EopttracePrintOptimizationStatistics, &param_false,
+	{EopttracePrintOptimizationStatistics, &optimizer_print_optimization_stats,
 	 false, GPOS_WSZ_LIT("Prints optimization stats.")},
 
 	{EopttraceMinidump, &param_false,
