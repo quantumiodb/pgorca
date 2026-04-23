@@ -3170,6 +3170,27 @@ CTranslatorDXLToPlStmt::TranslateDXLAgg(
 	}
 	agg->aggsplit = (AggSplit) aggsplit;
 
+	// PostgreSQL requires all Aggref nodes in an Agg node to have the same
+	// aggsplit as the Agg node itself. ORCA's DQA split plans can violate this
+	// when a DISTINCT aggregate (AGGSPLIT_SIMPLE) shares an Agg node with a
+	// split regular aggregate (AGGSPLIT_FINAL_DESERIAL). Fall back to
+	// standard_planner rather than crashing at executor init.
+	ForEach (lc, plan->targetlist)
+	{
+		TargetEntry *te = (TargetEntry *) lfirst(lc);
+		if (IsA(te->expr, Aggref))
+		{
+			Aggref *aggref = (Aggref *) te->expr;
+			if (aggref->aggsplit != agg->aggsplit)
+			{
+				GPOS_RAISE(
+					gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+					GPOS_WSZ_LIT(
+						"Mixed aggregate split modes in same Agg node"));
+			}
+		}
+	}
+
 	ForEach (lc, plan->qual)
 	{
 		Expr *expr = (Expr *) lfirst(lc);
