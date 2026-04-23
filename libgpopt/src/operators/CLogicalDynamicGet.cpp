@@ -244,6 +244,7 @@ CLogicalDynamicGet::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfDynamicGet2DynamicTableScan);
 	(void) xform_set->ExchangeSet(
 		CXform::ExfExpandDynamicGetWithForeignPartitions);
+	(void) xform_set->ExchangeSet(CXform::ExfDynamicGet2AppendTableScan);
 	return xform_set;
 }
 

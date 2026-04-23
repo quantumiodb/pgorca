@@ -263,6 +263,7 @@ public:
 		EopLogicalDynamicForeignGet,
 		EopPhysicalDynamicForeignScan,
 		EopPhysicalDynamicIndexOnlyScan,
+		EopPhysicalAppendTableScan,
 
 		EopLogicalIndexOnlyGet,
 		EopLogicalDynamicIndexOnlyGet,
