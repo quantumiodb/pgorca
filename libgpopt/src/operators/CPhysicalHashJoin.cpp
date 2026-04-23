@@ -1315,14 +1315,15 @@ CPhysicalHashJoin::PppsRequiredForJoins(CMemoryPool *mp,
 	GPOS_ASSERT(nullptr != pppsRequired);
 	GPOS_ASSERT(nullptr != pdrgpdpCtxt);
 
-	// HashJoin DPE is not supported on PG18: the GPDB mechanism required
-	// DynamicTableScan to receive partition OIDs at runtime, which does not
-	// exist in PostgreSQL.  Generating EpptPropagator/Consumer here causes
-	// PartitionSelector nodes whose filter expressions are plain Vars (not
-	// PARAM_EXEC), which end up in initial_pruning_steps and crash with
-	// slot=NULL during ExecDoInitialPruning.  Pass through unchanged.
-	return CPhysical::PppsRequired(mp, exprhdl, pppsRequired, child_index,
-								   pdrgpdpCtxt, ulOptReq);
+	// FIXME: Dynamic Partition Elimination (DPE) is a GPDB/CBDB feature that
+	// relies on DynamicTableScan/DynamicIndexScan, which do not exist in
+	// PostgreSQL.  Re-enable once DPE is ported to PG (e.g. by propagating
+	// PartitionPruneInfo through parameterized Append paths).
+	// For now, always pass through partition propagation requirements unchanged
+	// so that ORCA does not generate PartitionSelector plan nodes (tag 5005)
+	// that the PG executor cannot handle.
+	return CPhysical::PppsRequired(
+		mp, exprhdl, pppsRequired, child_index, pdrgpdpCtxt, ulOptReq);
 }
 
 // In the following function, we are generating the Derived property :
