@@ -74,6 +74,7 @@ double optimizer_spilling_mem_threshold         = 0.0;
 char *optimizer_search_strategy_path           = NULL;
 
 /* ORCA debug/print GUCs */
+bool  optimizer_print_plan                      = false;
 bool  optimizer_print_memo_after_exploration    = false;
 bool  optimizer_print_memo_after_implementation = false;
 bool  optimizer_print_memo_after_optimization   = false;
@@ -582,6 +583,12 @@ void _PG_init(void)
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     /* ORCA debug GUCs */
+    DefineCustomBoolVariable(
+        "optimizer_print_plan",
+        "Print the DXL plan expression tree produced by ORCA.",
+        NULL, &optimizer_print_plan, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
     DefineCustomBoolVariable(
         "optimizer_print_memo_after_exploration",
         "Print ORCA MEMO after exploration phase.",

@@ -43,6 +43,7 @@ static bool dpe_stats                = true;
 static bool enumerate_plans          = false;
 static bool sample_plans             = false;
 extern bool optimizer_cte_inlining;
+extern bool optimizer_print_plan;
 extern bool optimizer_print_memo_after_exploration;
 extern bool optimizer_print_memo_after_implementation;
 extern bool optimizer_print_memo_after_optimization;
@@ -106,7 +107,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttracePrintQuery, &param_false,
 	 false, GPOS_WSZ_LIT("Prints the optimizer's input query expression tree.")},
 
-	{EopttracePrintPlan, &param_false,
+	{EopttracePrintPlan, &optimizer_print_plan,
 	 false, GPOS_WSZ_LIT("Prints the plan expression tree produced by the optimizer.")},
 
 	{EopttracePrintXform, &param_false,
