@@ -6125,6 +6125,32 @@ CTranslatorDXLToPlStmt::AddSecurityQuals(OID relId, List **qual, Index *index)
 	FetchSecurityQuals(m_dxl_to_plstmt_context->m_orig_query,
 					   &ctxt_security_quals);
 
+	// For partition children: the original query's rtable has an RTE for the
+	// partitioned parent only (with securityQuals attached).  Walk up the
+	// inheritance chain until we find an ancestor whose RTE carries security
+	// quals.
+	if (ctxt_security_quals.m_security_quals == NIL)
+	{
+		Oid ancestorOid = relId;
+		while (ctxt_security_quals.m_security_quals == NIL &&
+			   gpdb::HasSuperclass(ancestorOid))
+		{
+			ancestorOid = gpdb::GetPartitionParent(ancestorOid);
+			SContextSecurityQuals anc_ctxt(ancestorOid);
+			FetchSecurityQuals(m_dxl_to_plstmt_context->m_orig_query,
+							   &anc_ctxt);
+			ctxt_security_quals.m_security_quals = anc_ctxt.m_security_quals;
+		}
+	}
+
+	// Deep-copy the security quals before updating varnos.  Multiple partition
+	// child scans share the same underlying Var nodes via the shallow
+	// list_copy done by FetchSecurityQuals; SetSecurityQualsVarnoWalker
+	// modifies Var nodes in place, so without a deep copy, every child scan
+	// would end up with the varno of whichever child was processed last.
+	List *quals_copy =
+		(List *) copyObject(ctxt_security_quals.m_security_quals);
+
 	// The varno of the columns related to a particular table is different in
 	// the rewritten parse tree and the planned statement tree. In planned
 	// statement the varno of the columns is based on the index of the RTE
@@ -6132,11 +6158,10 @@ CTranslatorDXLToPlStmt::AddSecurityQuals(OID relId, List **qual, Index *index)
 	// the security quals from the rewritten parse tree to planned statement
 	// tree we need to modify the varno of all the VAR nodes present in the
 	// security quals and assign it equal to index of the RTE in the rte_list.
-	SetSecurityQualsVarnoWalker((Node *) ctxt_security_quals.m_security_quals,
-								index);
+	SetSecurityQualsVarnoWalker((Node *) quals_copy, index);
 
 	// Adding the security quals from m_security_quals list to the qual list
-	*qual = gpdb::ListConcat(*qual, ctxt_security_quals.m_security_quals);
+	*qual = gpdb::ListConcat(*qual, quals_copy);
 }
 
 //---------------------------------------------------------------------------
