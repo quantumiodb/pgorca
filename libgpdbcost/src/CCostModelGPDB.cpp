@@ -2322,6 +2322,7 @@ CCostModelGPDB::CostScan(CMemoryPool *,	 // mp
 	COperator::EOperatorId op_id = pop->Eopid();
 	GPOS_ASSERT(COperator::EopPhysicalTableScan == op_id ||
 				COperator::EopPhysicalDynamicTableScan == op_id ||
+				COperator::EopPhysicalAppendTableScan == op_id ||
 				COperator::EopPhysicalForeignScan == op_id ||
 				COperator::EopPhysicalDynamicForeignScan == op_id);
 
@@ -2343,6 +2344,7 @@ CCostModelGPDB::CostScan(CMemoryPool *,	 // mp
 	{
 		case COperator::EopPhysicalTableScan:
 		case COperator::EopPhysicalDynamicTableScan:
+		case COperator::EopPhysicalAppendTableScan:
 		case COperator::EopPhysicalForeignScan:
 		case COperator::EopPhysicalDynamicForeignScan:
 			// table scan cost considers only retrieving tuple cost,
@@ -2430,6 +2432,7 @@ CCostModelGPDB::Cost(
 		}
 		case COperator::EopPhysicalTableScan:
 		case COperator::EopPhysicalDynamicTableScan:
+		case COperator::EopPhysicalAppendTableScan:
 		case COperator::EopPhysicalForeignScan:
 		case COperator::EopPhysicalDynamicForeignScan:
 
