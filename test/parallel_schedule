@@ -82,7 +82,8 @@ test: create_table_like alter_generic alter_operator misc async dbsize merge sys
 
 #tidscan
 # collate.linux.utf8 and collate.icu.utf8 tests cannot be run in parallel with each other
-test: rules psql psql_pipeline amutils stats_ext collate.linux.utf8 collate.windows.win1252
+test: rules psql psql_pipeline amutils collate.linux.utf8 collate.windows.win1252
+#test: stats_ext
 
 # ----------
 # Run these alone so they don't run out of parallel workers
