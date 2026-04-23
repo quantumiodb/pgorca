@@ -542,7 +542,7 @@ void _PG_init(void)
     DefineCustomBoolVariable(
         "optimizer_enable_motions",
         "Enable motion nodes in ORCA plans.",
-        NULL, &optimizer_enable_motions, true,
+        NULL, &optimizer_enable_motions, false,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     DefineCustomBoolVariable(

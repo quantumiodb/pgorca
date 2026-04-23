@@ -4,3 +4,5 @@ build/
 *.dylib
 .mcp.json
 .claude/
+CLAUDE.md
+AGENT.md

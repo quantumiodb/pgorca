@@ -23,7 +23,6 @@ using namespace gpopt;
 // Local defaults (single-node PG18, no MPP)
 // ---------------------------------------------------------------------------
 static bool param_false = false;
-static bool param_true  = true;
 
 // Motion nodes are irrelevant for single-node; disable them all.
 static bool enable_motions           = false;
