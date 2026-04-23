@@ -2355,9 +2355,12 @@ CTranslatorDXLToPlStmt::TranslateDXLMergeJoin(
 
 	merge_join->mergeFamilies =
 		(Oid *) gpdb::GPDBAlloc(sizeof(Oid) * num_join_conds);
-	/* mergeStrategies removed from PG18's MergeJoin */
 	merge_join->mergeCollations =
 		(Oid *) gpdb::GPDBAlloc(sizeof(Oid) * num_join_conds);
+	/* PG18: mergeReversals replaces mergeStrategies. ORCA always sorts merge
+	 * keys ascending (using '<'), so reversals are always false. */
+	merge_join->mergeReversals =
+		(bool *) gpdb::GPDBAlloc(sizeof(bool) * num_join_conds);
 	merge_join->mergeNullsFirst =
 		(bool *) gpdb::GPDBAlloc(sizeof(bool) * num_join_conds);
 
@@ -2389,8 +2392,7 @@ CTranslatorDXLToPlStmt::TranslateDXLMergeJoin(
 
 			merge_join->mergeCollations[ul] =
 				gpdb::ExprCollation((Node *) leftarg);
-
-			/* mergeStrategies removed from PG18's MergeJoin */
+			merge_join->mergeReversals[ul] = false;
 			merge_join->mergeNullsFirst[ul] = false;
 			++ul;
 		}
