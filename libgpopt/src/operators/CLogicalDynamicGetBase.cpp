@@ -256,6 +256,7 @@ CLogicalDynamicGetBase::ConstructRootColMappingPerPart(
 		// The root mapping cannot contain dropped columns, but may be
 		// in a different order than the child cols.Iterate through each of the child
 		// cols, and retrieve the corresponding index in the parent table
+		ULONG part_col_idx = 0;
 		for (ULONG j = 0; j < partrel->ColumnCount(); ++j)
 		{
 			const IMDColumn *coldesc = partrel->GetMdCol(j);
@@ -269,8 +270,11 @@ CLogicalDynamicGetBase::ConstructRootColMappingPerPart(
 			ULONG *root_idx = root_mapping->Find(colname);
 			if (nullptr != root_idx)
 			{
+				// Map root colref → partition column index (not root index).
+				// part_col_idx counts non-dropped partition columns seen so far,
+				// matching the position in PdrgpcrOutput for this partition.
 				mapping->Insert((*root_cols)[*root_idx],
-								GPOS_NEW(mp) ULONG(*root_idx));
+								GPOS_NEW(mp) ULONG(part_col_idx));
 			}
 			else
 			{
@@ -280,6 +284,7 @@ CLogicalDynamicGetBase::ConstructRootColMappingPerPart(
 					GPOS_WSZ_LIT(
 						"Cannot generate root to child partition column mapping"));
 			}
+			part_col_idx++;
 		}
 		part_maps->Append(mapping);
 	}
