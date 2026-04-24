@@ -269,7 +269,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttraceEnableEagerAgg, &enable_eageragg,
 	 false, GPOS_WSZ_LIT("Enable Eager Agg transform.")},
 
-	{EopttraceEnableParallelAppendScan, &enable_append_table_scan,
+	{EopttraceEnableAppendScan, &enable_append_table_scan,
 	 false, GPOS_WSZ_LIT("Enable AppendTableScan for partitioned table scans.")},
 
 	{EopttraceDisableOrderedAgg, &enable_orderedagg,
