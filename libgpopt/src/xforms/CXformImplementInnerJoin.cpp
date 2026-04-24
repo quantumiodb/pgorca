@@ -17,6 +17,7 @@
 #include "gpopt/operators/CLogicalInnerJoin.h"
 #include "gpopt/operators/CPatternLeaf.h"
 #include "gpopt/operators/CPhysicalInnerHashJoin.h"
+#include "gpopt/operators/CPhysicalInnerMergeJoin.h"
 #include "gpopt/operators/CPhysicalInnerNLJoin.h"
 #include "gpopt/xforms/CXformUtils.h"
 
@@ -85,6 +86,12 @@ CXformImplementInnerJoin::Transform(CXformContext *pxfctxt,
 		CXformUtils::ImplementHashJoin<CPhysicalInnerHashJoin>(pxfctxt, pxfres,
 															   pexpr);
 	}
+
+	// Generate inner merge join when the join predicate contains at least one
+	// merge-compatible equality clause.  The optimizer's cost model then decides
+	// whether it is cheaper than hash join.
+	CXformUtils::ImplementMergeJoin<CPhysicalInnerMergeJoin>(pxfctxt, pxfres,
+															 pexpr);
 
 	if ((GPOS_FTRACE(EopttraceForceComprehensiveJoinImplementation) ||
 		 pxfres->Size() == 0) &&

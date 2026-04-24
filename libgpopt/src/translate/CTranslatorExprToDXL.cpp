@@ -543,6 +543,7 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pfDML);
 			break;
 		case COperator::EopPhysicalFullMergeJoin:
+		case COperator::EopPhysicalInnerMergeJoin:
 			dxlnode = CTranslatorExprToDXL::PdxlnMergeJoin(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
@@ -4607,6 +4608,10 @@ CTranslatorExprToDXL::PdxlnMergeJoin(CExpression *pexprMJ,
 	{
 		case COperator::EopPhysicalFullMergeJoin:
 			join_type = EdxljtFull;
+			break;
+
+		case COperator::EopPhysicalInnerMergeJoin:
+			join_type = EdxljtInner;
 			break;
 
 		default:
