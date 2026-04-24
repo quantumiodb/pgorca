@@ -304,12 +304,20 @@ CTranslatorDXLToPlStmt::GetPlannedStmtFromDXL(const CDXLNode *dxlnode,
 				{
 					PartitionedRelPruneInfo *pdata =
 						(PartitionedRelPruneInfo *) lfirst(lc3);
-					for (int i = 0; i < pdata->nparts; i++)
+					// Only remove leaves when initial pruning steps exist.
+					// For exec-only (DPE) pruning, leaves must stay in
+					// unprunableRelids so SeqScans can open them at startup;
+					// ExecDoInitialPruning won't add them back for the
+					// exec_pruning_steps-only case.
+					if (pdata->initial_pruning_steps != NIL)
 					{
-						if (pdata->leafpart_rti_map[i] != 0)
-							planned_stmt->unprunableRelids =
-								bms_del_member(planned_stmt->unprunableRelids,
-											   pdata->leafpart_rti_map[i]);
+						for (int i = 0; i < pdata->nparts; i++)
+						{
+							if (pdata->leafpart_rti_map[i] != 0)
+								planned_stmt->unprunableRelids =
+									bms_del_member(planned_stmt->unprunableRelids,
+												   pdata->leafpart_rti_map[i]);
+						}
 					}
 				}
 			}
@@ -4084,7 +4092,22 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 	Plan *child_plan = TranslateDXLOperatorToPlan(
 		child_dxlnode, &child_context, ctxt_translation_prev_siblings);
 	GPOS_ASSERT(child_plan != nullptr);
-	GPOS_ASSERT(IsA(child_plan, Append));
+
+	if (!IsA(child_plan, Append))
+	{
+		// PartitionSelector wraps a non-Append child (e.g. a probe SeqScan in
+		// HashJoin DPE).  PG18's exec_pruning_steps mechanism only works with
+		// NestLoop; for other join types there is no useful dynamic pruning.
+		// Populate output_context from the project list and return the child
+		// plan unchanged.
+		CDXLNode *project_list_dxlnode = (*partition_selector_dxlnode)[0];
+		(void) TranslateDXLProjList(project_list_dxlnode,
+									nullptr /*base_table_context*/,
+									child_contexts, output_context);
+		child_contexts->Release();
+		return child_plan;
+	}
+
 	Append *append = (Append *) child_plan;
 
 	child_contexts->Append(&child_context);
@@ -4102,12 +4125,14 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 		CMDIdGPDB::CastMdid(partition_selector_dxlop->GetRelMdId());
 	gpdb::RelationWrapper relation = gpdb::GetRelation(mdid->Oid());
 
-	// 4. Ensure the root relation has an RTE.  AppendTableScan only adds
-	//    partition-child RTEs; PartitionedRelPruneInfo.rtindex must point to
-	//    the root so CreatePartitionPruneState can open it for the partition
-	//    descriptor.
-	Index rtindex = m_dxl_to_plstmt_context->FindRTE(mdid->Oid());
-	if (rtindex <= 0)
+	// 4. Ensure the root relation has an RTE.  The Append's children (partition
+	//    leaf SeqScans) only add leaf RTEs; the root partitioned table is absent.
+	//    PartitionedRelPruneInfo.rtindex must point to the root so
+	//    CreatePartitionPruneState can open it for the partition descriptor.
+	//    FindRTE returns -1 (stored as UINT_MAX in Index) when not found, so
+	//    cast to int before comparing.
+	int rtindex_check = (int) m_dxl_to_plstmt_context->FindRTE(mdid->Oid());
+	if (rtindex_check <= 0)
 	{
 		RangeTblEntry *root_rte = makeNode(RangeTblEntry);
 		root_rte->rtekind = RTE_RELATION;
@@ -4118,10 +4143,17 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 		root_rte->lateral = false;
 		root_rte->inFromCl = false;
 		root_rte->perminfoindex = 0;
+		// eref must be non-NULL: EXPLAIN's deparse code iterates all RTEs
+		// and calls list_length(rte->eref->colnames) unconditionally.
+		Alias *root_eref = MakeNode(Alias);
+		root_eref->aliasname = PStrDup("");
+		root_eref->colnames = NIL;
+		root_rte->eref = root_eref;
 		m_dxl_to_plstmt_context->AddRTE(root_rte, false /*is_result_relation*/);
-		rtindex = m_dxl_to_plstmt_context->FindRTE(mdid->Oid());
+		rtindex_check = (int) m_dxl_to_plstmt_context->FindRTE(mdid->Oid());
 	}
-	GPOS_ASSERT(rtindex > 0);
+	GPOS_ASSERT(rtindex_check > 0);
+	Index rtindex = (Index) rtindex_check;
 
 	// 5. Collect child SeqScan RT indexes for leafpart_rti_map.
 	//    ExecDoInitialPruning uses these to add surviving partition RTIs to

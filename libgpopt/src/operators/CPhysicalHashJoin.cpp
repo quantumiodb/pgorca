@@ -1315,15 +1315,76 @@ CPhysicalHashJoin::PppsRequiredForJoins(CMemoryPool *mp,
 	GPOS_ASSERT(nullptr != pppsRequired);
 	GPOS_ASSERT(nullptr != pdrgpdpCtxt);
 
-	// FIXME: Dynamic Partition Elimination (DPE) is a GPDB/CBDB feature that
-	// relies on DynamicTableScan/DynamicIndexScan, which do not exist in
-	// PostgreSQL.  Re-enable once DPE is ported to PG (e.g. by propagating
-	// PartitionPruneInfo through parameterized Append paths).
-	// For now, always pass through partition propagation requirements unchanged
-	// so that ORCA does not generate PartitionSelector plan nodes (tag 5005)
-	// that the PG executor cannot handle.
-	return CPhysical::PppsRequired(
-		mp, exprhdl, pppsRequired, child_index, pdrgpdpCtxt, ulOptReq);
+	CExpression *pexprScalar = exprhdl.PexprScalarExactChild(2 /*child_index*/);
+
+	CColRefSet *pcrsOutputInner = exprhdl.DeriveOutputColumns(1);
+
+	CPartitionPropagationSpec *pps_result;
+	if (ulOptReq == 0)
+	{
+		// DPE: create a new request
+		pps_result = GPOS_NEW(mp) CPartitionPropagationSpec(mp);
+
+		// Extract the partition info of the outer child.
+		CPartInfo *part_info_outer = exprhdl.DerivePartitionInfo(0);
+
+		for (ULONG ul = 0; ul < part_info_outer->UlConsumers(); ++ul)
+		{
+			ULONG scan_id = part_info_outer->ScanId(ul);
+			IMDId *rel_mdid = part_info_outer->GetRelMdId(ul);
+			CPartKeysArray *part_keys_array =
+				part_info_outer->Pdrgppartkeys(ul);
+
+			CExpression *pexprCmp =
+				PexprJoinPredOnPartKeys(mp, pexprScalar, part_keys_array,
+										pcrsOutputInner /* pcrsAllowedRefs*/);
+
+			if (pexprCmp == nullptr)
+			{
+				continue;
+			}
+
+			if (child_index == 0)
+			{
+				// For the inner child, we extract the derived PPS.
+				CPartitionPropagationSpec *pps_inner =
+					CDrvdPropPlan::Pdpplan((*pdrgpdpCtxt)[0])->Ppps();
+
+				CBitSet *selector_ids =
+					GPOS_NEW(mp) CBitSet(mp, *pps_inner->SelectorIds(scan_id));
+
+				pps_result->Insert(scan_id,
+								   CPartitionPropagationSpec::EpptConsumer,
+								   rel_mdid, selector_ids, nullptr /* expr */);
+				selector_ids->Release();
+			}
+			else
+			{
+				GPOS_ASSERT(child_index == 1);
+				pps_result->Insert(scan_id,
+								   CPartitionPropagationSpec::EpptPropagator,
+								   rel_mdid, nullptr, pexprCmp);
+			}
+			pexprCmp->Release();
+		}
+
+		CBitSet *allowed_scan_ids = GPOS_NEW(mp) CBitSet(mp);
+		CPartInfo *part_info = exprhdl.DerivePartitionInfo(child_index);
+		for (ULONG ul = 0; ul < part_info->UlConsumers(); ++ul)
+		{
+			ULONG scan_id = part_info->ScanId(ul);
+			allowed_scan_ids->ExchangeSet(scan_id);
+		}
+		pps_result->InsertAllowedConsumers(pppsRequired, allowed_scan_ids);
+		allowed_scan_ids->Release();
+	}
+	else
+	{
+		// No DPE: pass through requests
+		pps_result = CPhysical::PppsRequired(
+			mp, exprhdl, pppsRequired, child_index, pdrgpdpCtxt, ulOptReq);
+	}
+	return pps_result;
 }
 
 // In the following function, we are generating the Derived property :
