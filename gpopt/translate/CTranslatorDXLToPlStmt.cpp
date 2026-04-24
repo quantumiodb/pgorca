@@ -3382,7 +3382,7 @@ CTranslatorDXLToPlStmt::TranslateDXLWindow(
 		// translate the window frame specified in the window key
 		if (nullptr != window_key->GetWindowFrame())
 		{
-			window->frameOptions = FRAMEOPTION_NONDEFAULT;
+			window->frameOptions = FRAMEOPTION_NONDEFAULT | FRAMEOPTION_BETWEEN;
 			if (EdxlfsRow == window_frame->ParseDXLFrameSpec())
 			{
 				window->frameOptions |= FRAMEOPTION_ROWS;
