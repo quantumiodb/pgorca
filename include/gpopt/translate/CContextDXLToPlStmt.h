@@ -143,6 +143,10 @@ private:
 	List	   *m_agg_infos;		/* AggInfo structs */
 	List	   *m_agg_trans_infos;	/* AggTransInfo structs */
 
+	// PartitionPruneInfo nodes accumulated during translation;
+	// transferred to PlannedStmt.partPruneInfos at the end
+	List *m_part_prune_infos;
+
 public:
 	// ctor/dtor
 	CContextDXLToPlStmt(CMemoryPool *mp, CIdGenerator *plan_id_counter,
@@ -262,6 +266,16 @@ public:
 
 	// get perm info from m_perminfo_list by given index
 	RTEPermissionInfo *GetPermInfoByIndex(Index index);
+
+	// Register a PartitionPruneInfo and return its 0-based index in
+	// PlannedStmt.partPruneInfos.
+	int AddPartPruneInfo(PartitionPruneInfo *info);
+
+	List *
+	GetPartPruneInfos() const
+	{
+		return m_part_prune_infos;
+	}
 
 	// List of AggInfo and AggTransInfo
 	inline List *GetAggInfos() const

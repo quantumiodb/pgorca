@@ -59,7 +59,8 @@ CContextDXLToPlStmt::CContextDXLToPlStmt(
 	  m_distribution_policy(nullptr),
 	  m_part_selector_to_param_map(nullptr),
 	  m_agg_infos(nullptr),
-	  m_agg_trans_infos(nullptr)
+	  m_agg_trans_infos(nullptr),
+	  m_part_prune_infos(nullptr)
 {
 	m_cte_consumer_info = GPOS_NEW(m_mp) HMUlCTEConsumerInfo(m_mp);
 	m_part_selector_to_param_map = GPOS_NEW(m_mp) UlongToUlongMap(m_mp);
@@ -616,6 +617,13 @@ CContextDXLToPlStmt::GetPermInfoByIndex(Index index)
 
 	return (RTEPermissionInfo *) gpdb::ListNth(m_perminfo_list,
 										   int(index - 1));
+}
+
+int
+CContextDXLToPlStmt::AddPartPruneInfo(PartitionPruneInfo *info)
+{
+	m_part_prune_infos = gpdb::LAppend(m_part_prune_infos, info);
+	return gpdb::ListLength(m_part_prune_infos) - 1;
 }
 
 void

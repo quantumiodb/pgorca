@@ -35,6 +35,9 @@ private:
 	// list of pruned scan nodes denoted as an index of the relation's partition_mdids
 	ULongPtrArray *m_part_indexes;
 
+	// RT indexes of the surviving child SeqScan plans (parallel to m_part_indexes)
+	List *m_child_rtindexes;
+
 	// colid -> var mapping from the subtree
 	CMappingColIdVarPlStmt *m_colid_var_mapping;
 
@@ -44,6 +47,7 @@ private:
 	// ctor
 	CPartPruneStepsBuilder(Relation relation, Index rtindex,
 						   ULongPtrArray *part_indexes,
+						   List *child_rtindexes,
 						   CMappingColIdVarPlStmt *colid_var_mapping,
 						   CTranslatorDXLToScalar *translator_dxl_to_scalar);
 
@@ -55,7 +59,8 @@ public:
 
 	static List *CreatePartPruneInfos(
 		CDXLNode *filterNode, Relation relation, Index rtindex,
-		ULongPtrArray *part_indexes, CMappingColIdVarPlStmt *colid_var_mapping,
+		ULongPtrArray *part_indexes, List *child_rtindexes,
+		CMappingColIdVarPlStmt *colid_var_mapping,
 		CTranslatorDXLToScalar *translator_dxl_to_scalar);
 
 	PartitionedRelPruneInfo *CreatePartPruneInfoForOneLevel(
