@@ -28,6 +28,10 @@
 -- # m/^(?:Planning|Execution) Time: [\d.]+ ms/
 -- # s/^((?:Planning|Execution) Time): [\d.]+ ms$/$1: ### ms/
 --
+-- # Normalize tpch_dbgen heap_time_ms values, which vary run-to-run.
+-- m/(\|\s+\d+\s+\|\s+)[\d.]+(\s*)$/
+-- s/(\|\s+\d+\s+\|\s+)[\d.]+(\s*)$/$1###.##$2/
+--
 -- # ORCA does not inline SQL SRFs, so error context says "statement 1"
 -- # instead of "during inlining". Normalize to the ORCA form.
 -- m/CONTEXT:.*SQL function .* during inlining/
@@ -39,6 +43,9 @@
 --
 -- # Ignore "Optimizer: ..." lines in EXPLAIN output when ORCA is active.
 -- m/^ Optimizer: pg_orca/
+--
+-- # Ignore \timing output — wall-clock times vary across runs.
+-- m/^Time: [\d.]+ ms/
 --
 -- # ORCA does not push outer quals below the view's own filter, so snoop()
 -- # is never evaluated on private rows (e.g. 'Dick' with visibility='private').

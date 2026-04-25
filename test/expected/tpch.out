@@ -1,0 +1,1395 @@
+-- disable parallel 
+set max_parallel_workers_per_gather=0;
+CREATE EXTENSION IF NOT EXISTS pg_tpch;
+set pg_orca.enable_orca to off;
+SELECT * FROM create_tpch_tables(false);
+           create_tpch_tables            
+-----------------------------------------
+ Created TPC-H tables in schema "public"
+(1 row)
+
+SELECT table_name, rows, heap_time_ms FROM tpch_dbgen(1);
+ table_name |  rows   | heap_time_ms 
+------------+---------+--------------
+ region     |       5 |         0.03
+ nation     |      25 |         0.03
+ part       |  200000 |       228.41
+ supplier   |   10000 |        10.73
+ customer   |  150000 |       156.63
+ partsupp   |  800000 |       514.28
+ orders     | 1500000 |      1435.41
+ lineitem   | 6001215 |      7841.17
+(8 rows)
+
+select query as query1 from tpch_queries(1); \gset
+                                  query1                                  
+--------------------------------------------------------------------------
+ SELECT                                                                  +
+     l_returnflag,                                                       +
+     l_linestatus,                                                       +
+     sum(l_quantity) AS sum_qty,                                         +
+     sum(l_extendedprice) AS sum_base_price,                             +
+     sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,          +
+     sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,+
+     avg(l_quantity) AS avg_qty,                                         +
+     avg(l_extendedprice) AS avg_price,                                  +
+     avg(l_discount) AS avg_disc,                                        +
+     count(*) AS count_order                                             +
+ FROM                                                                    +
+     lineitem                                                            +
+ WHERE                                                                   +
+     l_shipdate <= CAST('1998-09-02' AS date)                            +
+ GROUP BY                                                                +
+     l_returnflag,                                                       +
+     l_linestatus                                                        +
+ ORDER BY                                                                +
+     l_returnflag,                                                       +
+     l_linestatus;                                                       +
+ 
+(1 row)
+
+select query as query2 from tpch_queries(2); \gset
+                  query2                   
+-------------------------------------------
+ SELECT                                   +
+     s_acctbal,                           +
+     s_name,                              +
+     n_name,                              +
+     p_partkey,                           +
+     p_mfgr,                              +
+     s_address,                           +
+     s_phone,                             +
+     s_comment                            +
+ FROM                                     +
+     part,                                +
+     supplier,                            +
+     partsupp,                            +
+     nation,                              +
+     region                               +
+ WHERE                                    +
+     p_partkey = ps_partkey               +
+     AND s_suppkey = ps_suppkey           +
+     AND p_size = 15                      +
+     AND p_type LIKE '%BRASS'             +
+     AND s_nationkey = n_nationkey        +
+     AND n_regionkey = r_regionkey        +
+     AND r_name = 'EUROPE'                +
+     AND ps_supplycost = (                +
+         SELECT                           +
+             min(ps_supplycost)           +
+         FROM                             +
+             partsupp,                    +
+             supplier,                    +
+             nation,                      +
+             region                       +
+         WHERE                            +
+             p_partkey = ps_partkey       +
+             AND s_suppkey = ps_suppkey   +
+             AND s_nationkey = n_nationkey+
+             AND n_regionkey = r_regionkey+
+             AND r_name = 'EUROPE')       +
+ ORDER BY                                 +
+     s_acctbal DESC,                      +
+     n_name,                              +
+     s_name,                              +
+     p_partkey                            +
+ LIMIT 100;                               +
+ 
+(1 row)
+
+select query as query3 from tpch_queries(3); \gset
+                         query3                          
+---------------------------------------------------------
+ SELECT                                                 +
+     l_orderkey,                                        +
+     sum(l_extendedprice * (1 - l_discount)) AS revenue,+
+     o_orderdate,                                       +
+     o_shippriority                                     +
+ FROM                                                   +
+     customer,                                          +
+     orders,                                            +
+     lineitem                                           +
+ WHERE                                                  +
+     c_mktsegment = 'BUILDING'                          +
+     AND c_custkey = o_custkey                          +
+     AND l_orderkey = o_orderkey                        +
+     AND o_orderdate < CAST('1995-03-15' AS date)       +
+     AND l_shipdate > CAST('1995-03-15' AS date)        +
+ GROUP BY                                               +
+     l_orderkey,                                        +
+     o_orderdate,                                       +
+     o_shippriority                                     +
+ ORDER BY                                               +
+     revenue DESC,                                      +
+     o_orderdate                                        +
+ LIMIT 10;                                              +
+ 
+(1 row)
+
+select query as query4 from tpch_queries(4); \gset
+                      query4                      
+--------------------------------------------------
+ SELECT                                          +
+     o_orderpriority,                            +
+     count(*) AS order_count                     +
+ FROM                                            +
+     orders                                      +
+ WHERE                                           +
+     o_orderdate >= CAST('1993-07-01' AS date)   +
+     AND o_orderdate < CAST('1993-10-01' AS date)+
+     AND EXISTS (                                +
+         SELECT                                  +
+             *                                   +
+         FROM                                    +
+             lineitem                            +
+         WHERE                                   +
+             l_orderkey = o_orderkey             +
+             AND l_commitdate < l_receiptdate)   +
+ GROUP BY                                        +
+     o_orderpriority                             +
+ ORDER BY                                        +
+     o_orderpriority;                            +
+ 
+(1 row)
+
+select query as query5 from tpch_queries(5); \gset
+                         query5                         
+--------------------------------------------------------
+ SELECT                                                +
+     n_name,                                           +
+     sum(l_extendedprice * (1 - l_discount)) AS revenue+
+ FROM                                                  +
+     customer,                                         +
+     orders,                                           +
+     lineitem,                                         +
+     supplier,                                         +
+     nation,                                           +
+     region                                            +
+ WHERE                                                 +
+     c_custkey = o_custkey                             +
+     AND l_orderkey = o_orderkey                       +
+     AND l_suppkey = s_suppkey                         +
+     AND c_nationkey = s_nationkey                     +
+     AND s_nationkey = n_nationkey                     +
+     AND n_regionkey = r_regionkey                     +
+     AND r_name = 'ASIA'                               +
+     AND o_orderdate >= CAST('1994-01-01' AS date)     +
+     AND o_orderdate < CAST('1995-01-01' AS date)      +
+ GROUP BY                                              +
+     n_name                                            +
+ ORDER BY                                              +
+     revenue DESC;                                     +
+ 
+(1 row)
+
+select query as query6 from tpch_queries(6); \gset
+                      query6                      
+--------------------------------------------------
+ SELECT                                          +
+     sum(l_extendedprice * l_discount) AS revenue+
+ FROM                                            +
+     lineitem                                    +
+ WHERE                                           +
+     l_shipdate >= CAST('1994-01-01' AS date)    +
+     AND l_shipdate < CAST('1995-01-01' AS date) +
+     AND l_discount BETWEEN 0.05                 +
+     AND 0.07                                    +
+     AND l_quantity < 24;                        +
+ 
+(1 row)
+
+select query as query7 from tpch_queries(7); \gset
+                          query7                           
+-----------------------------------------------------------
+ SELECT                                                   +
+     supp_nation,                                         +
+     cust_nation,                                         +
+     l_year,                                              +
+     sum(volume) AS revenue                               +
+ FROM (                                                   +
+     SELECT                                               +
+         n1.n_name AS supp_nation,                        +
+         n2.n_name AS cust_nation,                        +
+         extract(year FROM l_shipdate) AS l_year,         +
+         l_extendedprice * (1 - l_discount) AS volume     +
+     FROM                                                 +
+         supplier,                                        +
+         lineitem,                                        +
+         orders,                                          +
+         customer,                                        +
+         nation n1,                                       +
+         nation n2                                        +
+     WHERE                                                +
+         s_suppkey = l_suppkey                            +
+         AND o_orderkey = l_orderkey                      +
+         AND c_custkey = o_custkey                        +
+         AND s_nationkey = n1.n_nationkey                 +
+         AND c_nationkey = n2.n_nationkey                 +
+         AND ((n1.n_name = 'FRANCE'                       +
+                 AND n2.n_name = 'GERMANY')               +
+             OR (n1.n_name = 'GERMANY'                    +
+                 AND n2.n_name = 'FRANCE'))               +
+         AND l_shipdate BETWEEN CAST('1995-01-01' AS date)+
+         AND CAST('1996-12-31' AS date)) AS shipping      +
+ GROUP BY                                                 +
+     supp_nation,                                         +
+     cust_nation,                                         +
+     l_year                                               +
+ ORDER BY                                                 +
+     supp_nation,                                         +
+     cust_nation,                                         +
+     l_year;                                              +
+ 
+(1 row)
+
+select query as query8 from tpch_queries(8); \gset
+                            query8                             
+---------------------------------------------------------------
+ SELECT                                                       +
+     o_year,                                                  +
+     sum(                                                     +
+         CASE WHEN nation = 'BRAZIL' THEN                     +
+             volume                                           +
+         ELSE                                                 +
+             0                                                +
+         END) / sum(volume) AS mkt_share                      +
+ FROM (                                                       +
+     SELECT                                                   +
+         extract(year FROM o_orderdate) AS o_year,            +
+         l_extendedprice * (1 - l_discount) AS volume,        +
+         n2.n_name AS nation                                  +
+     FROM                                                     +
+         part,                                                +
+         supplier,                                            +
+         lineitem,                                            +
+         orders,                                              +
+         customer,                                            +
+         nation n1,                                           +
+         nation n2,                                           +
+         region                                               +
+     WHERE                                                    +
+         p_partkey = l_partkey                                +
+         AND s_suppkey = l_suppkey                            +
+         AND l_orderkey = o_orderkey                          +
+         AND o_custkey = c_custkey                            +
+         AND c_nationkey = n1.n_nationkey                     +
+         AND n1.n_regionkey = r_regionkey                     +
+         AND r_name = 'AMERICA'                               +
+         AND s_nationkey = n2.n_nationkey                     +
+         AND o_orderdate BETWEEN CAST('1995-01-01' AS date)   +
+         AND CAST('1996-12-31' AS date)                       +
+         AND p_type = 'ECONOMY ANODIZED STEEL') AS all_nations+
+ GROUP BY                                                     +
+     o_year                                                   +
+ ORDER BY                                                     +
+     o_year;                                                  +
+ 
+(1 row)
+
+select query as query9 from tpch_queries(9); \gset
+                                      query9                                       
+-----------------------------------------------------------------------------------
+ SELECT                                                                           +
+     nation,                                                                      +
+     o_year,                                                                      +
+     sum(amount) AS sum_profit                                                    +
+ FROM (                                                                           +
+     SELECT                                                                       +
+         n_name AS nation,                                                        +
+         extract(year FROM o_orderdate) AS o_year,                                +
+         l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount+
+     FROM                                                                         +
+         part,                                                                    +
+         supplier,                                                                +
+         lineitem,                                                                +
+         partsupp,                                                                +
+         orders,                                                                  +
+         nation                                                                   +
+     WHERE                                                                        +
+         s_suppkey = l_suppkey                                                    +
+         AND ps_suppkey = l_suppkey                                               +
+         AND ps_partkey = l_partkey                                               +
+         AND p_partkey = l_partkey                                                +
+         AND o_orderkey = l_orderkey                                              +
+         AND s_nationkey = n_nationkey                                            +
+         AND p_name LIKE '%green%') AS profit                                     +
+ GROUP BY                                                                         +
+     nation,                                                                      +
+     o_year                                                                       +
+ ORDER BY                                                                         +
+     nation,                                                                      +
+     o_year DESC;                                                                 +
+ 
+(1 row)
+
+select query as query10 from tpch_queries(10); \gset
+                         query10                         
+---------------------------------------------------------
+ SELECT                                                 +
+     c_custkey,                                         +
+     c_name,                                            +
+     sum(l_extendedprice * (1 - l_discount)) AS revenue,+
+     c_acctbal,                                         +
+     n_name,                                            +
+     c_address,                                         +
+     c_phone,                                           +
+     c_comment                                          +
+ FROM                                                   +
+     customer,                                          +
+     orders,                                            +
+     lineitem,                                          +
+     nation                                             +
+ WHERE                                                  +
+     c_custkey = o_custkey                              +
+     AND l_orderkey = o_orderkey                        +
+     AND o_orderdate >= CAST('1993-10-01' AS date)      +
+     AND o_orderdate < CAST('1994-01-01' AS date)       +
+     AND l_returnflag = 'R'                             +
+     AND c_nationkey = n_nationkey                      +
+ GROUP BY                                               +
+     c_custkey,                                         +
+     c_name,                                            +
+     c_acctbal,                                         +
+     c_phone,                                           +
+     n_name,                                            +
+     c_address,                                         +
+     c_comment                                          +
+ ORDER BY                                               +
+     revenue DESC                                       +
+ LIMIT 20;                                              +
+ 
+(1 row)
+
+select query as query11 from tpch_queries(11); \gset
+                           query11                           
+-------------------------------------------------------------
+ SELECT                                                     +
+     ps_partkey,                                            +
+     sum(ps_supplycost * ps_availqty) AS value              +
+ FROM                                                       +
+     partsupp,                                              +
+     supplier,                                              +
+     nation                                                 +
+ WHERE                                                      +
+     ps_suppkey = s_suppkey                                 +
+     AND s_nationkey = n_nationkey                          +
+     AND n_name = 'GERMANY'                                 +
+ GROUP BY                                                   +
+     ps_partkey                                             +
+ HAVING                                                     +
+     sum(ps_supplycost * ps_availqty) > (                   +
+         SELECT                                             +
+             sum(ps_supplycost * ps_availqty) * 0.0001000000+
+         FROM                                               +
+             partsupp,                                      +
+             supplier,                                      +
+             nation                                         +
+         WHERE                                              +
+             ps_suppkey = s_suppkey                         +
+             AND s_nationkey = n_nationkey                  +
+             AND n_name = 'GERMANY')                        +
+ ORDER BY                                                   +
+     value DESC;                                            +
+ 
+(1 row)
+
+select query as query12 from tpch_queries(12); \gset
+                       query12                       
+-----------------------------------------------------
+ SELECT                                             +
+     l_shipmode,                                    +
+     sum(                                           +
+         CASE WHEN o_orderpriority = '1-URGENT'     +
+             OR o_orderpriority = '2-HIGH' THEN     +
+             1                                      +
+         ELSE                                       +
+             0                                      +
+         END) AS high_line_count,                   +
+     sum(                                           +
+         CASE WHEN o_orderpriority <> '1-URGENT'    +
+             AND o_orderpriority <> '2-HIGH' THEN   +
+             1                                      +
+         ELSE                                       +
+             0                                      +
+         END) AS low_line_count                     +
+ FROM                                               +
+     orders,                                        +
+     lineitem                                       +
+ WHERE                                              +
+     o_orderkey = l_orderkey                        +
+     AND l_shipmode IN ('MAIL', 'SHIP')             +
+     AND l_commitdate < l_receiptdate               +
+     AND l_shipdate < l_commitdate                  +
+     AND l_receiptdate >= CAST('1994-01-01' AS date)+
+     AND l_receiptdate < CAST('1995-01-01' AS date) +
+ GROUP BY                                           +
+     l_shipmode                                     +
+ ORDER BY                                           +
+     l_shipmode;                                    +
+ 
+(1 row)
+
+select query as query13 from tpch_queries(13); \gset
+                       query13                       
+-----------------------------------------------------
+ SELECT                                             +
+     c_count,                                       +
+     count(*) AS custdist                           +
+ FROM (                                             +
+     SELECT                                         +
+         c_custkey,                                 +
+         count(o_orderkey)                          +
+     FROM                                           +
+         customer                                   +
+     LEFT OUTER JOIN orders ON c_custkey = o_custkey+
+     AND o_comment NOT LIKE '%special%requests%'    +
+ GROUP BY                                           +
+     c_custkey) AS c_orders (c_custkey,             +
+         c_count)                                   +
+ GROUP BY                                           +
+     c_count                                        +
+ ORDER BY                                           +
+     custdist DESC,                                 +
+     c_count DESC;                                  +
+ 
+(1 row)
+
+select query as query14 from tpch_queries(14); \gset
+                                 query14                                 
+-------------------------------------------------------------------------
+ SELECT                                                                 +
+     100.00 * sum(                                                      +
+         CASE WHEN p_type LIKE 'PROMO%' THEN                            +
+             l_extendedprice * (1 - l_discount)                         +
+         ELSE                                                           +
+             0                                                          +
+         END) / sum(l_extendedprice * (1 - l_discount)) AS promo_revenue+
+ FROM                                                                   +
+     lineitem,                                                          +
+     part                                                               +
+ WHERE                                                                  +
+     l_partkey = p_partkey                                              +
+     AND l_shipdate >= date '1995-09-01'                                +
+     AND l_shipdate < CAST('1995-10-01' AS date);                       +
+ 
+(1 row)
+
+select query as query15 from tpch_queries(15); \gset
+                             query15                              
+------------------------------------------------------------------
+ WITH revenue AS (                                               +
+     SELECT                                                      +
+         l_suppkey AS supplier_no,                               +
+         sum(l_extendedprice * (1 - l_discount)) AS total_revenue+
+     FROM                                                        +
+         lineitem                                                +
+     WHERE                                                       +
+         l_shipdate >= CAST('1996-01-01' AS date)                +
+       AND l_shipdate < CAST('1996-04-01' AS date)               +
+     GROUP BY                                                    +
+         supplier_no                                             +
+ )                                                               +
+ SELECT                                                          +
+     s_suppkey,                                                  +
+     s_name,                                                     +
+     s_address,                                                  +
+     s_phone,                                                    +
+     total_revenue                                               +
+ FROM                                                            +
+     supplier,                                                   +
+     revenue                                                     +
+ WHERE                                                           +
+     s_suppkey = supplier_no                                     +
+     AND total_revenue = (                                       +
+         SELECT                                                  +
+             max(total_revenue)                                  +
+         FROM revenue)                                           +
+ ORDER BY                                                        +
+     s_suppkey;                                                  +
+ 
+(1 row)
+
+select query as query16 from tpch_queries(16); \gset
+                       query16                       
+-----------------------------------------------------
+ SELECT                                             +
+     p_brand,                                       +
+     p_type,                                        +
+     p_size,                                        +
+     count(DISTINCT ps_suppkey) AS supplier_cnt     +
+ FROM                                               +
+     partsupp,                                      +
+     part                                           +
+ WHERE                                              +
+     p_partkey = ps_partkey                         +
+     AND p_brand <> 'Brand#45'                      +
+     AND p_type NOT LIKE 'MEDIUM POLISHED%'         +
+     AND p_size IN (49, 14, 23, 45, 19, 3, 36, 9)   +
+     AND ps_suppkey NOT IN (                        +
+         SELECT                                     +
+             s_suppkey                              +
+         FROM                                       +
+             supplier                               +
+         WHERE                                      +
+             s_comment LIKE '%Customer%Complaints%')+
+ GROUP BY                                           +
+     p_brand,                                       +
+     p_type,                                        +
+     p_size                                         +
+ ORDER BY                                           +
+     supplier_cnt DESC,                             +
+     p_brand,                                       +
+     p_type,                                        +
+     p_size;                                        +
+ 
+(1 row)
+
+select query as query17 from tpch_queries(17); \gset
+                   query17                    
+----------------------------------------------
+ SELECT                                      +
+     sum(l_extendedprice) / 7.0 AS avg_yearly+
+ FROM                                        +
+     lineitem,                               +
+     part                                    +
+ WHERE                                       +
+     p_partkey = l_partkey                   +
+     AND p_brand = 'Brand#23'                +
+     AND p_container = 'MED BOX'             +
+     AND l_quantity < (                      +
+         SELECT                              +
+             0.2 * avg(l_quantity)           +
+         FROM                                +
+             lineitem                        +
+         WHERE                               +
+             l_partkey = p_partkey);         +
+ 
+(1 row)
+
+select query as query18 from tpch_queries(18); \gset
+              query18               
+------------------------------------
+ SELECT                            +
+     c_name,                       +
+     c_custkey,                    +
+     o_orderkey,                   +
+     o_orderdate,                  +
+     o_totalprice,                 +
+     sum(l_quantity)               +
+ FROM                              +
+     customer,                     +
+     orders,                       +
+     lineitem                      +
+ WHERE                             +
+     o_orderkey IN (               +
+         SELECT                    +
+             l_orderkey            +
+         FROM                      +
+             lineitem              +
+         GROUP BY                  +
+             l_orderkey            +
+         HAVING                    +
+             sum(l_quantity) > 300)+
+     AND c_custkey = o_custkey     +
+     AND o_orderkey = l_orderkey   +
+ GROUP BY                          +
+     c_name,                       +
+     c_custkey,                    +
+     o_orderkey,                   +
+     o_orderdate,                  +
+     o_totalprice                  +
+ ORDER BY                          +
+     o_totalprice DESC,            +
+     o_orderdate                   +
+ LIMIT 100;                        +
+ 
+(1 row)
+
+select query as query19 from tpch_queries(19); \gset
+                                 query19                                  
+--------------------------------------------------------------------------
+ SELECT                                                                  +
+     sum(l_extendedprice * (1 - l_discount)) AS revenue                  +
+ FROM                                                                    +
+     lineitem,                                                           +
+     part                                                                +
+ WHERE (p_partkey = l_partkey                                            +
+     AND p_brand = 'Brand#12'                                            +
+     AND p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')       +
+     AND l_quantity >= 1                                                 +
+     AND l_quantity <= 1 + 10                                            +
+     AND p_size BETWEEN 1 AND 5                                          +
+     AND l_shipmode IN ('AIR', 'AIR REG')                                +
+     AND l_shipinstruct = 'DELIVER IN PERSON')                           +
+     OR (p_partkey = l_partkey                                           +
+         AND p_brand = 'Brand#23'                                        +
+         AND p_container IN ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK')+
+         AND l_quantity >= 10                                            +
+         AND l_quantity <= 10 + 10                                       +
+         AND p_size BETWEEN 1 AND 10                                     +
+         AND l_shipmode IN ('AIR', 'AIR REG')                            +
+         AND l_shipinstruct = 'DELIVER IN PERSON')                       +
+     OR (p_partkey = l_partkey                                           +
+         AND p_brand = 'Brand#34'                                        +
+         AND p_container IN ('LG CASE', 'LG BOX', 'LG PACK', 'LG PKG')   +
+         AND l_quantity >= 20                                            +
+         AND l_quantity <= 20 + 10                                       +
+         AND p_size BETWEEN 1 AND 15                                     +
+         AND l_shipmode IN ('AIR', 'AIR REG')                            +
+         AND l_shipinstruct = 'DELIVER IN PERSON');                      +
+ 
+(1 row)
+
+select query as query20 from tpch_queries(20); \gset
+                                query20                                
+-----------------------------------------------------------------------
+ SELECT                                                               +
+     s_name,                                                          +
+     s_address                                                        +
+ FROM                                                                 +
+     supplier,                                                        +
+     nation                                                           +
+ WHERE                                                                +
+     s_suppkey IN (                                                   +
+         SELECT                                                       +
+             ps_suppkey                                               +
+         FROM                                                         +
+             partsupp                                                 +
+         WHERE                                                        +
+             ps_partkey IN (                                          +
+                 SELECT                                               +
+                     p_partkey                                        +
+                 FROM                                                 +
+                     part                                             +
+                 WHERE                                                +
+                     p_name LIKE 'forest%')                           +
+                 AND ps_availqty > (                                  +
+                     SELECT                                           +
+                         0.5 * sum(l_quantity)                        +
+                     FROM                                             +
+                         lineitem                                     +
+                     WHERE                                            +
+                         l_partkey = ps_partkey                       +
+                         AND l_suppkey = ps_suppkey                   +
+                         AND l_shipdate >= CAST('1994-01-01' AS date) +
+                         AND l_shipdate < CAST('1995-01-01' AS date)))+
+             AND s_nationkey = n_nationkey                            +
+             AND n_name = 'CANADA'                                    +
+         ORDER BY                                                     +
+             s_name;                                                  +
+ 
+(1 row)
+
+select query as query21 from tpch_queries(21); \gset
+                       query21                       
+-----------------------------------------------------
+ SELECT                                             +
+     s_name,                                        +
+     count(*) AS numwait                            +
+ FROM                                               +
+     supplier,                                      +
+     lineitem l1,                                   +
+     orders,                                        +
+     nation                                         +
+ WHERE                                              +
+     s_suppkey = l1.l_suppkey                       +
+     AND o_orderkey = l1.l_orderkey                 +
+     AND o_orderstatus = 'F'                        +
+     AND l1.l_receiptdate > l1.l_commitdate         +
+     AND EXISTS (                                   +
+         SELECT                                     +
+             *                                      +
+         FROM                                       +
+             lineitem l2                            +
+         WHERE                                      +
+             l2.l_orderkey = l1.l_orderkey          +
+             AND l2.l_suppkey <> l1.l_suppkey)      +
+     AND NOT EXISTS (                               +
+         SELECT                                     +
+             *                                      +
+         FROM                                       +
+             lineitem l3                            +
+         WHERE                                      +
+             l3.l_orderkey = l1.l_orderkey          +
+             AND l3.l_suppkey <> l1.l_suppkey       +
+             AND l3.l_receiptdate > l3.l_commitdate)+
+     AND s_nationkey = n_nationkey                  +
+     AND n_name = 'SAUDI ARABIA'                    +
+ GROUP BY                                           +
+     s_name                                         +
+ ORDER BY                                           +
+     numwait DESC,                                  +
+     s_name                                         +
+ LIMIT 100;                                         +
+ 
+(1 row)
+
+select query as query22 from tpch_queries(22); \gset
+                                              query22                                               
+----------------------------------------------------------------------------------------------------
+ SELECT                                                                                            +
+     cntrycode,                                                                                    +
+     count(*) AS numcust,                                                                          +
+     sum(c_acctbal) AS totacctbal                                                                  +
+ FROM (                                                                                            +
+     SELECT                                                                                        +
+         substring(c_phone FROM 1 FOR 2) AS cntrycode,                                             +
+         c_acctbal                                                                                 +
+     FROM                                                                                          +
+         customer                                                                                  +
+     WHERE                                                                                         +
+         substring(c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17')             +
+         AND c_acctbal > (                                                                         +
+             SELECT                                                                                +
+                 avg(c_acctbal)                                                                    +
+             FROM                                                                                  +
+                 customer                                                                          +
+             WHERE                                                                                 +
+                 c_acctbal > 0.00                                                                  +
+                 AND substring(c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17'))+
+             AND NOT EXISTS (                                                                      +
+                 SELECT                                                                            +
+                     *                                                                             +
+                 FROM                                                                              +
+                     orders                                                                        +
+                 WHERE                                                                             +
+                     o_custkey = c_custkey)) AS custsale                                           +
+ GROUP BY                                                                                          +
+     cntrycode                                                                                     +
+ ORDER BY                                                                                          +
+     cntrycode;                                                                                    +
+ 
+(1 row)
+
+set pg_orca.trace_fallback = on;
+set pg_orca.enable_orca to on;
+\timing on
+explain (costs off ) :query1;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Sort
+   Sort Key: l_returnflag, l_linestatus
+   ->  HashAggregate
+         Group Key: l_returnflag, l_linestatus
+         ->  Seq Scan on lineitem
+               Filter: (l_shipdate <= '09-02-1998'::date)
+ Optimizer: pg_orca
+(7 rows)
+
+Time: 24.510 ms
+Time: 0.332 ms
+explain (costs off ) :query2;
+                                                                     QUERY PLAN                                                                     
+----------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: supplier.s_acctbal DESC, nation_1.n_name, supplier.s_name, part.p_partkey
+         ->  Hash Join
+               Hash Cond: (supplier.s_nationkey = nation_1.n_nationkey)
+               ->  Hash Join
+                     Hash Cond: (supplier.s_suppkey = partsupp.ps_suppkey)
+                     ->  Seq Scan on supplier
+                     ->  Hash
+                           ->  Hash Join
+                                 Hash Cond: ((partsupp.ps_partkey = part.p_partkey) AND (partsupp.ps_supplycost = (min(partsupp_1.ps_supplycost))))
+                                 ->  Seq Scan on partsupp
+                                 ->  Hash
+                                       ->  Result
+                                             ->  Hash Left Join
+                                                   Hash Cond: (part.p_partkey = partsupp_1.ps_partkey)
+                                                   ->  Seq Scan on part
+                                                         Filter: ((p_size = 15) AND ((p_type)::text ~~ '%BRASS'::text))
+                                                   ->  Hash
+                                                         ->  HashAggregate
+                                                               Group Key: partsupp_1.ps_partkey
+                                                               ->  Hash Join
+                                                                     Hash Cond: (partsupp_1.ps_suppkey = supplier_1.s_suppkey)
+                                                                     ->  Seq Scan on partsupp partsupp_1
+                                                                     ->  Hash
+                                                                           ->  Hash Join
+                                                                                 Hash Cond: (supplier_1.s_nationkey = nation.n_nationkey)
+                                                                                 ->  Seq Scan on supplier supplier_1
+                                                                                 ->  Hash
+                                                                                       ->  Nested Loop
+                                                                                             Join Filter: true
+                                                                                             ->  Seq Scan on nation
+                                                                                             ->  Index Scan using region_pkey on region
+                                                                                                   Index Cond: (r_regionkey = nation.n_regionkey)
+                                                                                                   Filter: (r_name = 'EUROPE'::bpchar)
+               ->  Hash
+                     ->  Nested Loop
+                           Join Filter: true
+                           ->  Seq Scan on nation nation_1
+                           ->  Index Scan using region_pkey on region region_1
+                                 Index Cond: (r_regionkey = nation_1.n_regionkey)
+                                 Filter: (r_name = 'EUROPE'::bpchar)
+ Optimizer: pg_orca
+(43 rows)
+
+Time: 1041.835 ms (00:01.042)
+Time: 0.392 ms
+explain (costs off ) :query3;
+                                                     QUERY PLAN                                                      
+---------------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: (sum((lineitem.l_extendedprice * ('1'::numeric - lineitem.l_discount)))) DESC, orders.o_orderdate
+         ->  HashAggregate
+               Group Key: orders.o_orderdate, lineitem.l_orderkey, orders.o_shippriority
+               ->  Hash Join
+                     Hash Cond: (lineitem.l_orderkey = orders.o_orderkey)
+                     ->  Seq Scan on lineitem
+                           Filter: (l_shipdate > '03-15-1995'::date)
+                     ->  Hash
+                           ->  Hash Join
+                                 Hash Cond: (orders.o_custkey = customer.c_custkey)
+                                 ->  Seq Scan on orders
+                                       Filter: (o_orderdate < '03-15-1995'::date)
+                                 ->  Hash
+                                       ->  Seq Scan on customer
+                                             Filter: (c_mktsegment = 'BUILDING'::bpchar)
+ Optimizer: pg_orca
+(18 rows)
+
+Time: 87.289 ms
+Time: 0.384 ms
+explain (costs off ) :query4;
+                                                QUERY PLAN                                                
+----------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: orders.o_orderpriority
+   ->  HashAggregate
+         Group Key: orders.o_orderpriority
+         ->  Hash Join
+               Hash Cond: (orders.o_orderkey = lineitem.l_orderkey)
+               ->  Seq Scan on orders
+                     Filter: ((o_orderdate >= '07-01-1993'::date) AND (o_orderdate < '10-01-1993'::date))
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: lineitem.l_orderkey
+                           ->  Seq Scan on lineitem
+                                 Filter: (l_commitdate < l_receiptdate)
+ Optimizer: pg_orca
+(14 rows)
+
+Time: 57.230 ms
+Time: 0.394 ms
+explain (costs off ) :query5;
+                                                                    QUERY PLAN                                                                    
+--------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: (sum((lineitem.l_extendedprice * ('1'::numeric - lineitem.l_discount)))) DESC
+   ->  HashAggregate
+         Group Key: nation.n_name
+         ->  Hash Join
+               Hash Cond: ((lineitem.l_orderkey = orders.o_orderkey) AND (lineitem.l_suppkey = supplier.s_suppkey))
+               ->  Seq Scan on lineitem
+               ->  Hash
+                     ->  Hash Join
+                           Hash Cond: (orders.o_custkey = customer.c_custkey)
+                           ->  Seq Scan on orders
+                                 Filter: ((o_orderdate >= '01-01-1994'::date) AND (o_orderdate < '01-01-1995'::date))
+                           ->  Hash
+                                 ->  Hash Join
+                                       Hash Cond: ((customer.c_nationkey = nation.n_nationkey) AND (customer.c_nationkey = supplier.s_nationkey))
+                                       ->  Seq Scan on customer
+                                       ->  Hash
+                                             ->  Hash Join
+                                                   Hash Cond: (supplier.s_nationkey = nation.n_nationkey)
+                                                   ->  Seq Scan on supplier
+                                                   ->  Hash
+                                                         ->  Nested Loop
+                                                               Join Filter: true
+                                                               ->  Seq Scan on nation
+                                                               ->  Index Scan using region_pkey on region
+                                                                     Index Cond: (r_regionkey = nation.n_regionkey)
+                                                                     Filter: (r_name = 'ASIA'::bpchar)
+ Optimizer: pg_orca
+(28 rows)
+
+Time: 1516.905 ms (00:01.517)
+Time: 0.425 ms
+explain (costs off ) :query6;
+                                                                                  QUERY PLAN                                                                                   
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Seq Scan on lineitem
+         Filter: ((l_shipdate >= '01-01-1994'::date) AND (l_shipdate < '01-01-1995'::date) AND (l_discount >= 0.05) AND (l_discount <= 0.07) AND (l_quantity < '24'::numeric))
+ Optimizer: pg_orca
+(4 rows)
+
+Time: 9.416 ms
+Time: 0.409 ms
+explain (costs off ) :query7;
+                                                                                                     QUERY PLAN                                                                                                      
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate
+   Group Key: n1.n_name, n2.n_name, (EXTRACT(year FROM lineitem.l_shipdate))
+   ->  Sort
+         Sort Key: n1.n_name, n2.n_name, (EXTRACT(year FROM lineitem.l_shipdate))
+         ->  Result
+               ->  Hash Join
+                     Hash Cond: ((lineitem.l_suppkey = supplier.s_suppkey) AND (orders.o_custkey = customer.c_custkey))
+                     ->  Hash Join
+                           Hash Cond: (lineitem.l_orderkey = orders.o_orderkey)
+                           ->  Seq Scan on lineitem
+                                 Filter: ((l_shipdate >= '01-01-1995'::date) AND (l_shipdate <= '12-31-1996'::date))
+                           ->  Hash
+                                 ->  Seq Scan on orders
+                     ->  Hash
+                           ->  Hash Join
+                                 Hash Cond: (customer.c_nationkey = n2.n_nationkey)
+                                 ->  Seq Scan on customer
+                                 ->  Hash
+                                       ->  Hash Join
+                                             Hash Cond: (supplier.s_nationkey = n1.n_nationkey)
+                                             ->  Seq Scan on supplier
+                                             ->  Hash
+                                                   ->  Nested Loop
+                                                         Join Filter: (((n1.n_name = 'FRANCE'::bpchar) AND (n2.n_name = 'GERMANY'::bpchar)) OR ((n1.n_name = 'GERMANY'::bpchar) AND (n2.n_name = 'FRANCE'::bpchar)))
+                                                         ->  Seq Scan on nation n1
+                                                               Filter: ((n_name = 'FRANCE'::bpchar) OR (n_name = 'GERMANY'::bpchar))
+                                                         ->  Materialize
+                                                               ->  Seq Scan on nation n2
+                                                                     Filter: ((n_name = 'GERMANY'::bpchar) OR (n_name = 'FRANCE'::bpchar))
+ Optimizer: pg_orca
+(30 rows)
+
+Time: 659.392 ms
+Time: 0.515 ms
+explain (costs off ) :query8;
+                                                                  QUERY PLAN                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------
+ Result
+   ->  Sort
+         Sort Key: (EXTRACT(year FROM orders.o_orderdate))
+         ->  HashAggregate
+               Group Key: EXTRACT(year FROM orders.o_orderdate)
+               ->  Result
+                     ->  Hash Join
+                           Hash Cond: (part.p_partkey = lineitem.l_partkey)
+                           ->  Seq Scan on part
+                                 Filter: ((p_type)::text = 'ECONOMY ANODIZED STEEL'::text)
+                           ->  Hash
+                                 ->  Hash Join
+                                       Hash Cond: ((lineitem.l_suppkey = supplier.s_suppkey) AND (lineitem.l_orderkey = orders.o_orderkey))
+                                       ->  Seq Scan on lineitem
+                                       ->  Hash
+                                             ->  Hash Join
+                                                   Hash Cond: (orders.o_custkey = customer.c_custkey)
+                                                   ->  Seq Scan on orders
+                                                         Filter: ((o_orderdate >= '01-01-1995'::date) AND (o_orderdate <= '12-31-1996'::date))
+                                                   ->  Hash
+                                                         ->  Hash Join
+                                                               Hash Cond: (n1.n_nationkey = customer.c_nationkey)
+                                                               ->  Hash Join
+                                                                     Hash Cond: (region.r_regionkey = n1.n_regionkey)
+                                                                     ->  Nested Loop
+                                                                           Join Filter: true
+                                                                           ->  Hash Join
+                                                                                 Hash Cond: (supplier.s_nationkey = n2.n_nationkey)
+                                                                                 ->  Seq Scan on supplier
+                                                                                 ->  Hash
+                                                                                       ->  Seq Scan on nation n2
+                                                                           ->  Materialize
+                                                                                 ->  Seq Scan on region
+                                                                                       Filter: (r_name = 'AMERICA'::bpchar)
+                                                                     ->  Hash
+                                                                           ->  Seq Scan on nation n1
+                                                               ->  Hash
+                                                                     ->  Seq Scan on customer
+ Optimizer: pg_orca
+(39 rows)
+
+Time: 2022.210 ms (00:02.022)
+Time: 0.414 ms
+explain (costs off ) :query9;
+                                                                        QUERY PLAN                                                                        
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: nation.n_name, (EXTRACT(year FROM orders.o_orderdate)) DESC
+   ->  HashAggregate
+         Group Key: nation.n_name, EXTRACT(year FROM orders.o_orderdate)
+         ->  Result
+               ->  Hash Join
+                     Hash Cond: (orders.o_orderkey = lineitem.l_orderkey)
+                     ->  Seq Scan on orders
+                     ->  Hash
+                           ->  Hash Join
+                                 Hash Cond: ((lineitem.l_partkey = part.p_partkey) AND (partsupp.ps_partkey = part.p_partkey))
+                                 ->  Hash Join
+                                       Hash Cond: ((supplier.s_suppkey = lineitem.l_suppkey) AND (supplier.s_suppkey = partsupp.ps_suppkey))
+                                       ->  Hash Join
+                                             Hash Cond: (supplier.s_nationkey = nation.n_nationkey)
+                                             ->  Seq Scan on supplier
+                                             ->  Hash
+                                                   ->  Seq Scan on nation
+                                       ->  Hash
+                                             ->  Hash Join
+                                                   Hash Cond: ((lineitem.l_suppkey = partsupp.ps_suppkey) AND (lineitem.l_partkey = partsupp.ps_partkey))
+                                                   ->  Seq Scan on lineitem
+                                                   ->  Hash
+                                                         ->  Seq Scan on partsupp
+                                 ->  Hash
+                                       ->  Seq Scan on part
+                                             Filter: ((p_name)::text ~~ '%green%'::text)
+ Optimizer: pg_orca
+(28 rows)
+
+Time: 1901.613 ms (00:01.902)
+Time: 0.516 ms
+explain (costs off ) :query10;
+                                                                        QUERY PLAN                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: (sum((lineitem.l_extendedprice * ('1'::numeric - lineitem.l_discount)))) DESC
+         ->  HashAggregate
+               Group Key: customer.c_custkey, customer.c_name, customer.c_acctbal, customer.c_phone, nation.n_name, customer.c_address, customer.c_comment
+               ->  Hash Join
+                     Hash Cond: (orders.o_custkey = customer.c_custkey)
+                     ->  Hash Join
+                           Hash Cond: (lineitem.l_orderkey = orders.o_orderkey)
+                           ->  Seq Scan on lineitem
+                                 Filter: (l_returnflag = 'R'::bpchar)
+                           ->  Hash
+                                 ->  Seq Scan on orders
+                                       Filter: ((o_orderdate >= '10-01-1993'::date) AND (o_orderdate < '01-01-1994'::date))
+                     ->  Hash
+                           ->  Hash Join
+                                 Hash Cond: (customer.c_nationkey = nation.n_nationkey)
+                                 ->  Seq Scan on customer
+                                 ->  Hash
+                                       ->  Seq Scan on nation
+ Optimizer: pg_orca
+(21 rows)
+
+Time: 194.286 ms
+Time: 0.542 ms
+explain (costs off ) :query11;
+                                                                                     QUERY PLAN                                                                                      
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: (sum((partsupp.ps_supplycost * (partsupp.ps_availqty)::numeric))) DESC
+   ->  Nested Loop
+         Join Filter: ((sum((partsupp.ps_supplycost * (partsupp.ps_availqty)::numeric))) > (((sum((partsupp_1.ps_supplycost * (partsupp_1.ps_availqty)::numeric))) * 0.0001000000)))
+         ->  Result
+               ->  Aggregate
+                     ->  Hash Join
+                           Hash Cond: (partsupp_1.ps_suppkey = supplier_1.s_suppkey)
+                           ->  Seq Scan on partsupp partsupp_1
+                           ->  Hash
+                                 ->  Hash Join
+                                       Hash Cond: (supplier_1.s_nationkey = nation_1.n_nationkey)
+                                       ->  Seq Scan on supplier supplier_1
+                                       ->  Hash
+                                             ->  Seq Scan on nation nation_1
+                                                   Filter: (n_name = 'GERMANY'::bpchar)
+         ->  HashAggregate
+               Group Key: partsupp.ps_partkey
+               ->  Hash Join
+                     Hash Cond: (partsupp.ps_suppkey = supplier.s_suppkey)
+                     ->  Seq Scan on partsupp
+                     ->  Hash
+                           ->  Hash Join
+                                 Hash Cond: (supplier.s_nationkey = nation.n_nationkey)
+                                 ->  Seq Scan on supplier
+                                 ->  Hash
+                                       ->  Seq Scan on nation
+                                             Filter: (n_name = 'GERMANY'::bpchar)
+ Optimizer: pg_orca
+(29 rows)
+
+Time: 149.334 ms
+Time: 0.536 ms
+explain (costs off ) :query12;
+                                                                                                            QUERY PLAN                                                                                                            
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: lineitem.l_shipmode
+   ->  HashAggregate
+         Group Key: lineitem.l_shipmode
+         ->  Hash Join
+               Hash Cond: (lineitem.l_orderkey = orders.o_orderkey)
+               ->  Seq Scan on lineitem
+                     Filter: ((l_shipmode = ANY ('{MAIL,SHIP}'::bpchar[])) AND (l_commitdate < l_receiptdate) AND (l_shipdate < l_commitdate) AND (l_receiptdate >= '01-01-1994'::date) AND (l_receiptdate < '01-01-1995'::date))
+               ->  Hash
+                     ->  Seq Scan on orders
+ Optimizer: pg_orca
+(11 rows)
+
+Time: 33.543 ms
+Time: 0.511 ms
+explain (costs off ) :query13;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Sort
+   Sort Key: (count(*)) DESC, (count(orders.o_orderkey)) DESC
+   ->  HashAggregate
+         Group Key: count(orders.o_orderkey)
+         ->  HashAggregate
+               Group Key: customer.c_custkey
+               ->  Hash Right Join
+                     Hash Cond: (orders.o_custkey = customer.c_custkey)
+                     ->  Seq Scan on orders
+                           Filter: ((o_comment)::text !~~ '%special%requests%'::text)
+                     ->  Hash
+                           ->  Seq Scan on customer
+ Optimizer: pg_orca
+(13 rows)
+
+Time: 15.788 ms
+Time: 0.474 ms
+explain (costs off ) :query14;
+                                               QUERY PLAN                                               
+--------------------------------------------------------------------------------------------------------
+ Result
+   ->  Aggregate
+         ->  Hash Join
+               Hash Cond: (lineitem.l_partkey = part.p_partkey)
+               ->  Seq Scan on lineitem
+                     Filter: ((l_shipdate >= '09-01-1995'::date) AND (l_shipdate < '10-01-1995'::date))
+               ->  Hash
+                     ->  Seq Scan on part
+ Optimizer: pg_orca
+(9 rows)
+
+Time: 17.965 ms
+Time: 0.436 ms
+explain (costs off ) :query15;
+INFO:  pg_orca: falling back to standard planner
+                                             QUERY PLAN                                             
+----------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: supplier.s_suppkey
+   CTE revenue
+     ->  HashAggregate
+           Group Key: lineitem.l_suppkey
+           ->  Seq Scan on lineitem
+                 Filter: ((l_shipdate >= '01-01-1996'::date) AND (l_shipdate < '04-01-1996'::date))
+   InitPlan 2
+     ->  Aggregate
+           ->  CTE Scan on revenue revenue_1
+   ->  Nested Loop
+         ->  CTE Scan on revenue
+               Filter: (total_revenue = (InitPlan 2).col1)
+         ->  Index Scan using supplier_pkey on supplier
+               Index Cond: (s_suppkey = revenue.supplier_no)
+(15 rows)
+
+Time: 113.720 ms
+Time: 0.245 ms
+explain (costs off ) :query16;
+                                                                                   QUERY PLAN                                                                                    
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: (count(partsupp.ps_suppkey)) DESC, part.p_brand, part.p_type, part.p_size
+   ->  HashAggregate
+         Group Key: part.p_brand, part.p_type, part.p_size
+         ->  HashAggregate
+               Group Key: part.p_brand, part.p_type, part.p_size, partsupp.ps_suppkey
+               ->  Hash Join
+                     Hash Cond: (part.p_partkey = partsupp.ps_partkey)
+                     ->  Seq Scan on part
+                           Filter: ((p_brand <> 'Brand#45'::bpchar) AND ((p_type)::text !~~ 'MEDIUM POLISHED%'::text) AND (p_size = ANY ('{49,14,23,45,19,3,36,9}'::integer[])))
+                     ->  Hash
+                           ->  Hash Anti Join
+                                 Hash Cond: (partsupp.ps_suppkey = supplier.s_suppkey)
+                                 ->  Seq Scan on partsupp
+                                 ->  Hash
+                                       ->  Seq Scan on supplier
+                                             Filter: ((s_comment)::text ~~ '%Customer%Complaints%'::text)
+ Optimizer: pg_orca
+(18 rows)
+
+Time: 55.142 ms
+Time: 0.289 ms
+explain (costs off ) :query17;
+                                                      QUERY PLAN                                                      
+----------------------------------------------------------------------------------------------------------------------
+ Result
+   ->  Aggregate
+         ->  Hash Join
+               Hash Cond: (lineitem.l_partkey = part.p_partkey)
+               Join Filter: (lineitem.l_quantity < ((0.2 * (avg(lineitem_1.l_quantity)))))
+               ->  Seq Scan on lineitem
+               ->  Hash
+                     ->  Result
+                           ->  Hash Left Join
+                                 Hash Cond: (part.p_partkey = lineitem_1.l_partkey)
+                                 ->  Seq Scan on part
+                                       Filter: ((p_brand = 'Brand#23'::bpchar) AND (p_container = 'MED BOX'::bpchar))
+                                 ->  Hash
+                                       ->  Result
+                                             ->  HashAggregate
+                                                   Group Key: lineitem_1.l_partkey
+                                                   ->  Seq Scan on lineitem lineitem_1
+ Optimizer: pg_orca
+(18 rows)
+
+Time: 30.685 ms
+Time: 0.418 ms
+explain (costs off ) :query18;
+                                                           QUERY PLAN                                                           
+--------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: orders.o_totalprice DESC, orders.o_orderdate
+         ->  Hash Join
+               Hash Cond: (orders.o_orderkey = lineitem_1.l_orderkey)
+               ->  HashAggregate
+                     Group Key: orders.o_totalprice, orders.o_orderdate, customer.c_name, customer.c_custkey, orders.o_orderkey
+                     ->  Hash Join
+                           Hash Cond: (lineitem.l_orderkey = orders.o_orderkey)
+                           ->  Seq Scan on lineitem
+                           ->  Hash
+                                 ->  Hash Join
+                                       Hash Cond: (orders.o_custkey = customer.c_custkey)
+                                       ->  Seq Scan on orders
+                                       ->  Hash
+                                             ->  Seq Scan on customer
+               ->  Hash
+                     ->  Result
+                           Filter: ((sum(lineitem_1.l_quantity)) > (300)::numeric)
+                           ->  HashAggregate
+                                 Group Key: lineitem_1.l_orderkey
+                                 ->  Seq Scan on lineitem lineitem_1
+ Optimizer: pg_orca
+(23 rows)
+
+Time: 462.018 ms
+Time: 0.483 ms
+explain (costs off ) :query19;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   QUERY PLAN                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Nested Loop
+         Join Filter: true
+         ->  Seq Scan on lineitem
+               Filter: ((l_shipmode = ANY ('{AIR,"AIR REG"}'::bpchar[])) AND (l_shipinstruct = 'DELIVER IN PERSON'::bpchar) AND (((l_quantity >= '1'::numeric) AND (l_quantity <= '11'::numeric)) OR ((l_quantity >= '10'::numeric) AND (l_quantity <= '20'::numeric)) OR ((l_quantity >= '20'::numeric) AND (l_quantity <= '30'::numeric))))
+         ->  Index Scan using part_pkey on part
+               Index Cond: (p_partkey = lineitem.l_partkey)
+               Filter: ((((p_brand = 'Brand#12'::bpchar) AND (p_container = ANY ('{"SM CASE","SM BOX","SM PACK","SM PKG"}'::bpchar[])) AND (lineitem.l_quantity >= '1'::numeric) AND (lineitem.l_quantity <= '11'::numeric) AND (p_size <= 5)) OR ((p_brand = 'Brand#23'::bpchar) AND (p_container = ANY ('{"MED BAG","MED BOX","MED PKG","MED PACK"}'::bpchar[])) AND (lineitem.l_quantity >= '10'::numeric) AND (lineitem.l_quantity <= '20'::numeric) AND (p_size <= 10)) OR ((p_brand = 'Brand#34'::bpchar) AND (p_container = ANY ('{"LG CASE","LG BOX","LG PACK","LG PKG"}'::bpchar[])) AND (lineitem.l_quantity >= '20'::numeric) AND (lineitem.l_quantity <= '30'::numeric) AND (p_size <= 15))) AND (p_size >= 1) AND (((p_brand = 'Brand#12'::bpchar) AND (p_container = ANY ('{"SM CASE","SM BOX","SM PACK","SM PKG"}'::bpchar[])) AND (p_size <= 5)) OR ((p_brand = 'Brand#23'::bpchar) AND (p_container = ANY ('{"MED BAG","MED BOX","MED PKG","MED PACK"}'::bpchar[])) AND (p_size <= 10)) OR ((p_brand = 'Brand#34'::bpchar) AND (p_container = ANY ('{"LG CASE","LG BOX","LG PACK","LG PKG"}'::bpchar[])) AND (p_size <= 15))))
+ Optimizer: pg_orca
+(9 rows)
+
+Time: 78.896 ms
+Time: 0.490 ms
+explain (costs off ) :query20;
+                                                                            QUERY PLAN                                                                            
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: supplier.s_name
+   ->  Hash Join
+         Hash Cond: (supplier.s_nationkey = nation.n_nationkey)
+         ->  Hash Join
+               Hash Cond: (supplier.s_suppkey = partsupp.ps_suppkey)
+               ->  Seq Scan on supplier
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: partsupp.ps_suppkey
+                           ->  Hash Join
+                                 Hash Cond: ((partsupp.ps_partkey = lineitem.l_partkey) AND (partsupp.ps_suppkey = lineitem.l_suppkey))
+                                 Join Filter: ((partsupp.ps_availqty)::numeric > ((0.5 * (sum(lineitem.l_quantity)))))
+                                 ->  Result
+                                       Filter: (CASE WHEN ((count(*)) = '-1'::bigint) THEN NULL::bigint ELSE COALESCE((count(*)), '0'::bigint) END > '0'::bigint)
+                                       ->  Result
+                                             ->  Hash Left Join
+                                                   Hash Cond: (partsupp.ps_partkey = part.p_partkey)
+                                                   ->  Seq Scan on partsupp
+                                                   ->  Hash
+                                                         ->  GroupAggregate
+                                                               Group Key: part.p_partkey
+                                                               ->  Seq Scan on part
+                                                                     Filter: ((p_name)::text ~~ 'forest%'::text)
+                                 ->  Hash
+                                       ->  Result
+                                             ->  HashAggregate
+                                                   Group Key: lineitem.l_partkey, lineitem.l_suppkey
+                                                   ->  Seq Scan on lineitem
+                                                         Filter: ((l_shipdate >= '01-01-1994'::date) AND (l_shipdate < '01-01-1995'::date))
+         ->  Hash
+               ->  Seq Scan on nation
+                     Filter: (n_name = 'CANADA'::bpchar)
+ Optimizer: pg_orca
+(34 rows)
+
+Time: 210.639 ms
+Time: 0.507 ms
+explain (costs off ) :query21;
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: (count(*)) DESC, supplier.s_name
+         ->  HashAggregate
+               Group Key: supplier.s_name
+               ->  Hash Join
+                     Hash Cond: (orders.o_orderkey = l1.l_orderkey)
+                     ->  Seq Scan on orders
+                           Filter: (o_orderstatus = 'F'::bpchar)
+                     ->  Hash
+                           ->  Hash Join
+                                 Hash Cond: (supplier.s_suppkey = l1.l_suppkey)
+                                 ->  Hash Join
+                                       Hash Cond: (supplier.s_nationkey = nation.n_nationkey)
+                                       ->  Seq Scan on supplier
+                                       ->  Hash
+                                             ->  Seq Scan on nation
+                                                   Filter: (n_name = 'SAUDI ARABIA'::bpchar)
+                                 ->  Hash
+                                       ->  Hash Anti Join
+                                             Hash Cond: (l1.l_orderkey = l3.l_orderkey)
+                                             Join Filter: (l3.l_suppkey <> l1.l_suppkey)
+                                             ->  Hash Semi Join
+                                                   Hash Cond: (l1.l_orderkey = l2.l_orderkey)
+                                                   Join Filter: (l2.l_suppkey <> l1.l_suppkey)
+                                                   ->  Seq Scan on lineitem l1
+                                                         Filter: (l_receiptdate > l_commitdate)
+                                                   ->  Hash
+                                                         ->  Seq Scan on lineitem l2
+                                             ->  Hash
+                                                   ->  Seq Scan on lineitem l3
+                                                         Filter: (l_receiptdate > l_commitdate)
+ Optimizer: pg_orca
+(33 rows)
+
+Time: 2062.492 ms (00:02.062)
+Time: 0.547 ms
+explain (costs off ) :query22;
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate
+   Group Key: (SUBSTRING(customer.c_phone FROM 1 FOR 2))
+   ->  Sort
+         Sort Key: (SUBSTRING(customer.c_phone FROM 1 FOR 2))
+         ->  Result
+               ->  Result
+                     Filter: (COALESCE((count(*)), '0'::bigint) = '0'::bigint)
+                     ->  Result
+                           ->  Hash Left Join
+                                 Hash Cond: (customer.c_custkey = orders.o_custkey)
+                                 ->  Nested Loop
+                                       Join Filter: (customer.c_acctbal > (avg(customer_1.c_acctbal)))
+                                       ->  Aggregate
+                                             ->  Seq Scan on customer customer_1
+                                                   Filter: ((c_acctbal > 0.00) AND (SUBSTRING(c_phone FROM 1 FOR 2) = ANY ('{13,31,23,29,30,18,17}'::text[])))
+                                       ->  Materialize
+                                             ->  Seq Scan on customer
+                                                   Filter: (SUBSTRING(c_phone FROM 1 FOR 2) = ANY ('{13,31,23,29,30,18,17}'::text[]))
+                                 ->  Hash
+                                       ->  HashAggregate
+                                             Group Key: orders.o_custkey
+                                             ->  Seq Scan on orders
+ Optimizer: pg_orca
+(23 rows)
+
+Time: 34.668 ms
+Time: 0.488 ms
+SELECT drop_tpch_tables();
+             drop_tpch_tables              
+-------------------------------------------
+ Dropped TPC-H tables from schema "public"
+(1 row)
+
+Time: 115.150 ms

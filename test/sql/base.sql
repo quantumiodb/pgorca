@@ -203,3 +203,6 @@ SELECT o_orderkey, sum(o_custkey + o_orderkey)/20 FROM orders GROUP BY o_orderke
 -- Correlated subquery with execution
 SELECT * FROM orders WHERE EXISTS (SELECT 1 FROM nation WHERE nation.n_regionkey = orders.o_custkey AND nation.n_regionkey = 10);
 SELECT *, (SELECT 2 FROM nation WHERE nation.n_regionkey = orders.o_custkey AND nation.n_regionkey = 10) FROM orders WHERE EXISTS (SELECT 1 FROM nation WHERE nation.n_regionkey = orders.o_custkey AND nation.n_regionkey = 10);
+
+-- Cleanup: drop tables created in this test so subsequent tests start clean.
+DROP TABLE IF EXISTS nation, customer, orders, product, sale, test_table, boolindex CASCADE;

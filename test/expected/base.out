@@ -939,3 +939,6 @@ SELECT *, (SELECT 2 FROM nation WHERE nation.n_regionkey = orders.o_custkey AND 
 ------------+-----------+---------------+--------------+-------------+-----------------+---------+----------------+-----------+----------
 (0 rows)
 
+-- Cleanup: drop tables created in this test so subsequent tests start clean.
+DROP TABLE IF EXISTS nation, customer, orders, product, sale, test_table, boolindex CASCADE;
+NOTICE:  table "boolindex" does not exist, skipping
