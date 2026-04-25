@@ -82,6 +82,22 @@ COMMON_OPTS=(
 )
 
 if [[ $USE_EXISTING -eq 0 ]]; then
+    # Clean up or bail out if a previous temp instance directory exists.
+    # pg_regress reuses the directory and may pick the same port, causing
+    # "not yet accepting connections" failures in the first batch of tests.
+    if [[ -d "$TEMP_INSTANCE" ]]; then
+        if [[ -f "$TEMP_INSTANCE/data/postmaster.pid" ]]; then
+            _stale_pid=$(head -1 "$TEMP_INSTANCE/data/postmaster.pid" 2>/dev/null)
+            if kill -0 "$_stale_pid" 2>/dev/null; then
+                echo "ERROR: a previous test instance (PID $_stale_pid) is still running." >&2
+                echo "  Stop it first:  pg_ctl stop -D '$TEMP_INSTANCE/data'" >&2
+                echo "  Or remove the directory:  rm -rf '$TEMP_INSTANCE'" >&2
+                exit 1
+            fi
+        fi
+        echo "WARNING: removing stale temp instance directory: $TEMP_INSTANCE" >&2
+        rm -rf "$TEMP_INSTANCE"
+    fi
     COMMON_OPTS+=(--temp-instance="$TEMP_INSTANCE")
 fi
 

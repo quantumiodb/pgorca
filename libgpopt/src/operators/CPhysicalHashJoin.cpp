@@ -1319,8 +1319,12 @@ CPhysicalHashJoin::PppsRequiredForJoins(CMemoryPool *mp,
 
 	CColRefSet *pcrsOutputInner = exprhdl.DeriveOutputColumns(1);
 
+	// Anti-semi-joins (NOT EXISTS / NOT IN) must scan ALL outer
+	// partitions: rows from partitions with no inner match should all
+	// appear in the result.  Applying DPE (partition selector) on the
+	// outer side would incorrectly prune those partitions away.
 	CPartitionPropagationSpec *pps_result;
-	if (ulOptReq == 0)
+	if (ulOptReq == 0 && !CUtils::FAntiSemiHashJoin(exprhdl.Pop()))
 	{
 		// DPE: create a new request
 		pps_result = GPOS_NEW(mp) CPartitionPropagationSpec(mp);
