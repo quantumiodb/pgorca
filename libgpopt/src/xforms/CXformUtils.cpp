@@ -4257,25 +4257,27 @@ CXformUtils::FCoverIndex(CMemoryPool *mp, CIndexDescriptor *pindexdesc,
 		mp, pdrgpcrOutput, pmdindex, pmdrel);
 	CColRefSet *output_cols = GPOS_NEW(mp) CColRefSet(mp);
 
-	// An index only scan is allowed iff each used output column reference also
-	// exists as a column in the index.
+	// An index only scan is allowed iff each used non-system output column
+	// exists as a returnable column in the index.
+	//
+	// System columns (ctid, xmin, cmin, xmax, cmax, tableoid) are intentionally
+	// excluded: in an Index Only Scan, visibility is determined via the
+	// visibility map rather than heap tuple system fields, so no index AM needs
+	// to return them.  Including system columns here would prevent GiST (and
+	// other non-btree AMs that implement amcanreturn for their key columns) from
+	// ever being chosen for Index Only Scan, even when all user columns are
+	// returnable.
 	for (ULONG i = 0; i < pdrgpcrOutput->Size(); i++)
 	{
 		CColRef *col = (*pdrgpcrOutput)[i];
 
-		// In most cases we want to treat system columns unconditionally as
-		// used. This is because certain transforms like those for DML or
-		// CXformPushGbBelowJoin use unique keys in the derived properties,
-		// even if they are not referenced in the query. Those keys are system
-		// columns gp_segment_id and ctid. We also treat distribution columns
-		// as used, since they appear in the CDistributionSpecHashed of
-		// physical properties and therefore might be used in the plan.
-		//
-		// NB: Because 'pexpr' is not a scalar expression, we cannot derive
-		// scalar properties (e.g. PcrsUsed/DeriveUsedColumns). So instead, we
-		// check the used columns via GetUsage. DeriveOutputColumns could also
-		// work, but would need a flag to include system/distribution columns.
-		if (col->GetUsage(true /*check_system_cols*/,
+		// Skip system columns — they are never returned by the index AM.
+		if (col->IsSystemCol())
+		{
+			continue;
+		}
+
+		if (col->GetUsage(false /*check_system_cols*/,
 						  true /*check_distribution_col*/) == CColRef::EUsed)
 		{
 			output_cols->Include(col);
