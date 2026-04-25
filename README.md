@@ -22,7 +22,7 @@ This project extracts ORCA's four core libraries and the PostgreSQL integration 
 
 ## Requirements
 
-- PostgreSQL 18
+- PostgreSQL 18 (commit 8a431b6d)
 - [xerces-c](https://xerces.apache.org/xerces-c/) (XML parsing for DXL)
 - CMake ≥ 3.16
 - C++17 compiler (clang or gcc)
