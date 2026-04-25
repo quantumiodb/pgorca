@@ -275,14 +275,53 @@ CTranslatorDXLToPlStmt::GetPlannedStmtFromDXL(const CDXLNode *dxlnode,
 	planned_stmt->subplans = m_dxl_to_plstmt_context->GetSubplanEntriesList();
 	planned_stmt->planTree = plan;
 
-	/* PG18: mark all RT entries as unprunable so the executor doesn't
-	 * reject them with "trying to open a pruned relation". ORCA does not
-	 * use runtime partition pruning, so every RT entry is always needed. */
+	/* Wire up partition pruning information collected during translation. */
+	planned_stmt->partPruneInfos =
+		m_dxl_to_plstmt_context->GetPartPruneInfos();
+
+	/* Compute unprunableRelids: start with every RT index, then remove the
+	 * partition-leaf RT indexes that are covered by partPruneInfos.  Those
+	 * leaves must NOT be in unprunableRelids so that ExecDoInitialPruning can
+	 * selectively add only the surviving ones to es_unpruned_relids.
+	 * Entries not covered by any PartitionPruneInfo (non-partitioned tables,
+	 * root partition RTEs) stay in the set and are always opened. */
 	{
 		int rtsize = list_length(planned_stmt->rtable);
 		for (int i = 1; i <= rtsize; i++)
 			planned_stmt->unprunableRelids =
 				bms_add_member(planned_stmt->unprunableRelids, i);
+
+		ListCell *lc1;
+		foreach(lc1, planned_stmt->partPruneInfos)
+		{
+			PartitionPruneInfo *pi = (PartitionPruneInfo *) lfirst(lc1);
+			ListCell *lc2;
+			foreach(lc2, pi->prune_infos)
+			{
+				List *hierarchy = (List *) lfirst(lc2);
+				ListCell *lc3;
+				foreach(lc3, hierarchy)
+				{
+					PartitionedRelPruneInfo *pdata =
+						(PartitionedRelPruneInfo *) lfirst(lc3);
+					// Only remove leaves when initial pruning steps exist.
+					// For exec-only (DPE) pruning, leaves must stay in
+					// unprunableRelids so SeqScans can open them at startup;
+					// ExecDoInitialPruning won't add them back for the
+					// exec_pruning_steps-only case.
+					if (pdata->initial_pruning_steps != NIL)
+					{
+						for (int i = 0; i < pdata->nparts; i++)
+						{
+							if (pdata->leafpart_rti_map[i] != 0)
+								planned_stmt->unprunableRelids =
+									bms_del_member(planned_stmt->unprunableRelids,
+												   pdata->leafpart_rti_map[i]);
+						}
+					}
+				}
+			}
+		}
 	}
 
 	planned_stmt->canSetTag = can_set_tag;
@@ -2355,9 +2394,12 @@ CTranslatorDXLToPlStmt::TranslateDXLMergeJoin(
 
 	merge_join->mergeFamilies =
 		(Oid *) gpdb::GPDBAlloc(sizeof(Oid) * num_join_conds);
-	/* mergeStrategies removed from PG18's MergeJoin */
 	merge_join->mergeCollations =
 		(Oid *) gpdb::GPDBAlloc(sizeof(Oid) * num_join_conds);
+	/* PG18: mergeReversals replaces mergeStrategies. ORCA always sorts merge
+	 * keys ascending (using '<'), so reversals are always false. */
+	merge_join->mergeReversals =
+		(bool *) gpdb::GPDBAlloc(sizeof(bool) * num_join_conds);
 	merge_join->mergeNullsFirst =
 		(bool *) gpdb::GPDBAlloc(sizeof(bool) * num_join_conds);
 
@@ -2389,8 +2431,7 @@ CTranslatorDXLToPlStmt::TranslateDXLMergeJoin(
 
 			merge_join->mergeCollations[ul] =
 				gpdb::ExprCollation((Node *) leftarg);
-
-			/* mergeStrategies removed from PG18's MergeJoin */
+			merge_join->mergeReversals[ul] = false;
 			merge_join->mergeNullsFirst[ul] = false;
 			++ul;
 		}
@@ -3341,7 +3382,7 @@ CTranslatorDXLToPlStmt::TranslateDXLWindow(
 		// translate the window frame specified in the window key
 		if (nullptr != window_key->GetWindowFrame())
 		{
-			window->frameOptions = FRAMEOPTION_NONDEFAULT;
+			window->frameOptions = FRAMEOPTION_NONDEFAULT | FRAMEOPTION_BETWEEN;
 			if (EdxlfsRow == window_frame->ParseDXLFrameSpec())
 			{
 				window->frameOptions |= FRAMEOPTION_ROWS;
@@ -4025,7 +4066,10 @@ CTranslatorDXLToPlStmt::TranslateDXLResult(
 //		CTranslatorDXLToPlStmt::TranslateDXLPartSelector
 //
 //	@doc:
-//		Translate DXL PartitionSelector into a GPDB PartitionSelector node
+//		Translate DXL PartitionSelector into PG18 partition pruning by wiring
+//		a PartitionPruneInfo onto the child Append node.  PG18 has no
+//		PartitionSelector executor; pruning is driven via
+//		PlannedStmt.partPruneInfos + Append.part_prune_index instead.
 //
 //---------------------------------------------------------------------------
 Plan *
@@ -4034,77 +4078,124 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 	CDXLTranslateContext *output_context,
 	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
 {
-	PartitionSelector *partition_selector = MakeNode(PartitionSelector);
-
-	Plan *plan = &(partition_selector->plan);
-	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
 	CDXLPhysicalPartitionSelector *partition_selector_dxlop =
 		CDXLPhysicalPartitionSelector::Cast(
 			partition_selector_dxlnode->GetOperator());
 
-	TranslatePlanCosts(partition_selector_dxlnode, plan);
-
-	CDXLNode *child_dxlnode = nullptr;
 	CDXLTranslationContextArray *child_contexts =
 		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
-
 	CDXLTranslateContext child_context(m_mp, false,
 									   output_context->GetColIdToParamIdMap());
 
-	// translate child plan
-	child_dxlnode = (*partition_selector_dxlnode)[2];
-
+	// 1. Translate child plan (CDXLPhysicalAppend → Append + SeqScan per partition)
+	CDXLNode *child_dxlnode = (*partition_selector_dxlnode)[2];
 	Plan *child_plan = TranslateDXLOperatorToPlan(
 		child_dxlnode, &child_context, ctxt_translation_prev_siblings);
-	GPOS_ASSERT(nullptr != child_plan && "child plan cannot be NULL");
+	GPOS_ASSERT(child_plan != nullptr);
 
-	partition_selector->plan.lefttree = child_plan;
+	if (!IsA(child_plan, Append))
+	{
+		// PartitionSelector wraps a non-Append child (e.g. a probe SeqScan in
+		// HashJoin DPE).  PG18's exec_pruning_steps mechanism only works with
+		// NestLoop; for other join types there is no useful dynamic pruning.
+		// Populate output_context from the project list and return the child
+		// plan unchanged.
+		CDXLNode *project_list_dxlnode = (*partition_selector_dxlnode)[0];
+		(void) TranslateDXLProjList(project_list_dxlnode,
+									nullptr /*base_table_context*/,
+									child_contexts, output_context);
+		child_contexts->Release();
+		return child_plan;
+	}
+
+	Append *append = (Append *) child_plan;
 
 	child_contexts->Append(&child_context);
 
+	// 2. Populate output_context from the PartitionSelector's project list.
+	//    PartitionSelector is a passthrough node; its projlist mirrors the
+	//    child Append's output columns.
 	CDXLNode *project_list_dxlnode = (*partition_selector_dxlnode)[0];
-	plan->targetlist = TranslateDXLProjList(project_list_dxlnode,
-											nullptr /*base_table_context*/,
-											child_contexts, output_context);
+	(void) TranslateDXLProjList(project_list_dxlnode,
+								nullptr /*base_table_context*/,
+								child_contexts, output_context);
 
+	// 3. Open the root partitioned relation
 	CMDIdGPDB *mdid =
 		CMDIdGPDB::CastMdid(partition_selector_dxlop->GetRelMdId());
 	gpdb::RelationWrapper relation = gpdb::GetRelation(mdid->Oid());
 
+	// 4. Ensure the root relation has an RTE.  The Append's children (partition
+	//    leaf SeqScans) only add leaf RTEs; the root partitioned table is absent.
+	//    PartitionedRelPruneInfo.rtindex must point to the root so
+	//    CreatePartitionPruneState can open it for the partition descriptor.
+	//    FindRTE returns -1 (stored as UINT_MAX in Index) when not found, so
+	//    cast to int before comparing.
+	int rtindex_check = (int) m_dxl_to_plstmt_context->FindRTE(mdid->Oid());
+	if (rtindex_check <= 0)
+	{
+		RangeTblEntry *root_rte = makeNode(RangeTblEntry);
+		root_rte->rtekind = RTE_RELATION;
+		root_rte->relid = mdid->Oid();
+		root_rte->relkind = RELKIND_PARTITIONED_TABLE;
+		root_rte->rellockmode = AccessShareLock;
+		root_rte->inh = true;
+		root_rte->lateral = false;
+		root_rte->inFromCl = false;
+		root_rte->perminfoindex = 0;
+		// eref must be non-NULL: EXPLAIN's deparse code iterates all RTEs
+		// and calls list_length(rte->eref->colnames) unconditionally.
+		Alias *root_eref = MakeNode(Alias);
+		root_eref->aliasname = PStrDup("");
+		root_eref->colnames = NIL;
+		root_rte->eref = root_eref;
+		m_dxl_to_plstmt_context->AddRTE(root_rte, false /*is_result_relation*/);
+		rtindex_check = (int) m_dxl_to_plstmt_context->FindRTE(mdid->Oid());
+	}
+	GPOS_ASSERT(rtindex_check > 0);
+	Index rtindex = (Index) rtindex_check;
+
+	// 5. Collect child SeqScan RT indexes for leafpart_rti_map.
+	//    ExecDoInitialPruning uses these to add surviving partition RTIs to
+	//    es_unpruned_relids, which is required before opening each SeqScan's
+	//    relation in ExecGetRangeTableRelation.
+	List *child_rtindexes = NIL;
+	ListCell *lc;
+	foreach(lc, append->appendplans)
+	{
+		Plan *child = (Plan *) lfirst(lc);
+		GPOS_ASSERT(IsA(child, SeqScan));
+		child_rtindexes =
+			gpdb::LAppendInt(child_rtindexes,
+							 ((SeqScan *) child)->scan.scanrelid);
+	}
+
+	// 6. Translate the DPE filter and build PartitionPruneInfo
 	CMappingColIdVarPlStmt colid_var_mapping = CMappingColIdVarPlStmt(
 		m_mp, nullptr /*base_table_context*/, child_contexts, output_context,
 		m_dxl_to_plstmt_context);
 
-	// paramid
-	OID oid_type =
-		CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
-			->Oid();
-	partition_selector->paramid =
-		m_dxl_to_plstmt_context->GetParamIdForSelector(
-			oid_type, partition_selector_dxlop->SelectorId());
-
-	// search the rtable for rtindex
-	// an Append node on the outer side of a parent HashJoin would already have
-	// beeen translated and would have populated the rtable with the root RTE
-	Index rtindex = m_dxl_to_plstmt_context->FindRTE(mdid->Oid());
-	GPOS_ASSERT(rtindex > 0);
-
-	// part_prune_info
 	CDXLNode *filterNode = (*partition_selector_dxlnode)[1];
-
 	ULongPtrArray *part_indexes = partition_selector_dxlop->Partitions();
+
 	List *prune_infos = CPartPruneStepsBuilder::CreatePartPruneInfos(
-		filterNode, relation.get(), rtindex, part_indexes, &colid_var_mapping,
-		m_translator_dxl_to_scalar);
+		filterNode, relation.get(), rtindex, part_indexes, child_rtindexes,
+		&colid_var_mapping, m_translator_dxl_to_scalar);
 
-	partition_selector->part_prune_info = MakeNode(PartitionPruneInfo);
-	partition_selector->part_prune_info->prune_infos = prune_infos;
+	PartitionPruneInfo *pinfo = MakeNode(PartitionPruneInfo);
+	pinfo->prune_infos = prune_infos;
+	pinfo->relids = bms_make_singleton(rtindex);
+	pinfo->other_subplans = nullptr;
 
-	SetParamIds(plan);
+	// 7. Register in PlannedStmt.partPruneInfos and wire up the Append
+	int prune_idx = m_dxl_to_plstmt_context->AddPartPruneInfo(pinfo);
+	append->part_prune_index = prune_idx;
+	append->apprelids = bms_make_singleton(rtindex);
+
 	// cleanup
 	child_contexts->Release();
 
-	return (Plan *) partition_selector;
+	return (Plan *) append;
 }
 
 //---------------------------------------------------------------------------
@@ -6123,6 +6214,32 @@ CTranslatorDXLToPlStmt::AddSecurityQuals(OID relId, List **qual, Index *index)
 	FetchSecurityQuals(m_dxl_to_plstmt_context->m_orig_query,
 					   &ctxt_security_quals);
 
+	// For partition children: the original query's rtable has an RTE for the
+	// partitioned parent only (with securityQuals attached).  Walk up the
+	// inheritance chain until we find an ancestor whose RTE carries security
+	// quals.
+	if (ctxt_security_quals.m_security_quals == NIL)
+	{
+		Oid ancestorOid = relId;
+		while (ctxt_security_quals.m_security_quals == NIL &&
+			   gpdb::HasSuperclass(ancestorOid))
+		{
+			ancestorOid = gpdb::GetPartitionParent(ancestorOid);
+			SContextSecurityQuals anc_ctxt(ancestorOid);
+			FetchSecurityQuals(m_dxl_to_plstmt_context->m_orig_query,
+							   &anc_ctxt);
+			ctxt_security_quals.m_security_quals = anc_ctxt.m_security_quals;
+		}
+	}
+
+	// Deep-copy the security quals before updating varnos.  Multiple partition
+	// child scans share the same underlying Var nodes via the shallow
+	// list_copy done by FetchSecurityQuals; SetSecurityQualsVarnoWalker
+	// modifies Var nodes in place, so without a deep copy, every child scan
+	// would end up with the varno of whichever child was processed last.
+	List *quals_copy =
+		(List *) copyObject(ctxt_security_quals.m_security_quals);
+
 	// The varno of the columns related to a particular table is different in
 	// the rewritten parse tree and the planned statement tree. In planned
 	// statement the varno of the columns is based on the index of the RTE
@@ -6130,11 +6247,10 @@ CTranslatorDXLToPlStmt::AddSecurityQuals(OID relId, List **qual, Index *index)
 	// the security quals from the rewritten parse tree to planned statement
 	// tree we need to modify the varno of all the VAR nodes present in the
 	// security quals and assign it equal to index of the RTE in the rte_list.
-	SetSecurityQualsVarnoWalker((Node *) ctxt_security_quals.m_security_quals,
-								index);
+	SetSecurityQualsVarnoWalker((Node *) quals_copy, index);
 
 	// Adding the security quals from m_security_quals list to the qual list
-	*qual = gpdb::ListConcat(*qual, ctxt_security_quals.m_security_quals);
+	*qual = gpdb::ListConcat(*qual, quals_copy);
 }
 
 //---------------------------------------------------------------------------

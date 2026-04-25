@@ -317,7 +317,9 @@ CPhysicalPartitionSelector::PppsDerive(CMemoryPool *mp,
 	CBitSet *selector_ids = GPOS_NEW(mp) CBitSet(mp);
 	selector_ids->ExchangeSet(m_selector_id);
 
-	pps_result->InsertAll(pps_child);
+	// Skip the child's Consumer entry for our own scan_id to avoid a
+	// duplicate-key assert when wrapping an AppendTableScan (NLJ DPE case).
+	pps_result->InsertAllExcept(pps_child, m_scan_id);
 	pps_result->Insert(m_scan_id, CPartitionPropagationSpec::EpptPropagator,
 					   m_mdid, selector_ids, nullptr);
 	selector_ids->Release();

@@ -41,6 +41,7 @@
 #include "gpopt/operators/CPhysicalDynamicForeignScan.h"
 #include "gpopt/operators/CPhysicalDynamicIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalDynamicIndexScan.h"
+#include "gpopt/operators/CPhysicalAppendTableScan.h"
 #include "gpopt/operators/CPhysicalDynamicTableScan.h"
 #include "gpopt/operators/CPhysicalHashAgg.h"
 #include "gpopt/operators/CPhysicalHashAggDeduplicate.h"
@@ -470,6 +471,11 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
 			break;
+		case COperator::EopPhysicalAppendTableScan:
+			dxlnode = CTranslatorExprToDXL::PdxlnAppendTableScan(
+				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
+				pfDML);
+			break;
 		case COperator::EopPhysicalDynamicBitmapTableScan:
 			dxlnode = CTranslatorExprToDXL::PdxlnDynamicBitmapTableScan(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
@@ -537,6 +543,7 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pfDML);
 			break;
 		case COperator::EopPhysicalFullMergeJoin:
+		case COperator::EopPhysicalInnerMergeJoin:
 			dxlnode = CTranslatorExprToDXL::PdxlnMergeJoin(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
@@ -1262,6 +1269,100 @@ CTranslatorExprToDXL::PdxlnDynamicTableScan(
 	CDXLPhysicalProperties *dxl_properties = nullptr;
 	return PdxlnDynamicTableScan(pexprDTS, colref_array, pdrgpdsBaseTables,
 								 pexprScalarCond, dxl_properties);
+}
+
+// Translate CPhysicalAppendTableScan node. Creates a CDXLPhysicalAppend node
+// over CDXLPhysicalTableScan nodes - one for each partition of the root table.
+//
+// To handle dropped and re-ordered columns, the project list and filter from
+// the root table are modified per partition using per-partition column mappings.
+CDXLNode *
+CTranslatorExprToDXL::PdxlnAppendTableScan(
+	CExpression *pexprATS, CColRefArray *colref_array,
+	CDistributionSpecArray *pdrgpdsBaseTables,
+	ULONG *,  // pulNonGatherMotions,
+	BOOL *	  // pfDML
+)
+{
+	GPOS_ASSERT(nullptr != pexprATS);
+
+	CPhysicalDynamicScan *popATS =
+		CPhysicalDynamicScan::PopConvert(pexprATS->Pop());
+
+	// construct plan costs
+	CDXLPhysicalProperties *pdxlpropATS = GetProperties(pexprATS);
+
+	GPOS_ASSERT(nullptr != pexprATS->Prpp());
+
+	// construct projection list for the top-level Append node
+	CColRefSet *pcrsOutput = pexprATS->Prpp()->PcrsRequired();
+	CDXLNode *pdxlnPrLAppend = PdxlnProjList(pcrsOutput, colref_array);
+
+	// Construct the Append node (always, even for a single child partition).
+	// This is needed for:
+	// * Column mapping correctness when partition cols have different types/order
+	//   than the root partition.
+	CDXLNode *pdxlnAppend = GPOS_NEW(m_mp)
+		CDXLNode(m_mp, GPOS_NEW(m_mp) CDXLPhysicalAppend(m_mp, false, false));
+	pdxlnAppend->SetProperties(pdxlpropATS);
+	pdxlnAppend->AddChild(pdxlnPrLAppend);
+	pdxlnAppend->AddChild(PdxlnFilter(nullptr));
+
+	IMdIdArray *part_mdids = popATS->GetPartitionMdids();
+	for (ULONG ul = 0; ul < part_mdids->Size(); ++ul)
+	{
+		IMDId *part_mdid = (*part_mdids)[ul];
+		const IMDRelation *part = m_pmda->RetrieveRel(part_mdid);
+
+		CTableDescriptor *part_tabdesc =
+			MakeTableDescForPart(part, popATS->Ptabdesc());
+
+		// Create new colrefs for the child partition. The ColRefs from the root
+		// which may be used in any parent node, are exported by the Append node.
+		CColRefArray *part_colrefs = GPOS_NEW(m_mp) CColRefArray(m_mp);
+		for (ULONG ul_col = 0; ul_col < part_tabdesc->ColumnCount(); ++ul_col)
+		{
+			const CColumnDescriptor *cd = part_tabdesc->Pcoldesc(ul_col);
+			CColRef *cr = m_pcf->PcrCreate(cd->RetrieveType(),
+										   cd->TypeModifier(), cd->Name());
+			part_colrefs->Append(cr);
+		}
+
+		CDXLTableDescr *dxl_table_descr =
+			MakeDXLTableDescr(part_tabdesc, part_colrefs, pexprATS->Prpp());
+		part_tabdesc->Release();
+
+		CDXLNode *dxlnode = GPOS_NEW(m_mp)
+			CDXLNode(m_mp, GPOS_NEW(m_mp) CDXLPhysicalTableScan(m_mp, dxl_table_descr));
+
+		// Reuse parent cost properties for each child scan
+		pdxlpropATS->AddRef();
+		dxlnode->SetProperties(pdxlpropATS);
+
+		// ColRef → index in child table desc (per partition)
+		auto root_col_mapping = (*popATS->GetRootColMappingPerPart())[ul];
+
+		// construct projection list, re-ordered to match root table
+		CDXLNode *pdxlnPrL = PdxlnProjListForChildPart(
+			root_col_mapping, part_colrefs, pcrsOutput, colref_array);
+		dxlnode->AddChild(pdxlnPrL);
+
+		// construct the filter
+		CDXLNode *filter_dxlnode = PdxlnFilter(PdxlnCondForChildPart(
+			root_col_mapping, part_colrefs, popATS->PdrgpcrOutput(), nullptr));
+		dxlnode->AddChild(filter_dxlnode);
+
+		pdxlnAppend->AddChild(dxlnode);
+
+		// cleanup
+		part_colrefs->Release();
+	}
+
+	CDistributionSpec *pds = pexprATS->GetDrvdPropPlan()->Pds();
+	pds->AddRef();
+	pdrgpdsBaseTables->Append(pds);
+
+	return pdxlnAppend;
 }
 
 // Construct a dxl table descr for a child partition
@@ -4311,9 +4412,15 @@ CTranslatorExprToDXL::PdxlnNLJoin(CExpression *pexprInnerNLJ,
 
 
 #ifdef GPOS_DEBUG
+	// Allow outer refs in inner child when:
+	//  (a) it's an index NLJ (outer refs are explicit and expected), or
+	//  (b) inner child is PartitionSelector for DPE NLJ (outer refs are
+	//      partition-key predicates referencing the probe child).
 	GPOS_ASSERT_IMP(
 		COperator::EopPhysicalInnerIndexNLJoin != pop->Eopid() &&
-			COperator::EopPhysicalLeftOuterIndexNLJoin != pop->Eopid(),
+			COperator::EopPhysicalLeftOuterIndexNLJoin != pop->Eopid() &&
+			COperator::EopPhysicalPartitionSelector !=
+				pexprInnerChild->Pop()->Eopid(),
 		pexprInnerChild->DeriveOuterReferences()->IsDisjoint(
 			pexprOuterChild->DeriveOutputColumns()) &&
 			"detected outer references in NL inner child");
@@ -4362,6 +4469,54 @@ CTranslatorExprToDXL::PdxlnNLJoin(CExpression *pexprInnerNLJ,
 
 		default:
 			GPOS_ASSERT(!"Invalid join type");
+	}
+
+	// DPE NLJ: inner child is PartitionSelector wrapping AppendTableScan.
+	// Treat this like an index NLJ so outer (probe) column refs in the
+	// PartitionSelector filter are passed as PARAM_EXEC to the inner side,
+	// enabling PG18 exec_pruning_steps on the inner Append.
+	if (!is_index_nlj &&
+		COperator::EopPhysicalPartitionSelector ==
+			pexprInnerChild->Pop()->Eopid())
+	{
+		CPhysicalPartitionSelector *popSelector =
+			CPhysicalPartitionSelector::PopConvert(pexprInnerChild->Pop());
+		CExpression *pexprFilter = popSelector->FilterExpr();
+		if (pexprFilter != nullptr)
+		{
+			CColRefSet *pcrsOuterOutput = pexprOuterChild->DeriveOutputColumns();
+			CColRefSet *pcrsUsed = pexprFilter->DeriveUsedColumns();
+			outer_refs = GPOS_NEW(m_mp) CColRefArray(m_mp);
+			CColRefSetIter it(*pcrsUsed);
+			while (it.Advance())
+			{
+				CColRef *pcr = it.Pcr();
+				if (pcrsOuterOutput->FMember(pcr))
+					outer_refs->Append(pcr);
+			}
+			if (outer_refs->Size() > 0)
+			{
+				is_index_nlj = true;
+				// Store outer refs in m_phmcrdxlnIndexLookup so PdxlnScalar can
+				// resolve them when generating the PartitionSelector filter DXL.
+				for (ULONG ul = 0; ul < outer_refs->Size(); ul++)
+				{
+					CColRef *pcr = (*outer_refs)[ul];
+					if (nullptr == m_phmcrdxlnIndexLookup->Find(pcr))
+					{
+						CDXLNode *dxlnode = CTranslatorExprToDXLUtils::PdxlnIdent(
+							m_mp, m_phmcrdxln, m_phmcrdxlnIndexLookup,
+							m_phmcrulPartColId, pcr);
+						m_phmcrdxlnIndexLookup->Insert(pcr, dxlnode);
+					}
+				}
+			}
+			else
+			{
+				outer_refs->Release();
+				outer_refs = nullptr;
+			}
+		}
 	}
 
 	// translate relational child expressions
@@ -4453,6 +4608,10 @@ CTranslatorExprToDXL::PdxlnMergeJoin(CExpression *pexprMJ,
 	{
 		case COperator::EopPhysicalFullMergeJoin:
 			join_type = EdxljtFull;
+			break;
+
+		case COperator::EopPhysicalInnerMergeJoin:
+			join_type = EdxljtInner;
 			break;
 
 		default:

@@ -13,6 +13,7 @@
 extern "C" {
 #include "postgres.h"
 
+#include "nodes/nodeFuncs.h"
 #include "nodes/parsenodes.h"
 #include "partitioning/partdesc.h"
 #include "utils/partcache.h"
@@ -31,11 +32,12 @@ using namespace gpdxl;
 // ctor
 CPartPruneStepsBuilder::CPartPruneStepsBuilder(
 	Relation relation, Index rtindex, ULongPtrArray *part_indexes,
-	CMappingColIdVarPlStmt *colid_var_mapping,
+	List *child_rtindexes, CMappingColIdVarPlStmt *colid_var_mapping,
 	CTranslatorDXLToScalar *translator_dxl_to_scalar)
 	: m_relation(relation),
 	  m_rtindex(rtindex),
 	  m_part_indexes(part_indexes),
+	  m_child_rtindexes(child_rtindexes),
 	  m_colid_var_mapping(colid_var_mapping),
 	  m_translator_dxl_to_scalar(translator_dxl_to_scalar)
 {
@@ -44,11 +46,13 @@ CPartPruneStepsBuilder::CPartPruneStepsBuilder(
 List *
 CPartPruneStepsBuilder::CreatePartPruneInfos(
 	CDXLNode *filterNode, Relation relation, Index rtindex,
-	ULongPtrArray *part_indexes, CMappingColIdVarPlStmt *colid_var_mapping,
+	ULongPtrArray *part_indexes, List *child_rtindexes,
+	CMappingColIdVarPlStmt *colid_var_mapping,
 	CTranslatorDXLToScalar *translator_dxl_to_scalar)
 {
 	CPartPruneStepsBuilder builder(relation, rtindex, part_indexes,
-								   colid_var_mapping, translator_dxl_to_scalar);
+								   child_rtindexes, colid_var_mapping,
+								   translator_dxl_to_scalar);
 
 	// See comments over PartitionPruneInfo::prune_infos for more details.
 
@@ -60,9 +64,25 @@ CPartPruneStepsBuilder::CreatePartPruneInfos(
 	List *prune_info_per_hierarchy = ListMake1(pinfo);
 
 	// Since ORCA translates each DynamicTableScan to a different Append node,
-	// there is always only one partition hierarchy per Append/ PartitionSelector
-	// node. So, size of 1st dimension of (prune_infos) = 1
+	// there is always only one partition hierarchy per Append.
+	// So, size of 1st dimension of (prune_infos) = 1
 	return ListMake1(prune_info_per_hierarchy);
+}
+
+// Walk an expression tree collecting PARAM_EXEC param IDs into *paramids.
+static bool
+CollectExecParamWalker(Node *node, Bitmapset **paramids)
+{
+	if (node == nullptr)
+		return false;
+	if (IsA(node, Param))
+	{
+		Param *p = (Param *) node;
+		if (p->paramkind == PARAM_EXEC)
+			*paramids = bms_add_member(*paramids, p->paramid);
+		return false;
+	}
+	return expression_tree_walker(node, CollectExecParamWalker, paramids);
 }
 
 PartitionedRelPruneInfo *
@@ -75,11 +95,12 @@ CPartPruneStepsBuilder::CreatePartPruneInfoForOneLevel(CDXLNode *filterNode)
 
 	pinfo->subpart_map = (int *) palloc(sizeof(int) * pinfo->nparts);
 	pinfo->subplan_map = (int *) palloc(sizeof(int) * pinfo->nparts);
-	pinfo->relid_map = (Oid *) palloc(sizeof(int) * pinfo->nparts);
+	pinfo->leafpart_rti_map = (int *) palloc0(sizeof(int) * pinfo->nparts);
+	pinfo->relid_map = (Oid *) palloc(sizeof(Oid) * pinfo->nparts);
 
-	// m_part_indexes contains the indexes (into m_relation->rd_pardesc) of the
-	// partitions that survived static partition pruning; iterate over this list
-	// to populate pinfo->subplan_map, pinfo->relid_map & pinfo->present_parts
+	// m_part_indexes contains the partition-descriptor positions that survived
+	// static pruning; m_child_rtindexes[i] is the SeqScan RT index for the
+	// i-th surviving partition (parallel arrays).
 	ULONG part_ptr = 0;
 	for (ULONG i = 0; (int) i < pinfo->nparts; ++i)
 	{
@@ -87,30 +108,71 @@ CPartPruneStepsBuilder::CreatePartPruneInfoForOneLevel(CDXLNode *filterNode)
 		if (part_ptr < m_part_indexes->Size() &&
 			i == (*(*m_part_indexes)[part_ptr]))
 		{
-			// partition did survive pruning
+			// partition survived static pruning
 			pinfo->subplan_map[i] = part_ptr;
-			pinfo->relid_map[i] = gpdb::RelationGetPartitionDesc(m_relation, true)->oids[i];
+			pinfo->relid_map[i] =
+				gpdb::RelationGetPartitionDesc(m_relation, true)->oids[i];
 			pinfo->present_parts = bms_add_member(pinfo->present_parts, i);
+
+			// leafpart_rti_map: RT index of the child SeqScan for this partition
+			if (m_child_rtindexes != NIL &&
+				(int) part_ptr < list_length(m_child_rtindexes))
+				pinfo->leafpart_rti_map[i] =
+					list_nth_int(m_child_rtindexes, (int) part_ptr);
+
 			++part_ptr;
 		}
 		else
 		{
-			// partition did not survive pruning
-			pinfo->subplan_map[i] = part_ptr;
+			// partition was pruned statically
 			pinfo->subplan_map[i] = -1;
 			pinfo->relid_map[i] = 0;
+			pinfo->leafpart_rti_map[i] = 0;
 		}
 	}
 
+	// Build pruning steps from the filter expression
 	INT step_id = 0;
-	pinfo->exec_pruning_steps = PartPruneStepsFromFilter(
-		filterNode, &step_id, pinfo->exec_pruning_steps);
+	List *all_steps = PartPruneStepsFromFilter(filterNode, &step_id, NIL);
+
+	// Collect PARAM_EXEC IDs from step expressions to populate execparamids.
+	// Steps with PARAM_EXEC refs must go to exec_pruning_steps (re-evaluated
+	// per rescan); steps without go to initial_pruning_steps (startup only).
+	Bitmapset *execparamids = nullptr;
+	ListCell *lc;
+	foreach(lc, all_steps)
+	{
+		PartitionPruneStep *step = (PartitionPruneStep *) lfirst(lc);
+		if (IsA(step, PartitionPruneStepOp))
+		{
+			PartitionPruneStepOp *ostep = (PartitionPruneStepOp *) step;
+			ListCell *lc2;
+			foreach(lc2, ostep->exprs)
+			{
+				Node *expr = (Node *) lfirst(lc2);
+				CollectExecParamWalker(expr, &execparamids);
+			}
+		}
+	}
+
+	if (execparamids != nullptr)
+	{
+		// Filter references outer join params → per-rescan exec pruning
+		pinfo->exec_pruning_steps = all_steps;
+		pinfo->execparamids = execparamids;
+	}
+	else
+	{
+		// Filter is constant → startup-only initial pruning
+		pinfo->initial_pruning_steps = all_steps;
+	}
+
 	return pinfo;
 }
 
 List *
 CPartPruneStepsBuilder::PartPruneStepFromScalarCmp(CDXLNode *node, int *step_id,
-												   List *steps_list)
+													List *steps_list)
 {
 	GPOS_ASSERT(nullptr != node);
 	CDXLScalarComp *dxlop = CDXLScalarComp::Cast(node->GetOperator());

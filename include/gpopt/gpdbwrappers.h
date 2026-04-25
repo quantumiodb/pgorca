@@ -729,6 +729,13 @@ GetRTEPermissionInfo(List *rteperminfos, const RangeTblEntry *rte);
 gpos::BOOL WalkQueryTree(Query *query, bool (*walker)(), void *context,
 						 int flags);
 
+// returns true if relid has any parent in pg_inherits (i.e. is a partition)
+bool HasSuperclass(Oid relid);
+
+// returns the OID of relid's immediate partition parent
+// (caller must ensure HasSuperclass(relid) is true)
+Oid GetPartitionParent(Oid relid);
+
 }  //namespace gpdb
 
 #define ForEach(cell, l) \

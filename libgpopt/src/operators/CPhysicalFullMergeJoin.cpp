@@ -14,6 +14,7 @@
 #include "gpos/base.h"
 
 #include "gpopt/base/CCastUtils.h"
+#include "gpopt/base/CDrvdPropPlan.h"
 #include "gpopt/base/CDistributionSpecHashed.h"
 #include "gpopt/base/CDistributionSpecNonSingleton.h"
 #include "gpopt/base/CUtils.h"
@@ -212,18 +213,21 @@ CPhysicalFullMergeJoin::PrsRequired(CMemoryPool *mp, CExpressionHandle &exprhdl,
 
 // return order property enforcing type for this operator
 CEnfdProp::EPropEnforcingType
-CPhysicalFullMergeJoin::EpetOrder(CExpressionHandle &, const CEnfdOrder *
-#ifdef GPOS_DEBUG
-														   peo
-#endif	// GPOS_DEBUG
-) const
+CPhysicalFullMergeJoin::EpetOrder(CExpressionHandle &exprhdl,
+								  const CEnfdOrder *peo) const
 {
 	GPOS_ASSERT(nullptr != peo);
 	GPOS_ASSERT(!peo->PosRequired()->IsEmpty());
 
-	// merge join is not order-preserving, at least in
-	// the sense that nulls maybe interleaved;
-	// any order requirements have to be enforced on top
+	// In single-node mode, merge join inherits its outer child's ordering
+	// (via PosDerivePassThruOuter). If that ordering satisfies the
+	// requirement, no Sort enforcer is needed on top.
+	COrderSpec *pos = CDrvdPropPlan::Pdpplan(exprhdl.Pdp())->Pos();
+	if (peo->FCompatible(pos))
+	{
+		return CEnfdProp::EpetUnnecessary;
+	}
+
 	return CEnfdProp::EpetRequired;
 }
 

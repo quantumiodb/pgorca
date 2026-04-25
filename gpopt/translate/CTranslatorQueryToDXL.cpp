@@ -536,7 +536,7 @@ CTranslatorQueryToDXL::CheckRangeTable(Query *query)
 					"Query has row level security enabled and security quals contain sublinks"));
 		}
 
-		if (rte->tablesample)
+if (rte->tablesample)
 		{
 			GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
 					   GPOS_WSZ_LIT("TABLESAMPLE in the FROM clause"));

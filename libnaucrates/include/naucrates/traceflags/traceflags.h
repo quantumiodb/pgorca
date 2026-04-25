@@ -185,6 +185,9 @@ enum EOptTraceFlag
 	// Eager Agg
 	EopttraceEnableEagerAgg = 103030,
 
+	// Enable AppendTableScan for partitioned tables
+	EopttraceEnableAppendScan = 103031,
+
 	// ExpandFullJoin
 	EopttraceExpandFullJoin = 103032,
 

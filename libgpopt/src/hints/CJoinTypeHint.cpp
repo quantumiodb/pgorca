@@ -39,12 +39,14 @@ CJoinTypeHint::SatisfiesOperator(COperator *op)
 		}
 		case HINT_KEYWORD_MERGEJOIN:
 		{
-			is_satisfied = op->Eopid() == COperator::EopPhysicalFullMergeJoin;
+			is_satisfied = op->Eopid() == COperator::EopPhysicalFullMergeJoin ||
+						   op->Eopid() == COperator::EopPhysicalInnerMergeJoin;
 			break;
 		}
 		case HINT_KEYWORD_NOMERGEJOIN:
 		{
-			is_satisfied = op->Eopid() != COperator::EopPhysicalFullMergeJoin;
+			is_satisfied = op->Eopid() != COperator::EopPhysicalFullMergeJoin &&
+						   op->Eopid() != COperator::EopPhysicalInnerMergeJoin;
 			break;
 		}
 		case HINT_KEYWORD_HASHJOIN:

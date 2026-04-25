@@ -319,6 +319,12 @@ private:
 									CDistributionSpecArray *pdrgpdsBaseTables,
 									ULONG *pulNonGatherMotions, BOOL *pfDML);
 
+	// translate an append table scan (partitioned table → PG Append + SeqScan per partition)
+	CDXLNode *PdxlnAppendTableScan(CExpression *pexprATS,
+								   CColRefArray *colref_array,
+								   CDistributionSpecArray *pdrgpdsBaseTables,
+								   ULONG *pulNonGatherMotions, BOOL *pfDML);
+
 	// translate a dynamic table scan with a scalar condition
 	CDXLNode *PdxlnDynamicTableScan(CExpression *pexprDTS,
 									CColRefArray *colref_array,

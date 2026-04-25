@@ -238,6 +238,7 @@ public:
 		ExfFullOuterJoin2HashJoin,
 		ExfFullJoinCommutativity,
 		ExfSplitWindowFunc,
+		ExfDynamicGet2AppendTableScan,
 		ExfInvalid,
 		ExfSentinel = ExfInvalid
 	};

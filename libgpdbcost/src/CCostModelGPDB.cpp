@@ -1173,7 +1173,8 @@ CCostModelGPDB::CostMergeJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	GPOS_ASSERT(nullptr != pci);
 #ifdef GPOS_DEBUG
 	COperator::EOperatorId op_id = exprhdl.Pop()->Eopid();
-	GPOS_ASSERT(COperator::EopPhysicalFullMergeJoin == op_id);
+	GPOS_ASSERT(COperator::EopPhysicalFullMergeJoin == op_id ||
+				COperator::EopPhysicalInnerMergeJoin == op_id);
 #endif	// GPOS_DEBUG
 
 	const DOUBLE num_rows_outer = pci->PdRows()[0];
@@ -2322,6 +2323,7 @@ CCostModelGPDB::CostScan(CMemoryPool *,	 // mp
 	COperator::EOperatorId op_id = pop->Eopid();
 	GPOS_ASSERT(COperator::EopPhysicalTableScan == op_id ||
 				COperator::EopPhysicalDynamicTableScan == op_id ||
+				COperator::EopPhysicalAppendTableScan == op_id ||
 				COperator::EopPhysicalForeignScan == op_id ||
 				COperator::EopPhysicalDynamicForeignScan == op_id);
 
@@ -2343,6 +2345,7 @@ CCostModelGPDB::CostScan(CMemoryPool *,	 // mp
 	{
 		case COperator::EopPhysicalTableScan:
 		case COperator::EopPhysicalDynamicTableScan:
+		case COperator::EopPhysicalAppendTableScan:
 		case COperator::EopPhysicalForeignScan:
 		case COperator::EopPhysicalDynamicForeignScan:
 			// table scan cost considers only retrieving tuple cost,
@@ -2430,6 +2433,7 @@ CCostModelGPDB::Cost(
 		}
 		case COperator::EopPhysicalTableScan:
 		case COperator::EopPhysicalDynamicTableScan:
+		case COperator::EopPhysicalAppendTableScan:
 		case COperator::EopPhysicalForeignScan:
 		case COperator::EopPhysicalDynamicForeignScan:
 
@@ -2562,6 +2566,7 @@ CCostModelGPDB::Cost(
 		}
 
 		case COperator::EopPhysicalFullMergeJoin:
+		case COperator::EopPhysicalInnerMergeJoin:
 		{
 			return CostMergeJoin(m_mp, exprhdl, this, pci);
 		}

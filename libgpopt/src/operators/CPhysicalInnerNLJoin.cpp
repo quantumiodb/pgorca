@@ -18,6 +18,7 @@
 #include "gpopt/base/CDistributionSpecNonReplicated.h"
 #include "gpopt/base/CDistributionSpecNonSingleton.h"
 #include "gpopt/base/CDistributionSpecReplicated.h"
+#include "gpopt/base/CPartInfo.h"
 #include "gpopt/base/CUtils.h"
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CPredicateUtils.h"
@@ -161,6 +162,79 @@ CPhysicalInnerNLJoin::Ped(CMemoryPool *mp, CExpressionHandle &exprhdl,
 
 	return GPOS_NEW(mp)
 		CEnfdDistribution(GPOS_NEW(mp) CDistributionSpecNonSingleton(), dmatch);
+}
+
+CPartitionPropagationSpec *
+CPhysicalInnerNLJoin::PppsRequired(CMemoryPool *mp,
+								   CExpressionHandle &exprhdl,
+								   CPartitionPropagationSpec *pppsRequired,
+								   ULONG child_index,
+								   CDrvdPropArray *pdrgpdpCtxt,
+								   ULONG ulOptReq) const
+{
+	GPOS_ASSERT(nullptr != pppsRequired);
+
+	// DPE for NLJ: if inner child (index 1) has partition consumers and the
+	// join predicate references the partition key using outer (probe) columns,
+	// require EpptPropagator on the inner child so AppendEnforcers wraps
+	// AppendTableScan with PartitionSelector.  The PartitionSelector filter
+	// holds outer column refs that TranslateDXLPartSelector converts to
+	// PARAM_EXEC in the Append's exec_pruning_steps.
+	if (child_index == 1)
+	{
+		CExpression *pexprScalar =
+			exprhdl.PexprScalarExactChild(2 /* scalar child index */);
+		CColRefSet *pcrsOutputOuter = exprhdl.DeriveOutputColumns(0);
+		CPartInfo *part_info_inner = exprhdl.DerivePartitionInfo(1);
+
+		CPartitionPropagationSpec *pps_result =
+			GPOS_NEW(mp) CPartitionPropagationSpec(mp);
+		ULONG num_propagators = 0;
+
+		for (ULONG ul = 0; ul < part_info_inner->UlConsumers(); ++ul)
+		{
+			ULONG scan_id = part_info_inner->ScanId(ul);
+			IMDId *rel_mdid = part_info_inner->GetRelMdId(ul);
+			CPartKeysArray *part_keys_array = part_info_inner->Pdrgppartkeys(ul);
+
+			CExpression *pexprCmp = nullptr;
+			for (ULONG ulKey = 0;
+				 nullptr == pexprCmp && ulKey < part_keys_array->Size();
+				 ulKey++)
+			{
+				CColRef2dArray *pdrgpdrgpcr =
+					(*part_keys_array)[ulKey]->Pdrgpdrgpcr();
+				pexprCmp = CPredicateUtils::PexprExtractPredicatesOnPartKeys(
+					mp, pexprScalar, pdrgpdrgpcr, pcrsOutputOuter,
+					true /* fUseConstraints */);
+			}
+
+			if (pexprCmp == nullptr)
+				continue;
+
+			pps_result->Insert(scan_id,
+							   CPartitionPropagationSpec::EpptPropagator,
+							   rel_mdid, nullptr /* selector_ids */, pexprCmp);
+			pexprCmp->Release();
+			++num_propagators;
+		}
+
+		if (num_propagators > 0)
+		{
+			// Also forward any Consumer requirements from above for scan ids
+			// that belong to the inner child.
+			CBitSet *allowed_scan_ids = GPOS_NEW(mp) CBitSet(mp);
+			for (ULONG ul = 0; ul < part_info_inner->UlConsumers(); ++ul)
+				allowed_scan_ids->ExchangeSet(part_info_inner->ScanId(ul));
+			pps_result->InsertAllowedConsumers(pppsRequired, allowed_scan_ids);
+			allowed_scan_ids->Release();
+			return pps_result;
+		}
+		pps_result->Release();
+	}
+
+	return CPhysical::PppsRequired(mp, exprhdl, pppsRequired, child_index,
+								   pdrgpdpCtxt, ulOptReq);
 }
 
 // EOF

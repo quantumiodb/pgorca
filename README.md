@@ -47,26 +47,45 @@ pg_config --version   # should print "PostgreSQL 18.x"
 
 Or pass it explicitly on the CMake command line with `-DPG_CONFIG=...` (see below).
 
-### 2. Configure
+### 2. Configure & Build
+
+Two generators are supported. Pick whichever suits your environment.
+
+#### CMake (Unix Makefiles — no extra tools needed)
 
 ```bash
 mkdir build && cd build
 
-# pg_config is on PATH — Debug build (default)
-cmake .. -DCMAKE_BUILD_TYPE=Debug -GNinja
+# pg_config is on PATH
+cmake .. -DCMAKE_BUILD_TYPE=Debug
 
 # pg_config NOT on PATH — pass it explicitly
-cmake .. -DPG_CONFIG=/path/to/pg18/bin/pg_config -DCMAKE_BUILD_TYPE=Debug -GNinja
+cmake .. -DPG_CONFIG=/path/to/pg18/bin/pg_config -DCMAKE_BUILD_TYPE=Debug
 ```
 
-### 3. Build and install
+```bash
+cmake --build . --target install -j$(nproc)
+```
+
+To rebuild after source changes:
+
+```bash
+cmake --build build -j$(nproc)
+```
+
+#### Ninja (faster incremental builds)
+
+```bash
+mkdir build && cd build
+cmake .. -DPG_CONFIG=/path/to/pg18/bin/pg_config -DCMAKE_BUILD_TYPE=Debug -GNinja
+```
 
 ```bash
 ninja -j$(nproc)
 ninja install
 ```
 
-To rebuild after source changes (no reconfigure needed):
+To rebuild after source changes:
 
 ```bash
 ninja -j$(nproc) -C build
@@ -74,11 +93,21 @@ ninja -j$(nproc) -C build
 
 ### Release build
 
+Replace `Debug` with `Release` in either generator. Example with Ninja:
+
 ```bash
 mkdir build-release && cd build-release
 cmake .. -DPG_CONFIG=/path/to/pg18/bin/pg_config -DCMAKE_BUILD_TYPE=Release -GNinja
 ninja -j$(nproc)
 ninja install
+```
+
+Or with plain CMake:
+
+```bash
+mkdir build-release && cd build-release
+cmake .. -DPG_CONFIG=/path/to/pg18/bin/pg_config -DCMAKE_BUILD_TYPE=Release
+cmake --build . --target install -j$(nproc)
 ```
 
 Release mode enables `-O3 -DNDEBUG` and disables ORCA internal assertions (`GPOS_DEBUG`).
@@ -112,6 +141,21 @@ If ORCA cannot handle a query (unsupported feature or internal error) it falls b
 | `optimizer_search_strategy_path` | `""` | Path to custom search strategy XML (empty = built-in) |
 
 
+## Testing
+
+See **[testing.md](testing.md)** for the full guide. Quick start:
+
+```bash
+export PG_CONFIG=/Users/jianghua/pg-install/bin/pg_config
+export PG_REGRESS_SQL=/Users/jianghua/code/postgresql/src/test/regress
+
+# pg_orca's own regression tests
+test/test.sh --orca-tests
+
+# PostgreSQL standard suite with ORCA loaded (--ignore-plans suppresses plan-shape diffs)
+test/test.sh --pg-tests --ignore-plans
+```
+
 ## Architecture Notes
 
 ### MPP Stubs
@@ -121,9 +165,5 @@ Cloudberry's translation layer references many MPP-only types (`Motion`, `PlanSl
 ### GPDB GUCs
 
 Many ORCA configuration knobs were GPDB-specific GUCs. They are re-defined as real GUCs in `pg_orca.cpp` under the `optimizer.*` prefix, so existing ORCA code referencing them continues to work.
-
-### walker macros
-
-PG18 removed `optimizer/walkers.h`. The expression-walker macros (`expression_tree_walker`, `query_tree_walker`, etc.) are redirected to their `_impl` variants via `#define` in each translation file that needs them.
 
 

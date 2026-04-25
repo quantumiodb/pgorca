@@ -71,6 +71,7 @@ static bool array_constraints        = true;
 static bool force_agg_skew_avoidance = false;
 static bool force_split_window_func  = false;
 static bool enable_eageragg          = false;
+static bool enable_append_table_scan = true;
 static bool enable_orderedagg        = true;
 static bool expand_fulljoin          = false;
 static bool penalize_skew            = true;  // negate -> don't penalize by default
@@ -267,6 +268,9 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 
 	{EopttraceEnableEagerAgg, &enable_eageragg,
 	 false, GPOS_WSZ_LIT("Enable Eager Agg transform.")},
+
+	{EopttraceEnableAppendScan, &enable_append_table_scan,
+	 false, GPOS_WSZ_LIT("Enable AppendTableScan for partitioned table scans.")},
 
 	{EopttraceDisableOrderedAgg, &enable_orderedagg,
 	 true,  GPOS_WSZ_LIT("Disable ordered aggregate plans.")},

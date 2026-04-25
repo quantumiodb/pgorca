@@ -52,6 +52,7 @@ extern "C" {
 #include "access/genam.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_inherits.h"
+#include "catalog/partition.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
 #include "nodes/nodeFuncs.h"
@@ -3271,6 +3272,28 @@ gpdb::GetRTEPermissionInfo(List *rteperminfos, const RangeTblEntry *rte)
 		return getRTEPermissionInfo(rteperminfos, (RangeTblEntry *) rte);
 	}
 	GP_WRAP_END;
+}
+
+bool
+gpdb::HasSuperclass(Oid relid)
+{
+	GP_WRAP_START;
+	{
+		return has_superclass(relid);
+	}
+	GP_WRAP_END;
+	return false;
+}
+
+Oid
+gpdb::GetPartitionParent(Oid relid)
+{
+	GP_WRAP_START;
+	{
+		return get_partition_parent(relid, false);
+	}
+	GP_WRAP_END;
+	return InvalidOid;
 }
 
 // EOF
