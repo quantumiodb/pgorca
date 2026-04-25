@@ -917,6 +917,12 @@ CJoinOrderDPv2::PopulateDPEInfo(SExpressionInfo *join_expr_info,
 			{
 				CColRefArray *atomOutputColArray =
 					pt_atom_expr->DeriveOutputColumns()->Pdrgpcr(m_mp);
+				if (atomOutputColArray->Size() != atom_table_descriptor->Pdrgpcoldesc()->Size())
+				{
+					// Skip DPE optimization for this case
+					atomOutputColArray->Release();
+					continue;
+				}
 				CColRefSet *pt_atom_distribution_cols = CLogical::PcrsDist(
 					m_mp, atom_table_descriptor, atomOutputColArray);
 				atomOutputColArray->Release();
