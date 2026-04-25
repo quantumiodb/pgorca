@@ -711,33 +711,45 @@ CTranslatorRelcacheToDXL::RetrieveRelColumns(CMemoryPool *mp,
 		}
 		else
 		{
-			// This is expensive, but luckily we don't need it for most types
-			HeapTuple stats_tup = gpdb::GetAttStats(rel->rd_id, ul + 1);
-
-			// Column width priority for non-fixed width:
-			// 1. If there is average width kept in the stats for that column, pick that value.
-			// 2. If not, if it is a fixed length text type, pick the size of it. E.g if it is
-			//    varchar(10), assign 10 as the column length.
-			// 3. Otherwise, assign it to default column width which is 8.
-			if (HeapTupleIsValid(stats_tup))
-			{
-				Form_pg_statistic form_pg_stats =
-					(Form_pg_statistic) GETSTRUCT(stats_tup);
-
-				// column width
-				col_len = form_pg_stats->stawidth;
-				gpdb::FreeHeapTuple(stats_tup);
-			}
-			else if ((mdid_col->Equals(&CMDIdGPDB::m_mdid_bpchar) ||
-					  mdid_col->Equals(&CMDIdGPDB::m_mdid_varchar)) &&
-					 (VARHDRSZ < att->atttypmod))
-			{
-				col_len = (ULONG) att->atttypmod - VARHDRSZ;
-			}
-			else
+			// Optimization: For numeric(p,s), calculate width from typmod
+			// without querying pg_statistic
+			if (mdid_col->Equals(&CMDIdGPDB::m_mdid_numeric) &&
+				att->atttypmod >= (int32) VARHDRSZ)
 			{
 				DOUBLE width = CStatistics::DefaultColumnWidth.Get();
 				col_len = (ULONG) width;
+			}
+			else
+			{
+				// Original logic for non-numeric types
+				// This is expensive, but luckily we don't need it for most types
+				HeapTuple stats_tup = gpdb::GetAttStats(rel->rd_id, ul + 1);
+
+				// Column width priority for non-fixed width:
+				// 1. If there is average width kept in the stats for that column, pick that value.
+				// 2. If not, if it is a fixed length text type, pick the size of it. E.g if it is
+				//    varchar(10), assign 10 as the column length.
+				// 3. Otherwise, assign it to default column width which is 8.
+				if (HeapTupleIsValid(stats_tup))
+				{
+					Form_pg_statistic form_pg_stats =
+						(Form_pg_statistic) GETSTRUCT(stats_tup);
+
+					// column width
+					col_len = form_pg_stats->stawidth;
+					gpdb::FreeHeapTuple(stats_tup);
+				}
+				else if ((mdid_col->Equals(&CMDIdGPDB::m_mdid_bpchar) ||
+						  mdid_col->Equals(&CMDIdGPDB::m_mdid_varchar)) &&
+						 (VARHDRSZ < att->atttypmod))
+				{
+					col_len = (ULONG) att->atttypmod - VARHDRSZ;
+				}
+				else
+				{
+					DOUBLE width = CStatistics::DefaultColumnWidth.Get();
+					col_len = (ULONG) width;
+				}
 			}
 		}
 
