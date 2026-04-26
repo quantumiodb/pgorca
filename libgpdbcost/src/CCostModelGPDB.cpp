@@ -1846,10 +1846,6 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 		ulUnindexedPredCount = ptr->ResidualPredicateSize();
 	}
 
-	// TODO: 2014-02-01
-	// Add logic to judge if the index column used in the filter is the first key of a multi-key index or not.
-	// and separate the cost functions for the two cases.
-
 	// index scan cost contains two parts: index-column lookup and output tuple cost.
 	// 1. index-column lookup: correlated with index lookup rows, the number of index columns used in lookup,
 	// table width and a randomIOFactor. also accounts for included columns which adds to the payload of index leaf
@@ -1869,13 +1865,35 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 								 rel_mdid) *
 		dIndexCostConversionFactor;
 
+	// When the predicate does not cover the leading index column, the B-tree
+	// must be scanned nearly in full because rows with the target value are
+	// scattered across all leaf pages.  Scale the random-I/O term by
+	// (table_pages / rows_per_rebind) so the planner prefers seq-scan +
+	// hash-join over nested-loop + non-leading index scan.
+	CDouble dEffectiveRandomFactor = dIndexScanTupRandomFactor;
+	if (pdrgpcrIndexColumns->Size() > 0)
+	{
+		CExpression *pexprIndexCond = exprhdl.PexprScalarRepChild(0);
+		CColRefSet *pcrsUsed = pexprIndexCond->DeriveUsedColumns();
+		if (!pcrsUsed->FMember((*pdrgpcrIndexColumns)[0]))
+		{
+			ULONG rel_pages = CStatistics::CastStats(stats)->RelPages();
+			if (rel_pages > 0 && dRowsIndex > CDouble(0))
+			{
+				dEffectiveRandomFactor =
+					dIndexScanTupRandomFactor *
+					(CDouble(rel_pages) / dRowsIndex);
+			}
+		}
+	}
+
 	pdrgpcrIndexColumns->Release();
 
 	CDouble dCostPerIndexRow = ulIndexKeys * dIndexFilterCostUnit +
 							   dTableWidth * dIndexScanTupCostUnit +
 							   ulIncludedColWidth * dIndexOnlyScanTupCostUnit;
 	return CCost(pci->NumRebinds() *
-				 (dRowsIndex * dCostPerIndexRow + dIndexScanTupRandomFactor +
+				 (dRowsIndex * dCostPerIndexRow + dEffectiveRandomFactor +
 				  dUnindexedPredCost + dUnusedIndexCost));
 }
 
