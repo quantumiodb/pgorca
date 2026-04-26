@@ -32,6 +32,7 @@ extern int  optimizer_segments;
 /* --- double GUCs --- */
 extern double optimizer_sort_factor;
 extern double optimizer_spilling_mem_threshold;
+extern double optimizer_index_join_allowed_risk_threshold;
 
 /* --- string GUCs --- */
 extern char *optimizer_search_strategy_path;

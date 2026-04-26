@@ -70,6 +70,7 @@ int   optimizer_segments                        = 1;
 
 double optimizer_sort_factor                    = 1.0;
 double optimizer_spilling_mem_threshold         = 0.0;
+double optimizer_index_join_allowed_risk_threshold = 3.0;
 
 char *optimizer_search_strategy_path           = NULL;
 
@@ -579,6 +580,12 @@ void _PG_init(void)
         "optimizer_spilling_mem_threshold",
         "Memory threshold (MB) for spilling in ORCA (0 = disabled).",
         NULL, &optimizer_spilling_mem_threshold, 0.0, 0.0, 1e10,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomRealVariable(
+        "optimizer_index_join_allowed_risk_threshold",
+        "Stats estimation risk threshold above which ORCA penalizes index NLJ cost (default 3).",
+        NULL, &optimizer_index_join_allowed_risk_threshold, 3.0, 0.0, 1e10,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     DefineCustomStringVariable(

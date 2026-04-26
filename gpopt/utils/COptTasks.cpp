@@ -467,6 +467,15 @@ COptTasks::SetCostModelParams(ICostModel *cost_model)
 				spill_mem_threshold + 0.0);
 	}
 
+	{
+		ICostModelParams::SCostParam *cost_param =
+			cost_model->GetCostModelParams()->PcpLookup(
+				CCostModelParamsGPDB::EcpIndexJoinAllowedRiskThreshold);
+		CDouble threshold(optimizer_index_join_allowed_risk_threshold);
+		cost_model->GetCostModelParams()->SetParam(
+			cost_param->Id(), threshold, 0.0, threshold + 0.0);
+	}
+
 }
 
 
