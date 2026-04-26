@@ -53,8 +53,9 @@ const CDouble CCostModelParamsGPDB::DIndexScanTupCostUnitVal = 3.66e-06;
 // read from the index, _not_ the heap.
 const CDouble CCostModelParamsGPDB::DIndexOnlyScanTupCostUnitVal = 3.66e-06;
 
-// index scan random IO factor
-const CDouble CCostModelParamsGPDB::DIndexScanTupRandomFactorVal = 6.0;
+// index scan random IO factor: ~3 random page reads per B-tree probe at 4×
+// seq cost per page (41 rows × 200 bytes × DTableScanCostUnitVal = 4.5e-3/page)
+const CDouble CCostModelParamsGPDB::DIndexScanTupRandomFactorVal = 0.05;
 
 // filter column cost unit
 const CDouble CCostModelParamsGPDB::DFilterColCostUnitVal = 3.29e-05;
@@ -310,8 +311,8 @@ CCostModelParamsGPDB::CCostModelParamsGPDB(CMemoryPool *mp) : m_mp(mp)
 		EcpIndexOnlyScanTupCostUnit, DIndexOnlyScanTupCostUnitVal,
 		DIndexOnlyScanTupCostUnitVal - 1.0, DIndexOnlyScanTupCostUnitVal + 1.0);
 	m_rgpcp[EcpIndexScanTupRandomFactor] = GPOS_NEW(mp) SCostParam(
-		EcpIndexScanTupRandomFactor, DIndexScanTupRandomFactorVal,
-		DIndexScanTupRandomFactorVal - 1.0, DIndexScanTupRandomFactorVal + 1.0);
+		EcpIndexScanTupRandomFactor, DIndexScanTupRandomFactorVal, 0.0,
+		DIndexScanTupRandomFactorVal + 10.0);
 	m_rgpcp[EcpFilterColCostUnit] = GPOS_NEW(mp)
 		SCostParam(EcpFilterColCostUnit, DFilterColCostUnitVal,
 				   DFilterColCostUnitVal - 1.0, DFilterColCostUnitVal + 1.0);
