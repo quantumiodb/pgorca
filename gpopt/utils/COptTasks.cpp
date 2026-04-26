@@ -1137,10 +1137,10 @@ COptTasks::PrintMissingStatsWarning(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	if (0 < rel_stats->Size())
 	{
-		int length = NAMEDATALEN * rel_stats->Size() + 200;
-		char msgbuf[length];
+		int length = NAMEDATALEN * (int) rel_stats->Size() + 200;
+		char *msgbuf = (char *) palloc(length);
 		snprintf(
-			msgbuf, sizeof(msgbuf),
+			msgbuf, length,
 			"One or more columns in the following table(s) do not have statistics: %s",
 			CreateMultiByteCharStringFromWCString(wcstr.GetBuffer()));
 		GpdbEreport(

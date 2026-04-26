@@ -196,6 +196,7 @@ target_compile_options(pg_orca PRIVATE
     -Wall
     -Wno-unused-parameter
     -Wno-sign-compare
+    -Wno-ignored-attributes
     -fvisibility=hidden
 )
 
