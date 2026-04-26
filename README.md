@@ -1,5 +1,7 @@
 # pg_orca
 
+[![build](https://github.com/quantumiodb/pgorca/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/quantumiodb/pgorca/actions/workflows/build.yml)
+
 A PostgreSQL 18 extension that plugs the **ORCA query optimizer** (originally from Greenplum / Apache Cloudberry) into a standard single-node PostgreSQL instance.
 
 ## Overview
