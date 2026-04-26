@@ -1,11 +1,14 @@
 -- disable parallel 
 set max_parallel_workers_per_gather=0;
+LOAD 'pg_orca';
 
 CREATE EXTENSION IF NOT EXISTS pg_tpch;
 
-set pg_orca.enable_orca to off;
 SELECT * FROM create_tpch_tables(false);
+
 SELECT table_name, rows, heap_time_ms FROM tpch_dbgen(1);
+
+CREATE INDEX ON lineitem (l_partkey);  -- for PG Q17
 
 ANALYZE;
 
@@ -34,50 +37,48 @@ select query as query22 from tpch_queries(22); \gset
 set pg_orca.trace_fallback = on;
 set pg_orca.enable_orca to on;
 \timing on
+:query1;
 
-explain (costs off ) :query1;
+:query2;
 
-explain (costs off ) :query2;
+:query3;
 
-explain (costs off ) :query3;
+:query4;
 
-explain (costs off ) :query4;
+:query5;
 
-explain (costs off ) :query5;
+:query6;
 
-explain (costs off ) :query6;
+:query7;
 
-explain (costs off ) :query7;
+:query8;
 
-explain (costs off ) :query8;
+:query9;
 
-explain (costs off ) :query9;
+:query10;
 
-explain (costs off ) :query10;
+:query11;
 
-explain (costs off ) :query11;
+:query12;
 
-explain (costs off ) :query12;
+:query13;
 
-explain (costs off ) :query13;
+:query14;
 
-explain (costs off ) :query14;
+:query15;
 
-explain (costs off ) :query15;
+:query16;
 
-explain (costs off ) :query16;
+:query17;
 
-explain (costs off ) :query17;
+:query18;
 
-explain (costs off ) :query18;
+:query19;
+:query20;
 
-explain (costs off ) :query19;
+:query21;
 
-explain (costs off ) :query20;
-
-explain (costs off ) :query21;
-
-explain (costs off ) :query22;
+:query22;
 
 
 SELECT drop_tpch_tables();
