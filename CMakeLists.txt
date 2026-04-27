@@ -63,8 +63,15 @@ if(PKG_CONFIG_FOUND)
 endif()
 
 if(XERCES_FOUND)
-    # pkg-config succeeded — use its results directly
-    set(XERCES_LIB   ${XERCES_LIBRARIES})
+    # pkg-config succeeded — prefer absolute paths from XERCES_LINK_LIBRARIES so
+    # the linker doesn't need to search for it. On macOS Homebrew, xerces-c
+    # lives in /opt/homebrew/opt/xerces-c/lib which is not a default search
+    # path, so passing only "-lxerces-c" fails with "library not found".
+    if(XERCES_LINK_LIBRARIES)
+        set(XERCES_LIB ${XERCES_LINK_LIBRARIES})
+    else()
+        set(XERCES_LIB ${XERCES_LIBRARIES})
+    endif()
     set(XERCES_INCLUDE ${XERCES_INCLUDE_DIRS})
     message(STATUS "xerces-c (pkg-config): ${XERCES_LIB}")
 else()
