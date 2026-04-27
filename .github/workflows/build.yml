@@ -70,3 +70,68 @@ jobs:
 
       - name: Build
         run: cmake --build build -j "$(nproc)"
+
+  build-centos:
+    name: centos-stream9 / gcc / Debug + tests
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/centos/centos:stream9
+
+    steps:
+      - name: Install OS packages
+        run: |
+          set -eux
+          dnf -y install epel-release
+          dnf -qy module disable postgresql
+          dnf -y install \
+            https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          dnf -y install \
+            postgresql18 postgresql18-server postgresql18-devel \
+            xerces-c-devel \
+            cmake ninja-build gcc-c++ \
+            git diffutils perl-IPC-Run
+
+      - uses: actions/checkout@v5
+
+      - name: Show toolchain versions
+        run: |
+          set -eux
+          /usr/pgsql-18/bin/pg_config --version
+          cmake --version
+          ninja --version
+          gcc --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPG_CONFIG=/usr/pgsql-18/bin/pg_config
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Install
+        run: cmake --install build
+
+      - name: Run ORCA tests (--orca-tests)
+        # pg_regress's --temp-instance calls initdb, which refuses to run as
+        # root. Create a regular user, hand over the workspace, and re-exec.
+        run: |
+          set -eux
+          useradd -m runner
+          chown -R runner:runner "$GITHUB_WORKSPACE"
+          runuser -u runner -- bash -c '
+            set -eux
+            export PATH=/usr/pgsql-18/bin:$PATH
+            cd "$GITHUB_WORKSPACE"
+            test/test.sh --orca-tests
+          '
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: centos-test-results
+          path: |
+            build/test_parallel/
+            build/tmp_check_parallel/log/
