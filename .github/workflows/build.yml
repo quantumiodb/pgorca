@@ -179,6 +179,51 @@ jobs:
       - name: Build
         run: cmake --build build -j "$(nproc)"
 
+  build-arm64:
+    name: ubuntu-24.04-arm / gcc / Debug
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Add PostgreSQL apt repository (pgdg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates lsb-release
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install build dependencies
+        run: |
+          set -eux
+          sudo apt-get install -y \
+            postgresql-server-dev-18 \
+            libxerces-c-dev \
+            cmake \
+            ninja-build
+
+      - name: Show toolchain versions
+        run: |
+          set -eux
+          uname -m
+          /usr/lib/postgresql/18/bin/pg_config --version
+          cmake --version
+          ninja --version
+          gcc --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
   build-macos:
     name: macos-latest / clang / Debug
     runs-on: macos-latest
