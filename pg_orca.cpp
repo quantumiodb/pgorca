@@ -696,6 +696,12 @@ void _PG_fini(void)
         TerminateGPOPT();
         orca_initialized = false;
     }
+
+    if (OptimizerMemoryContext != NULL)
+    {
+        MemoryContextDelete(OptimizerMemoryContext);
+        OptimizerMemoryContext = NULL;
+    }
 }
 
 } /* extern "C" */
