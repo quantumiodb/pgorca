@@ -1,4 +1,4 @@
-# pg_orca
+# pgorca
 
 [![build](https://github.com/quantumiodb/pgorca/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/quantumiodb/pgorca/actions/workflows/build.yml)
 

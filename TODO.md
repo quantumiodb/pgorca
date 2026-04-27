@@ -43,4 +43,3 @@ MCV lists (`m`) 和 expression statistics (`e`) 未实现。
 ## Current Status (Phase 3)
 - [ ] partitioned tables
 - [ ] Parallel query support
-- [ ] JOIN_LASJ_NOTIN
