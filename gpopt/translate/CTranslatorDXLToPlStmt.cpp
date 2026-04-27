@@ -56,9 +56,7 @@ extern "C" {
 #ifndef GpForeignServerAttributeNumber
 #define GpForeignServerAttributeNumber InvalidAttrNumber
 #endif
-#ifndef JOIN_LASJ_NOTIN
-#define JOIN_LASJ_NOTIN JOIN_ANTI
-#endif
+
 #ifndef RTE_TABLEFUNCTION
 #define RTE_TABLEFUNCTION RTE_TABLEFUNC
 #endif
@@ -6619,7 +6617,9 @@ CTranslatorDXLToPlStmt::GetGPDBJoinTypeFromDXLJoinType(EdxlJoinType join_type)
 			jt = JOIN_ANTI;
 			break;
 		case EdxljtLeftAntiSemijoinNotIn:
-			jt = JOIN_ANTI;  /* JOIN_LASJ_NOTIN is GPDB-only; map to JOIN_ANTI */
+			/* JOIN_LASJ_NOTIN does not exist in PG18 yet; fall back */
+			GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+					   GPOS_WSZ_LIT("LeftAntiSemiJoinNotIn (NOT IN with NULLs) not supported in PG18"));
 			break;
 		default:
 			GPOS_ASSERT(!"Unrecognized join type");

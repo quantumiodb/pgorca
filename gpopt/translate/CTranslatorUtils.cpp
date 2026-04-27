@@ -24,10 +24,6 @@ extern "C" {
 #include "nodes/parsenodes.h"
 #include "nodes/plannodes.h"
 /* optimizer/walkers.h not in PG18 — walker macros defined inline */
-/* PG18 compat: GPDB-only JoinType and SubLinkType values */
-#ifndef JOIN_LASJ_NOTIN
-#define JOIN_LASJ_NOTIN 100
-#endif
 #define query_or_expression_tree_walker(n,w,c,f) \
 	query_or_expression_tree_walker_impl(n,(bool(*)(Node*,void*))w,c,f)
 #define expression_tree_walker(n,w,c) \
@@ -725,10 +721,6 @@ CTranslatorUtils::ConvertToDXLJoinType(JoinType jt)
 
 		case JOIN_ANTI:
 			join_type = EdxljtLeftAntiSemijoin;
-			break;
-
-		case JOIN_LASJ_NOTIN:
-			join_type = EdxljtLeftAntiSemijoinNotIn;
 			break;
 
 		default:
