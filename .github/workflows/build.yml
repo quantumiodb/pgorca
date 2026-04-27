@@ -139,6 +139,46 @@ jobs:
             build/test_parallel/
             build/tmp_check_parallel/log/
 
+  build-rocky:
+    name: rockylinux:9 / gcc / Debug
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux:9
+
+    steps:
+      - name: Install OS packages
+        run: |
+          set -eux
+          dnf -y install dnf-plugins-core epel-release
+          dnf -y config-manager --set-enabled crb
+          dnf -qy module disable postgresql
+          dnf -y install \
+            https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          dnf -y install \
+            postgresql18-devel \
+            xerces-c-devel \
+            cmake ninja-build gcc-c++ \
+            git
+
+      - uses: actions/checkout@v5
+
+      - name: Show toolchain versions
+        run: |
+          set -eux
+          /usr/pgsql-18/bin/pg_config --version
+          cmake --version
+          ninja --version
+          gcc --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPG_CONFIG=/usr/pgsql-18/bin/pg_config
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
   build-macos:
     name: macos-latest / clang / Debug
     runs-on: macos-latest
