@@ -81,7 +81,9 @@ jobs:
       - name: Install OS packages
         run: |
           set -eux
-          dnf -y install epel-release
+          # ninja-build lives in CRB (CodeReady Builder), perl-IPC-Run in EPEL.
+          dnf -y install dnf-plugins-core epel-release
+          dnf -y config-manager --set-enabled crb
           dnf -qy module disable postgresql
           dnf -y install \
             https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
