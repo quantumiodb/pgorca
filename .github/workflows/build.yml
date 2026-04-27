@@ -91,7 +91,8 @@ jobs:
             postgresql18 postgresql18-server postgresql18-devel \
             xerces-c-devel \
             cmake ninja-build gcc-c++ \
-            git diffutils perl-IPC-Run
+            git diffutils \
+            perl perl-IPC-Run
 
       - uses: actions/checkout@v5
 
