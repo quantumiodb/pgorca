@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-24.04]
         compiler: [gcc, clang]
         build_type: [Debug, Release]
 
@@ -138,3 +138,33 @@ jobs:
           path: |
             build/test_parallel/
             build/tmp_check_parallel/log/
+
+  build-macos:
+    name: macos-latest / clang / Debug
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          set -eux
+          brew update
+          brew install postgresql@18 xerces-c cmake ninja
+
+      - name: Show toolchain versions
+        run: |
+          set -eux
+          "$(brew --prefix postgresql@18)/bin/pg_config" --version
+          cmake --version
+          ninja --version
+          clang --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPG_CONFIG="$(brew --prefix postgresql@18)/bin/pg_config"
+
+      - name: Build
+        run: cmake --build build -j "$(sysctl -n hw.ncpu)"
