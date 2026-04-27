@@ -28,9 +28,6 @@
 -- # m/^(?:Planning|Execution) Time: [\d.]+ ms/
 -- # s/^((?:Planning|Execution) Time): [\d.]+ ms$/$1: ### ms/
 --
--- # Normalize tpch_dbgen heap_time_ms values, which vary run-to-run.
--- m/(\|\s+\d+\s+\|\s+)[\d.]+(\s*)$/
--- s/(\|\s+\d+\s+\|\s+)[\d.]+(\s*)$/$1###.##$2/
 --
 -- # ORCA does not inline SQL SRFs, so error context says "statement 1"
 -- # instead of "during inlining". Normalize to the ORCA form.
