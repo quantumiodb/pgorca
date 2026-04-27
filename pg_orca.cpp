@@ -204,6 +204,15 @@ pg_orca_patch_result_nodes(PlanState *ps)
         for (int i = 0; i < ms->ms_nplans; i++)
             pg_orca_patch_result_nodes(ms->mergeplans[i]);
     }
+    /* Recurse into CustomScan children (Sequence / ShareInputScan Producer
+     * stash their Plan tree children in custom_ps). */
+    else if (IsA(ps, CustomScanState))
+    {
+        CustomScanState *css = (CustomScanState *) ps;
+        ListCell *lc2;
+        foreach(lc2, css->custom_ps)
+            pg_orca_patch_result_nodes((PlanState *) lfirst(lc2));
+    }
 
     /* Recurse into subplans */
     ListCell *lc;
