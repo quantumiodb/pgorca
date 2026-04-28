@@ -42,12 +42,13 @@ CXformDynamicGet2DynamicTableScan::CXformDynamicGet2DynamicTableScan(
 CXform::EXformPromise
 CXformDynamicGet2DynamicTableScan::Exfp(CExpressionHandle &exprhdl) const
 {
-	/* DynamicSeqScan requires GPDB executor nodes (T_DynamicSeqScan,
-	 * T_PartitionSelector) that do not exist in vanilla PostgreSQL.
-	 * Disable this xform; CXformDynamicGet2AppendTableScan handles
-	 * partitioned table scans instead. */
+	/* Enable this xform so ORCA can produce CPhysicalDynamicTableScan
+	 * alternatives.  These are translated to DynamicTableScanCS (CustomScan)
+	 * in the DXL→PlannedStmt layer, enabling HashJoin DPE.
+	 * CPhysicalDynamicTableScan derives EpptConsumer, so it will only
+	 * survive if an ancestor join provides a matching Propagator. */
 	(void) exprhdl;
-	return CXform::ExfpNone;
+	return CXform::ExfpHigh;
 }
 
 //---------------------------------------------------------------------------

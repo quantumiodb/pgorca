@@ -26,6 +26,7 @@ extern "C" {
 #include "optimizer/optimizer.h"
 #include "optimizer/planmain.h"
 #include "compat/utils/misc.h"
+#include "compat/executor/dyn_scan.h"
 #include "utils/rel.h"
 #include "access/table.h"
 #include "catalog/pg_attribute.h"
@@ -530,6 +531,9 @@ extern "C" {
 
 void _PG_init(void)
 {
+    FILE *f = fopen("/tmp/dpe_debug.log", "a");
+    if (f) { fprintf(f, "[_PG_init] pg_orca loaded\n"); fclose(f); }
+
     DefineCustomBoolVariable(
         "pg_orca.enable_orca",
         "Enable the ORCA query optimizer.",
@@ -678,6 +682,8 @@ void _PG_init(void)
 
     MarkGUCPrefixReserved("optimizer");
     MarkGUCPrefixReserved("pg_orca");
+
+    RegisterDynScanCustomScanMethods();
 
     prev_planner_hook = planner_hook;
     planner_hook      = pg_orca_planner;

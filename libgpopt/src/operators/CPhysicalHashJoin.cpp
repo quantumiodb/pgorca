@@ -1315,13 +1315,62 @@ CPhysicalHashJoin::PppsRequiredForJoins(CMemoryPool *mp,
 	GPOS_ASSERT(nullptr != pppsRequired);
 	GPOS_ASSERT(nullptr != pdrgpdpCtxt);
 
-	// FIXME: Dynamic Partition Elimination (DPE) is a GPDB/CBDB feature that
-	// relies on DynamicTableScan/DynamicIndexScan, which do not exist in
-	// PostgreSQL.  Re-enable once DPE is ported to PG (e.g. by propagating
-	// PartitionPruneInfo through parameterized Append paths).
-	// For now, always pass through partition propagation requirements unchanged
-	// so that ORCA does not generate PartitionSelector plan nodes (tag 5005)
-	// that the PG executor cannot handle.
+	// HashJoin DPE: partition table is on the outer (index 0), while the
+	// inner (index 1) provides probe values.  If outer has partition
+	// consumers and the join predicate references partition keys, require
+	// EpptPropagator on the inner child so AppendEnforcers inserts a
+	// PartitionSelector node.
+	if (child_index == 1)
+	{
+		CExpression *pexprScalar =
+			exprhdl.PexprScalarExactChild(2 /* scalar child index */);
+		CColRefSet *pcrsOutputOuter = exprhdl.DeriveOutputColumns(0);
+		CPartInfo *part_info_outer = exprhdl.DerivePartitionInfo(0);
+
+		CPartitionPropagationSpec *pps_result =
+			GPOS_NEW(mp) CPartitionPropagationSpec(mp);
+		ULONG num_propagators = 0;
+
+		for (ULONG ul = 0; ul < part_info_outer->UlConsumers(); ++ul)
+		{
+			ULONG scan_id = part_info_outer->ScanId(ul);
+			IMDId *rel_mdid = part_info_outer->GetRelMdId(ul);
+			CPartKeysArray *part_keys_array = part_info_outer->Pdrgppartkeys(ul);
+
+			CExpression *pexprCmp = nullptr;
+			for (ULONG ulKey = 0;
+				 nullptr == pexprCmp && ulKey < part_keys_array->Size();
+				 ulKey++)
+			{
+				CColRef2dArray *pdrgpdrgpcr =
+					(*part_keys_array)[ulKey]->Pdrgpdrgpcr();
+				pexprCmp = CPredicateUtils::PexprExtractPredicatesOnPartKeys(
+					mp, pexprScalar, pdrgpdrgpcr, pcrsOutputOuter,
+					true /* fUseConstraints */);
+			}
+
+			if (pexprCmp == nullptr)
+				continue;
+
+			pps_result->Insert(scan_id,
+							   CPartitionPropagationSpec::EpptPropagator,
+							   rel_mdid, nullptr /* selector_ids */, pexprCmp);
+			pexprCmp->Release();
+			++num_propagators;
+		}
+
+		if (num_propagators > 0)
+		{
+			CBitSet *allowed_scan_ids = GPOS_NEW(mp) CBitSet(mp);
+			for (ULONG ul = 0; ul < part_info_outer->UlConsumers(); ++ul)
+				allowed_scan_ids->ExchangeSet(part_info_outer->ScanId(ul));
+			pps_result->InsertAllowedConsumers(pppsRequired, allowed_scan_ids);
+			allowed_scan_ids->Release();
+			return pps_result;
+		}
+		pps_result->Release();
+	}
+
 	return CPhysical::PppsRequired(
 		mp, exprhdl, pppsRequired, child_index, pdrgpdpCtxt, ulOptReq);
 }

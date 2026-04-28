@@ -10,6 +10,8 @@
 //---------------------------------------------------------------------------
 #include "gpopt/engine/CEngine.h"
 
+#include <cstdio>
+
 #include "gpos/base.h"
 #include "gpos/common/CAutoTimer.h"
 #include "gpos/common/syslibwrapper.h"
@@ -1285,6 +1287,10 @@ CEngine::Implement()
 void
 CEngine::RecursiveOptimize()
 {
+	{
+		FILE *f = fopen("/tmp/dpe_debug.log", "a");
+		if (f) { fprintf(f, "[CEngine::RecursiveOptimize] called\n"); fclose(f); }
+	}
 	CAutoTimer at("\n[OPT]: Total Optimization Time",
 				  GPOS_FTRACE(EopttracePrintOptimizationStatistics));
 
@@ -1673,6 +1679,10 @@ CEngine::ProcessTraceFlags()
 void
 CEngine::Optimize()
 {
+	{
+		FILE *f = fopen("/tmp/dpe_debug.log", "a");
+		if (f) { fprintf(f, "[CEngine::Optimize] called\n"); fclose(f); }
+	}
 	CAutoTimer at("\n[OPT]: Total Optimization Time",
 				  GPOS_FTRACE(EopttracePrintOptimizationStatistics));
 
