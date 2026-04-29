@@ -529,9 +529,14 @@ dts_begin(CustomScanState *node, EState *estate, int eflags)
 	state->convert_map = NULL;
 
 	/* Save and compile quals; clear plan.qual so framework doesn't re-eval */
+	/*
+	 * Compile quals for our own evaluation in dts_exec.  We do NOT clear
+	 * plan->qual: ExecCustomScan delegates entirely to dts_exec (it never
+	 * evaluates ps.qual), so keeping plan->qual set is safe and lets EXPLAIN
+	 * display the Filter line automatically.
+	 */
 	state->orig_qual = cscan->scan.plan.qual;
 	state->qual_state = ExecInitQual(cscan->scan.plan.qual, (PlanState *) node);
-	cscan->scan.plan.qual = NIL;
 
 	/* Compute static partition set from quals for static pruning */
 	state->static_parts = (scan_relid > 0)
@@ -776,11 +781,18 @@ dts_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyText("Root Table",
 						get_rel_name(state->root_oid), es);
 
+	/*
+	 * Show the statically-pruned partition count whenever it's available
+	 * (even before execution).  For EXPLAIN ANALYZE, also show how many
+	 * partitions were actually scanned after DPE intersection.
+	 */
+	if (state->static_parts)
+		ExplainPropertyInteger("Partitions Selected", NULL,
+							   bms_num_members(state->static_parts), es);
+
 	if (state->scan_started && state->approved)
-	{
 		ExplainPropertyInteger("Partitions Scanned", NULL,
 							   bms_num_members(state->approved), es);
-	}
 }
 
 
