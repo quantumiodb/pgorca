@@ -4154,12 +4154,16 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 			makeInteger(param_id),
 			makeInteger(root_oid));
 		cs->custom_exprs = list_make1(probe_expr);
-		cs->custom_plans = list_make1(child_plan);
+		/* Child goes in lefttree only — not in custom_plans.
+		 * custom_plans would cause ExecInitCustomScan to initialize the child
+		 * before pss_begin runs, resulting in double initialization.  Putting
+		 * the child in lefttree lets pss_begin initialize it once via
+		 * ExecInitNode(outerPlan(cscan)), and also gives ruleutils.c the outer
+		 * deparse context it needs to resolve OUTER_VAR references without
+		 * creating a shared-subtree (DAG) in the plan tree. */
+		cs->custom_plans = NIL;
+		cs->scan.plan.lefttree = child_plan;
 		cs->scan.plan.targetlist = child_plan->targetlist;
-		/* Set lefttree so EXPLAIN's deparse context can resolve OUTER_VAR refs
-		 * in the HASH→PS→child targetlist chain. Execution uses custom_plans,
-		 * not lefttree, so this only affects ruleutils.c deparse. */
-		cs->scan.plan.lefttree = child_plan->lefttree;
 
 		Plan *plan = &cs->scan.plan;
 		plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();

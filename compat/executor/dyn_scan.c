@@ -247,9 +247,8 @@ ps_begin(CustomScanState *node, EState *estate, int eflags)
 	/* Open root relation for PartitionKey/PartitionDesc */
 	state->root_rel = table_open(state->root_oid, AccessShareLock);
 
-	/* Initialize child plan node (stored in custom_plans, not lefttree) */
-	outerPlanState(node) = ExecInitNode((Plan *) linitial(cscan->custom_plans),
-										estate, eflags);
+	/* Initialize child plan (stored in lefttree, not custom_plans) */
+	outerPlanState(node) = ExecInitNode(outerPlan(cscan), estate, eflags);
 
 	/* Initialize probe key expression */
 	Expr *probe_expr = (Expr *) linitial(cscan->custom_exprs);
