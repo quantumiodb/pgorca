@@ -11,8 +11,6 @@
 
 #include "gpopt/search/CJobGroupImplementation.h"
 
-#include <cstdio>
-
 #include "gpopt/base/CQueryContext.h"
 #include "gpopt/engine/CEngine.h"
 #include "gpopt/search/CGroup.h"
