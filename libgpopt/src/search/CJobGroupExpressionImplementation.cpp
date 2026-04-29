@@ -11,8 +11,6 @@
 
 #include "gpopt/search/CJobGroupExpressionImplementation.h"
 
-#include <cstdio>
-
 #include "gpopt/engine/CEngine.h"
 #include "gpopt/operators/CLogical.h"
 #include "gpopt/search/CGroup.h"
