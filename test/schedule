@@ -11,3 +11,4 @@ test: query_cursors
 test: query_cte
 test: query_subquery
 test: query_partition_mpp25707
+test: query_partition_list
