@@ -115,11 +115,13 @@ cmake --build . --target install -j$(nproc)
 Release mode enables `-O3 -DNDEBUG` and disables ORCA internal assertions (`GPOS_DEBUG`).
 
 ## Usage
-- Configure shared_preload_libraries = 'pg_orca', or manually load 'pg_orca.so';
+- Configure shared_preload_libraries = 'pg_orca', or manually load 'pg_orca';
 
 ```sql
 -- Load the extension (once per database)
 CREATE EXTENSION pg_orca;
+
+load 'pg_orca';
 
 -- Enable ORCA for the current session
 SET pg_orca.enable_orca = on;

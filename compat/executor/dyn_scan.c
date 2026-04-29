@@ -121,7 +121,7 @@ static void dts_explain(CustomScanState *node, List *ancestors, ExplainState *es
  * ================================================================ */
 
 static const CustomExecMethods dts_exec_methods = {
-	.CustomName = "DynamicTableScanCS",
+	.CustomName = "DynamicTableScan",
 	.BeginCustomScan = dts_begin,
 	.ExecCustomScan = dts_exec,
 	.EndCustomScan = dts_end,
@@ -130,7 +130,7 @@ static const CustomExecMethods dts_exec_methods = {
 };
 
 static const CustomExecMethods ps_exec_methods = {
-	.CustomName = "PartitionSelectorCS",
+	.CustomName = "PartitionSelector",
 	.BeginCustomScan = ps_begin,
 	.ExecCustomScan = ps_exec,
 	.EndCustomScan = ps_end,
@@ -139,12 +139,12 @@ static const CustomExecMethods ps_exec_methods = {
 };
 
 const CustomScanMethods DynamicTableScanCS_methods = {
-	.CustomName = "DynamicTableScanCS",
+	.CustomName = "DynamicTableScan",
 	.CreateCustomScanState = dts_create_scan_state,
 };
 
 const CustomScanMethods PartitionSelectorCS_methods = {
-	.CustomName = "PartitionSelectorCS",
+	.CustomName = "PartitionSelector",
 	.CreateCustomScanState = ps_create_scan_state,
 };
 

@@ -24,6 +24,8 @@
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CPhysicalDynamicIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalDynamicIndexScan.h"
+#include "gpopt/operators/CPhysicalDynamicScan.h"
+#include "gpopt/operators/CPhysicalDynamicTableScan.h"
 #include "gpopt/operators/CPhysicalHashAgg.h"
 #include "gpopt/operators/CPhysicalIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
@@ -2362,7 +2364,6 @@ CCostModelGPDB::CostScan(CMemoryPool *,	 // mp
 	switch (op_id)
 	{
 		case COperator::EopPhysicalTableScan:
-		case COperator::EopPhysicalDynamicTableScan:
 		case COperator::EopPhysicalAppendTableScan:
 		case COperator::EopPhysicalForeignScan:
 		case COperator::EopPhysicalDynamicForeignScan:
@@ -2373,6 +2374,29 @@ CCostModelGPDB::CostScan(CMemoryPool *,	 // mp
 			return CCost(
 				pci->NumRebinds() *
 				(dInitScan + pci->Rows() * dTableWidth * dTableScanCostUnit));
+
+		case COperator::EopPhysicalDynamicTableScan:
+		{
+			// DynamicTableScan supports HashJoin DPE: at runtime only the
+			// approved partitions (passed via PARAM_EXEC from PartitionSelector)
+			// are scanned.  Reflect this in the cost by scaling the scan rows by
+			// the DPE selectivity: ratio of DPE-estimated rows (pci->Rows(),
+			// derived via Left Semi-Join with the driving side) to the full base
+			// table row count.  This lets DynamicTableScan beat AppendTableScan
+			// when the join predicate is selective across partitions.
+			const CDouble dBaseRows =
+				CPhysicalScan::PopConvert(pop)->PstatsBaseTable()->Rows();
+			// selectivity in [0, 1]: how much of the table DPE is expected to scan
+			const CDouble dDPESel =
+				(dBaseRows > CDouble(0))
+					? std::min(CDouble(1.0), CDouble(pci->Rows()) / dBaseRows)
+					: CDouble(1.0);
+			const CDouble dScanRows = dBaseRows * dDPESel;
+			return CCost(
+				pci->NumRebinds() *
+				(dInitScan + dScanRows * dTableWidth * dTableScanCostUnit));
+		}
+
 		default:
 			GPOS_ASSERT(!"invalid index scan");
 			return CCost(0);
