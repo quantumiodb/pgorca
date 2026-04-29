@@ -308,6 +308,30 @@ ps_end(CustomScanState *node)
 static void
 ps_rescan(CustomScanState *node)
 {
+	PSState	   *state = (PSState *) node;
+
+	/*
+	 * Reset the shared partition-approval state so each new outer row in a
+	 * NestLoop inner rescan starts with a clean slate.  Without this, the
+	 * approved_partitions accumulated for the first outer row's probe value
+	 * would be reused for all subsequent outer rows, causing wrong results
+	 * when different outer rows need different partitions (e.g. inequality
+	 * joins) or when the probe values span multiple partitions.
+	 *
+	 * For HashJoin DPE the inner side is built exactly once before any
+	 * probing; if the entire HashJoin is later rescanned (e.g. it sits
+	 * inside an outer NestLoop) both inner and outer DTS nodes are rescanned
+	 * together, so clearing here is safe: the inner DTS2 will rebuild the
+	 * approved set during the next hash-build phase before the outer DTS1
+	 * copies it.
+	 */
+	if (state->shared)
+	{
+		bms_free(state->shared->approved_partitions);
+		state->shared->approved_partitions = NULL;
+		state->shared->finalized = false;
+	}
+
 	ExecReScan(outerPlanState(node));
 }
 
