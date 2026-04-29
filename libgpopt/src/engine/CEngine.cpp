@@ -10,8 +10,6 @@
 //---------------------------------------------------------------------------
 #include "gpopt/engine/CEngine.h"
 
-#include <cstdio>
-
 #include "gpos/base.h"
 #include "gpos/common/CAutoTimer.h"
 #include "gpos/common/syslibwrapper.h"
