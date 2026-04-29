@@ -1315,66 +1315,68 @@ CPhysicalHashJoin::PppsRequiredForJoins(CMemoryPool *mp,
 	GPOS_ASSERT(nullptr != pppsRequired);
 	GPOS_ASSERT(nullptr != pdrgpdpCtxt);
 
-	// HashJoin DPE: partition table is on the outer (index 0), while the
-	// inner (index 1) provides probe values.  If outer has partition
-	// consumers and the join predicate links partition keys to inner columns,
-	// require EpptPropagator on the inner child so AppendEnforcers inserts a
-	// PartitionSelector wrapping the inner scan.
-	if (child_index == 1)
-	{
-		CExpression *pexprScalar =
-			exprhdl.PexprScalarExactChild(2 /* scalar child index */);
-		// Inner child (t2) columns are the "allowed refs" — we look for
-		// predicates of the form: outer_part_key = inner_col.
-		CColRefSet *pcrsOutputInner = exprhdl.DeriveOutputColumns(1);
-		CPartInfo *part_info_outer = exprhdl.DerivePartitionInfo(0);
+	CExpression *pexprScalar = exprhdl.PexprScalarExactChild(2 /*child_index*/);
+	CColRefSet *pcrsOutputInner = exprhdl.DeriveOutputColumns(1);
 
-		CPartitionPropagationSpec *pps_result =
-			GPOS_NEW(mp) CPartitionPropagationSpec(mp);
-		ULONG num_propagators = 0;
+	CPartitionPropagationSpec *pps_result;
+	if (ulOptReq == 0)
+	{
+		pps_result = GPOS_NEW(mp) CPartitionPropagationSpec(mp);
+
+		CPartInfo *part_info_outer = exprhdl.DerivePartitionInfo(0);
 
 		for (ULONG ul = 0; ul < part_info_outer->UlConsumers(); ++ul)
 		{
 			ULONG scan_id = part_info_outer->ScanId(ul);
 			IMDId *rel_mdid = part_info_outer->GetRelMdId(ul);
-			CPartKeysArray *part_keys_array = part_info_outer->Pdrgppartkeys(ul);
+			CPartKeysArray *part_keys_array =
+				part_info_outer->Pdrgppartkeys(ul);
 
-			CExpression *pexprCmp = nullptr;
-			for (ULONG ulKey = 0;
-				 nullptr == pexprCmp && ulKey < part_keys_array->Size();
-				 ulKey++)
-			{
-				CColRef2dArray *pdrgpdrgpcr =
-					(*part_keys_array)[ulKey]->Pdrgpdrgpcr();
-				pexprCmp = CPredicateUtils::PexprExtractPredicatesOnPartKeys(
-					mp, pexprScalar, pdrgpdrgpcr, pcrsOutputInner,
-					true /* fUseConstraints */);
-			}
+			CExpression *pexprCmp = PexprJoinPredOnPartKeys(
+				mp, pexprScalar, part_keys_array, pcrsOutputInner);
 
 			if (pexprCmp == nullptr)
 				continue;
 
-			pps_result->Insert(scan_id,
-							   CPartitionPropagationSpec::EpptPropagator,
-							   rel_mdid, nullptr /* selector_ids */, pexprCmp);
+			if (child_index == 0)
+			{
+				// Outer child: require Consumer using the selector IDs that
+				// the inner child's plan has already derived.
+				CPartitionPropagationSpec *pps_inner =
+					CDrvdPropPlan::Pdpplan((*pdrgpdpCtxt)[0])->Ppps();
+				CBitSet *selector_ids =
+					GPOS_NEW(mp) CBitSet(mp, *pps_inner->SelectorIds(scan_id));
+				pps_result->Insert(scan_id,
+								   CPartitionPropagationSpec::EpptConsumer,
+								   rel_mdid, selector_ids, nullptr /* expr */);
+				selector_ids->Release();
+			}
+			else
+			{
+				// Inner child: require Propagator so AppendEnforcers inserts
+				// a PartitionSelector above the inner scan.
+				GPOS_ASSERT(child_index == 1);
+				pps_result->Insert(scan_id,
+								   CPartitionPropagationSpec::EpptPropagator,
+								   rel_mdid, nullptr, pexprCmp);
+			}
 			pexprCmp->Release();
-			++num_propagators;
 		}
 
-		if (num_propagators > 0)
-		{
-			CBitSet *allowed_scan_ids = GPOS_NEW(mp) CBitSet(mp);
-			for (ULONG ul = 0; ul < part_info_outer->UlConsumers(); ++ul)
-				allowed_scan_ids->ExchangeSet(part_info_outer->ScanId(ul));
-			pps_result->InsertAllowedConsumers(pppsRequired, allowed_scan_ids);
-			allowed_scan_ids->Release();
-			return pps_result;
-		}
-		pps_result->Release();
+		CBitSet *allowed_scan_ids = GPOS_NEW(mp) CBitSet(mp);
+		CPartInfo *part_info = exprhdl.DerivePartitionInfo(child_index);
+		for (ULONG ul = 0; ul < part_info->UlConsumers(); ++ul)
+			allowed_scan_ids->ExchangeSet(part_info->ScanId(ul));
+		pps_result->InsertAllowedConsumers(pppsRequired, allowed_scan_ids);
+		allowed_scan_ids->Release();
 	}
-
-	return CPhysical::PppsRequired(
-		mp, exprhdl, pppsRequired, child_index, pdrgpdpCtxt, ulOptReq);
+	else
+	{
+		// No DPE: pass through requirements unchanged.
+		pps_result = CPhysical::PppsRequired(
+			mp, exprhdl, pppsRequired, child_index, pdrgpdpCtxt, ulOptReq);
+	}
+	return pps_result;
 }
 
 // In the following function, we are generating the Derived property :
