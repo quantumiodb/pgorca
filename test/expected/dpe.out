@@ -3,6 +3,7 @@
 LOAD 'pg_orca';
 SET pg_orca.enable_orca TO on;
 SET max_parallel_workers_per_gather TO 0;
+SET enable_mergejoin TO off;
 -- ------------------------------------------------------------
 -- Setup: partitioned tables
 -- ------------------------------------------------------------
@@ -37,19 +38,20 @@ EXPLAIN (costs off)
 SELECT t.a, p.b
 FROM   t JOIN p ON t.a = p.a
 ORDER BY t.a;
-                 QUERY PLAN                 
---------------------------------------------
- Merge Join
-   Merge Cond: (t.a = a)
-   ->  Sort
-         Sort Key: t.a
-         ->  Seq Scan on t
-   ->  Sort
-         Sort Key: a
+                    QUERY PLAN                     
+---------------------------------------------------
+ Sort
+   Sort Key: t.a
+   ->  Hash Join
+         Hash Cond: (a = t.a)
          ->  Custom Scan (DynamicTableScan)
                Root Table: p
+         ->  Hash
+               ->  Custom Scan (PartitionSelector)
+                     Root Table: p
+                     ->  Seq Scan on t
  Optimizer: pg_orca
-(10 rows)
+(11 rows)
 
 -- Verify correctness
 SELECT t.a, p.b
@@ -71,22 +73,23 @@ SELECT t.a, p.b
 FROM   t JOIN p ON t.a = p.a
 WHERE  p.a BETWEEN 501 AND 1000
 ORDER BY t.a;
-                     QUERY PLAN                     
-----------------------------------------------------
- Merge Join
-   Merge Cond: (t.a = a)
-   ->  Sort
-         Sort Key: t.a
-         ->  Seq Scan on t
-               Filter: ((a >= 501) AND (a <= 1000))
-   ->  Sort
-         Sort Key: a
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Sort
+   Sort Key: t.a
+   ->  Hash Join
+         Hash Cond: (a = t.a)
          ->  Custom Scan (DynamicTableScan)
                Filter: ((a >= 501) AND (a <= 1000))
                Root Table: p
                Partitions Selected: 1
+         ->  Hash
+               ->  Custom Scan (PartitionSelector)
+                     Root Table: p
+                     ->  Seq Scan on t
+                           Filter: ((a >= 501) AND (a <= 1000))
  Optimizer: pg_orca
-(13 rows)
+(14 rows)
 
 SELECT t.a, p.b
 FROM   t JOIN p ON t.a = p.a
@@ -150,25 +153,24 @@ FROM   p JOIN q ON p.a = q.a
 WHERE  p.a BETWEEN 1 AND 500
 ORDER BY p.a
 LIMIT  5;
-                      QUERY PLAN                       
--------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Limit
-   ->  Merge Join
-         Merge Cond: (p.a = q.a)
-         ->  Sort
-               Sort Key: p.a
+   ->  Sort
+         Sort Key: p.a
+         ->  Hash Join
+               Hash Cond: (p.a = q.a)
                ->  Custom Scan (DynamicTableScan)
                      Filter: ((a >= 1) AND (a <= 500))
                      Root Table: p
                      Partitions Selected: 1
-         ->  Sort
-               Sort Key: q.a
-               ->  Custom Scan (DynamicTableScan)
-                     Filter: ((a >= 1) AND (a <= 500))
-                     Root Table: q
-                     Partitions Selected: 1
+               ->  Hash
+                     ->  Custom Scan (DynamicTableScan)
+                           Filter: ((a >= 1) AND (a <= 500))
+                           Root Table: q
+                           Partitions Selected: 1
  Optimizer: pg_orca
-(16 rows)
+(15 rows)
 
 SELECT p.a, p.b, q.c
 FROM   p JOIN q ON p.a = q.a
@@ -228,19 +230,20 @@ EXPLAIN (costs off)
 SELECT s.x, r.y, r.z
 FROM   s JOIN r ON s.x = r.x
 ORDER BY s.x;
-                 QUERY PLAN                 
---------------------------------------------
- Merge Join
-   Merge Cond: (s.x = x)
-   ->  Sort
-         Sort Key: s.x
-         ->  Seq Scan on s
-   ->  Sort
-         Sort Key: x
+                    QUERY PLAN                     
+---------------------------------------------------
+ Sort
+   Sort Key: s.x
+   ->  Hash Join
+         Hash Cond: (x = s.x)
          ->  Custom Scan (DynamicTableScan)
                Root Table: r
+         ->  Hash
+               ->  Custom Scan (PartitionSelector)
+                     Root Table: r
+                     ->  Seq Scan on s
  Optimizer: pg_orca
-(10 rows)
+(11 rows)
 
 SELECT s.x, r.y, r.z
 FROM   s JOIN r ON s.x = r.x

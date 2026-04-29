@@ -4,6 +4,7 @@
 LOAD 'pg_orca';
 SET pg_orca.enable_orca TO on;
 SET max_parallel_workers_per_gather TO 0;
+SET enable_mergejoin TO off;
 
 -- ------------------------------------------------------------
 -- Setup: partitioned tables
