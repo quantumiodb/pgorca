@@ -1498,7 +1498,8 @@ CTranslatorExprToDXL::PdxlnDynamicTableScan(
 
 	CDXLPhysicalDynamicTableScan *pdxlopDTS =
 		GPOS_NEW(m_mp) CDXLPhysicalDynamicTableScan(m_mp, table_descr,
-													part_mdids, selector_ids);
+													part_mdids, selector_ids,
+													popDTS->ScanId());
 
 	CDXLNode *pdxlnDTS = GPOS_NEW(m_mp) CDXLNode(m_mp, pdxlopDTS);
 	pdxlnDTS->SetProperties(pdxlpropDTS);

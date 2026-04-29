@@ -37,6 +37,7 @@ class CParseHandlerDynamicTableScan : public CParseHandlerPhysicalOp
 {
 private:
 	ULongPtrArray *m_selector_ids;
+	ULONG m_scan_id = 0;
 
 	// process the start of an element
 	void StartElement(

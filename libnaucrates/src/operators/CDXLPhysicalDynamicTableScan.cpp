@@ -31,11 +31,12 @@ using namespace gpdxl;
 //---------------------------------------------------------------------------
 CDXLPhysicalDynamicTableScan::CDXLPhysicalDynamicTableScan(
 	CMemoryPool *mp, CDXLTableDescr *table_descr, IMdIdArray *part_mdids,
-	ULongPtrArray *selector_ids)
+	ULongPtrArray *selector_ids, ULONG scan_id)
 	: CDXLPhysical(mp),
 	  m_dxl_table_descr(table_descr),
 	  m_part_mdids(part_mdids),
-	  m_selector_ids(selector_ids)
+	  m_selector_ids(selector_ids),
+	  m_scan_id(scan_id)
 
 {
 	GPOS_ASSERT(nullptr != table_descr);
@@ -128,6 +129,9 @@ CDXLPhysicalDynamicTableScan::SerializeToDXL(CXMLSerializer *xml_serializer,
 		CDXLTokens::GetDXLTokenStr(EdxltokenSelectorIds),
 		serialized_selector_ids);
 	GPOS_DELETE(serialized_selector_ids);
+	xml_serializer->AddAttribute(
+		CDXLTokens::GetDXLTokenStr(EdxltokenPhysicalPartitionSelectorScanId),
+		m_scan_id);
 	node->SerializePropertiesToDXL(xml_serializer);
 	node->SerializeChildrenToDXL(xml_serializer);
 	IMDCacheObject::SerializeMDIdList(

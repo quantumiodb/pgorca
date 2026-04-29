@@ -58,12 +58,14 @@ CContextDXLToPlStmt::CContextDXLToPlStmt(
 	  m_result_relation_index(0),
 	  m_distribution_policy(nullptr),
 	  m_part_selector_to_param_map(nullptr),
+	  m_scan_id_to_param_map(nullptr),
 	  m_agg_infos(nullptr),
 	  m_agg_trans_infos(nullptr),
 	  m_part_prune_infos(nullptr)
 {
 	m_cte_consumer_info = GPOS_NEW(m_mp) HMUlCTEConsumerInfo(m_mp);
 	m_part_selector_to_param_map = GPOS_NEW(m_mp) UlongToUlongMap(m_mp);
+	m_scan_id_to_param_map = GPOS_NEW(m_mp) UlongToUlongMap(m_mp);
 	m_used_rte_indexes = GPOS_NEW(m_mp) HMUlIndex(m_mp);
 }
 
@@ -79,6 +81,7 @@ CContextDXLToPlStmt::~CContextDXLToPlStmt()
 {
 	m_cte_consumer_info->Release();
 	m_part_selector_to_param_map->Release();
+	m_scan_id_to_param_map->Release();
 	m_used_rte_indexes->Release();
 }
 
@@ -479,6 +482,19 @@ CContextDXLToPlStmt::GetParamIdForSelector(OID oid_type, ULONG selectorId)
 		param_id = GPOS_NEW(m_mp) ULONG(GetNextParamId(oid_type));
 		ULONG *selector_id = GPOS_NEW(m_mp) ULONG(selectorId);
 		m_part_selector_to_param_map->Insert(selector_id, param_id);
+	}
+	return *param_id;
+}
+
+ULONG
+CContextDXLToPlStmt::GetParamIdForScanId(OID oid_type, ULONG scan_id)
+{
+	ULONG *param_id = m_scan_id_to_param_map->Find(&scan_id);
+	if (nullptr == param_id)
+	{
+		param_id = GPOS_NEW(m_mp) ULONG(GetNextParamId(oid_type));
+		ULONG *key = GPOS_NEW(m_mp) ULONG(scan_id);
+		m_scan_id_to_param_map->Insert(key, param_id);
 	}
 	return *param_id;
 }

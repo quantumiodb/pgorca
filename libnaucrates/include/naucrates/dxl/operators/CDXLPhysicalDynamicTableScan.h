@@ -48,13 +48,23 @@ private:
 
 	ULongPtrArray *m_selector_ids = nullptr;
 
+	// ORCA scan_id — matches CDXLPhysicalPartitionSelector::ScanId() for the
+	// paired PartitionSelector, used for HashJoin DPE param slot allocation
+	ULONG m_scan_id;
+
 public:
 	CDXLPhysicalDynamicTableScan(CDXLPhysicalDynamicTableScan &) = delete;
 
 	// ctor
 	CDXLPhysicalDynamicTableScan(CMemoryPool *mp, CDXLTableDescr *table_descr,
 								 IMdIdArray *part_mdids,
-								 ULongPtrArray *selector_ids);
+								 ULongPtrArray *selector_ids, ULONG scan_id);
+
+	ULONG
+	ScanId() const
+	{
+		return m_scan_id;
+	}
 
 	// dtor
 	~CDXLPhysicalDynamicTableScan() override;

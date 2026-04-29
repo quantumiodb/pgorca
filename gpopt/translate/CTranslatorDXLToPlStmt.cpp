@@ -42,6 +42,8 @@ extern "C" {
 #include "utils/typcache.h"
 /* utils/uri.h not present in PG18 */
 
+#include "compat/executor/dyn_scan.h"
+
 /* PG18 compat: GPDB-only constants */
 #ifndef AGGSPLIT_INTERMEDIATE
 #define AGGSPLIT_INTERMEDIATE AGGSPLIT_INITIAL_SERIAL
@@ -111,6 +113,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalValuesScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalWindow.h"
 #include "naucrates/dxl/operators/CDXLScalarBitmapBoolOp.h"
+#include "naucrates/dxl/operators/CDXLScalarComp.h"
 #include "naucrates/dxl/operators/CDXLScalarBitmapIndexProbe.h"
 #include "naucrates/dxl/operators/CDXLScalarBoolExpr.h"
 #include "naucrates/dxl/operators/CDXLScalarFuncExpr.h"
@@ -1623,6 +1626,18 @@ CTranslatorDXLToPlStmt::TranslateDXLHashJoin(
 	Plan *right_plan =
 		(Plan *) TranslateDXLHash(right_tree_dxlnode, &right_dxl_translate_ctxt,
 								  translation_context_arr_with_siblings);
+
+	// HashJoin DPE: when the outer child is DynamicTableScanCS, the inner
+	// (Hash node) must be fully built before DTS starts scanning so that
+	// PartitionSelectorCS can finalize the approved partition set.
+	// Prevent PG's "early probe" optimization (which probes outer before
+	// building hash) by ensuring DTS startup_cost >= Hash total_cost.
+	if (IsA(left_plan, CustomScan) &&
+		((CustomScan *) left_plan)->methods == &DynamicTableScanCS_methods)
+	{
+		if (left_plan->startup_cost < right_plan->total_cost)
+			left_plan->startup_cost = right_plan->total_cost;
+	}
 
 	CDXLTranslationContextArray *child_contexts =
 		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
@@ -4094,16 +4109,69 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 	if (!IsA(child_plan, Append))
 	{
 		// PartitionSelector wraps a non-Append child (e.g. a probe SeqScan in
-		// HashJoin DPE).  PG18's exec_pruning_steps mechanism only works with
-		// NestLoop; for other join types there is no useful dynamic pruning.
-		// Populate output_context from the project list and return the child
-		// plan unchanged.
+		// HashJoin DPE).  Generate a PartitionSelectorCS CustomScan that
+		// evaluates each row's partition key and records approved partitions
+		// in a shared state for DynamicTableScanCS to consume.
+
+		child_contexts->Append(&child_context);
+
 		CDXLNode *project_list_dxlnode = (*partition_selector_dxlnode)[0];
 		(void) TranslateDXLProjList(project_list_dxlnode,
 									nullptr /*base_table_context*/,
 									child_contexts, output_context);
+
+		// Get scan_id and root OID from the DXL operator
+		ULONG scan_id = partition_selector_dxlop->ScanId();
+		CMDIdGPDB *mdid =
+			CMDIdGPDB::CastMdid(partition_selector_dxlop->GetRelMdId());
+		Oid root_oid = mdid->Oid();
+
+		// Allocate a PARAM_EXEC slot shared with DynamicTableScanCS.  Both
+		// sides key on scan_id (not selector_id) so they agree on the same
+		// slot regardless of which side is translated first.
+		OID oid_type =
+			CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
+				->Oid();
+		ULONG param_id =
+			m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
+
+		// Extract probe key expression from the DXL filter.
+		// The filter at [1] is a scalar comparison: [0]=partkey, [1]=probeExpr.
+		// Translate the RHS (probe expression) to a PG Expr.
+		CDXLNode *filterNode = (*partition_selector_dxlnode)[1];
+		CMappingColIdVarPlStmt colid_var_mapping = CMappingColIdVarPlStmt(
+			m_mp, nullptr /*base_table_context*/, child_contexts, output_context,
+			m_dxl_to_plstmt_context);
+		Expr *probe_expr = m_translator_dxl_to_scalar->TranslateDXLToScalar(
+			(*filterNode)[EdxlsccmpIndexRight], &colid_var_mapping);
+
+		// Build PartitionSelectorCS CustomScan
+		CustomScan *cs = makeNode(CustomScan);
+		cs->methods = &PartitionSelectorCS_methods;
+		cs->scan.scanrelid = 0;
+		cs->custom_private = list_make3(
+			makeInteger(scan_id),
+			makeInteger(param_id),
+			makeInteger(root_oid));
+		cs->custom_exprs = list_make1(probe_expr);
+		/* Child goes in lefttree only — not in custom_plans.
+		 * custom_plans would cause ExecInitCustomScan to initialize the child
+		 * before pss_begin runs, resulting in double initialization.  Putting
+		 * the child in lefttree lets pss_begin initialize it once via
+		 * ExecInitNode(outerPlan(cscan)), and also gives ruleutils.c the outer
+		 * deparse context it needs to resolve OUTER_VAR references without
+		 * creating a shared-subtree (DAG) in the plan tree. */
+		cs->custom_plans = NIL;
+		cs->scan.plan.lefttree = child_plan;
+		cs->scan.plan.targetlist = child_plan->targetlist;
+
+		Plan *plan = &cs->scan.plan;
+		plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+		TranslatePlanCosts(partition_selector_dxlnode, plan);
+		SetParamIds(plan);
+
 		child_contexts->Release();
-		return child_plan;
+		return plan;
 	}
 
 	Append *append = (Append *) child_plan;
@@ -4621,7 +4689,6 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 	const CDXLNode *dyn_tbl_scan_dxlnode, CDXLTranslateContext *output_context,
 	CDXLTranslationContextArray * /*ctxt_translation_prev_siblings*/)
 {
-	// translate table descriptor into a range table entry
 	CDXLPhysicalDynamicTableScan *dyn_tbl_scan_dxlop =
 		CDXLPhysicalDynamicTableScan::Cast(dyn_tbl_scan_dxlnode->GetOperator());
 
@@ -4631,36 +4698,52 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 	Index index = ProcessDXLTblDescr(dyn_tbl_scan_dxlop->GetDXLTableDescr(),
 									 &base_table_context);
 
-	// create dynamic scan node
-	DynamicSeqScan *dyn_seq_scan = MakeNode(DynamicSeqScan);
-
-	dyn_seq_scan->seqscan.scan.scanrelid = index;
-
 	const CDXLTableDescr *dxl_table_descr =
 		dyn_tbl_scan_dxlop->GetDXLTableDescr();
 	GPOS_ASSERT(dxl_table_descr->LockMode() != -1);
 
-	dyn_seq_scan->partOids = TranslatePartOids(dyn_tbl_scan_dxlop->GetParts(),
-											   dxl_table_descr->LockMode());
+	const IMDRelation *md_rel =
+		m_md_accessor->RetrieveRel(dxl_table_descr->MDId());
+	OID oidRel = CMDIdGPDB::CastMdid(md_rel->MDId())->Oid();
 
+	// Get param_id for DPE communication with PartitionSelectorCS
 	OID oid_type =
 		CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
 			->Oid();
-
-	const IMDRelation *md_rel =
-		m_md_accessor->RetrieveRel(dxl_table_descr->MDId());
-
-	OID oidRel = CMDIdGPDB::CastMdid(md_rel->MDId())->Oid();
-
-	dyn_seq_scan->join_prune_paramids =
+	List *join_prune_paramids =
 		TranslateJoinPruneParamids(dyn_tbl_scan_dxlop->GetSelectorIds(),
 								   oid_type, m_dxl_to_plstmt_context);
 
-	Plan *plan = &(dyn_seq_scan->seqscan.scan.plan);
-	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
-	//plan->nMotionNodes = 0;
+	// Use ORCA's scan_id (stored in the DXL node) as the key for param slot
+	// allocation.  CDXLPhysicalPartitionSelector::ScanId() references the same
+	// value, so both sides always agree on the same PARAM_EXEC slot.
+	ULONG scan_id = dyn_tbl_scan_dxlop->ScanId();
 
-	// translate operator costs
+	// Use the first param_id from selector_ids (populated for NLJ DPE where PS
+	// is adjacent to DTS).  For HashJoin DPE, DTS and PS are on opposite sides
+	// of the join so selector_ids is empty; fall back to scan_id keyed allocation
+	// which PartitionSelectorCS also uses, ensuring both agree on the same slot.
+	int param_id;
+	if (join_prune_paramids != NIL)
+		param_id = linitial_int(join_prune_paramids);
+	else
+		param_id = (int) m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
+
+	// Build DynamicTableScanCS CustomScan
+	CustomScan *cs = makeNode(CustomScan);
+	cs->methods = &DynamicTableScanCS_methods;
+	cs->scan.scanrelid = 0;	// no single relation — scans partitions dynamically
+	cs->custom_private = list_make4(
+		makeInteger(scan_id),
+		makeInteger(oidRel),
+		makeInteger(param_id),
+		makeInteger(index));	// RTE index used by scan quals for static pruning
+	cs->custom_exprs = NIL;
+	cs->custom_plans = NIL;
+
+	Plan *plan = &cs->scan.plan;
+	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+
 	TranslatePlanCosts(dyn_tbl_scan_dxlnode, plan);
 
 	GPOS_ASSERT(2 == dyn_tbl_scan_dxlnode->Arity());
@@ -4670,25 +4753,17 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 		(*dyn_tbl_scan_dxlnode)[EdxltsIndexProjList];
 	CDXLNode *filter_dxlnode = (*dyn_tbl_scan_dxlnode)[EdxltsIndexFilter];
 
-	// List to hold the quals which contain both security quals and query
-	// quals.
 	List *security_query_quals = NIL;
-
-	// List to hold the quals after translating filter_dxlnode node.
 	List *query_quals = NIL;
 
-	// Fetching the RTE of the relation from the rewritten parse tree
-	// based on the oidRel and adding the security quals of the RTE in
-	// the security_query_quals list.
 	AddSecurityQuals(oidRel, &security_query_quals, &index);
 
 	TranslateProjListAndFilter(
 		project_list_dxlnode, filter_dxlnode,
-		&base_table_context,  // translate context for the base table
-		nullptr,			  // translate_ctxt_left and pdxltrctxRight,
+		&base_table_context,
+		nullptr,
 		&plan->targetlist, &query_quals, output_context);
 
-	// See SeqScan path above for explanation of the partitioning logic.
 	List *pre_security_quals = NIL;
 	List *post_security_quals = NIL;
 	ListCell *lc;

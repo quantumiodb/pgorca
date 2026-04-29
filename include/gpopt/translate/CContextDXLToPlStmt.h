@@ -136,6 +136,9 @@ private:
 
 	UlongToUlongMap *m_part_selector_to_param_map;
 
+	// scan_id → PARAM_EXEC id for HashJoin DPE (DTS and PS on different join sides)
+	UlongToUlongMap *m_scan_id_to_param_map;
+
 	// hash map of the queryid (of DML query) and the target relation index
 	HMUlIndex *m_used_rte_indexes;
 
@@ -249,6 +252,11 @@ public:
 	Oid GetDistributionHashFuncForType(Oid typid);
 
 	ULONG GetParamIdForSelector(OID oid_type, const ULONG selectorId);
+
+	// Idempotent: allocates (or retrieves) a PARAM_EXEC slot for HashJoin DPE.
+	// Keyed on scan_id so DTS and PartitionSelectorCS agree on the same slot
+	// even when they are on opposite sides of the join and translated separately.
+	ULONG GetParamIdForScanId(OID oid_type, ULONG scan_id);
 
 	Index FindRTE(Oid reloid);
 
