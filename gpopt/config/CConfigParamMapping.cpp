@@ -14,6 +14,7 @@ extern "C" {
 
 #include "gpopt/config/CConfigParamMapping.h"
 #include "gpopt/xforms/CXform.h"
+#include "naucrates/traceflags/traceflags.h"
 
 using namespace gpos;
 using namespace gpdxl;
@@ -473,6 +474,7 @@ CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 	{
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfImplementFullOuterMergeJoin));
+		traceflag_bitset->ExchangeSet(EopttraceDisableInnerMergeJoin);
 	}
 
 	// Default join order: exhaustive search (best quality for single-node)

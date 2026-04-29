@@ -238,6 +238,9 @@ enum EOptTraceFlag
 	// Disable streaming hash agg in ORCA-generated local partial aggregations
 	EopttraceDisableStreamingHashAgg = 103049,
 
+	// disable inner merge join alternatives
+	EopttraceDisableInnerMergeJoin = 103050,
+
 	///////////////////////////////////////////////////////
 	///////////////////// statistics flags ////////////////
 	//////////////////////////////////////////////////////
