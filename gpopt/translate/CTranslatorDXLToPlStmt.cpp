@@ -4719,15 +4719,13 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 	// value, so both sides always agree on the same PARAM_EXEC slot.
 	ULONG scan_id = dyn_tbl_scan_dxlop->ScanId();
 
-	// Use the first param_id from selector_ids (populated for NLJ DPE where PS
-	// is adjacent to DTS).  For HashJoin DPE, DTS and PS are on opposite sides
-	// of the join so selector_ids is empty; fall back to scan_id keyed allocation
-	// which PartitionSelectorCS also uses, ensuring both agree on the same slot.
-	int param_id;
-	if (join_prune_paramids != NIL)
-		param_id = linitial_int(join_prune_paramids);
-	else
-		param_id = (int) m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
+	// Always key on scan_id so DTS and PartitionSelectorCS agree on the same
+	// PARAM_EXEC slot.  PartitionSelectorCS uses GetParamIdForScanId(scan_id),
+	// and we must match that.  The selector_ids / join_prune_paramids path used
+	// GetParamIdForSelector (a different map) and produced a different slot —
+	// causing the DPE shared-state pointer mismatch that broke HashJoin DPE.
+	int param_id =
+		(int) m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
 
 	// Build DynamicTableScanCS CustomScan
 	CustomScan *cs = makeNode(CustomScan);
