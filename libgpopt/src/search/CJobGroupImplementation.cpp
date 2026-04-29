@@ -153,13 +153,6 @@ CJobGroupImplementation::FScheduleGroupExpressions(CSchedulerContext *psc)
 
 	// iterate on expression and schedule them as needed
 	CGroupExpression *pgexpr = PgexprFirstUnsched();
-	{
-		FILE *f = fopen("/tmp/dpe_debug.log", "a");
-		if (f) {
-			fprintf(f, "[FScheduleGroupExpressions] pgexpr=%p\n", (void*)pgexpr);
-			fclose(f);
-		}
-	}
 	while (nullptr != pgexpr)
 	{
 		if (!pgexpr->FTransitioned(CGroupExpression::estImplemented) &&

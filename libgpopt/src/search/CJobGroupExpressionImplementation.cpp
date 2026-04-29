@@ -177,20 +177,8 @@ CJobGroupExpressionImplementation::ScheduleApplicableTransformations(
 		CLogical::PopConvert(pop)->PxfsCandidates(psc->GetGlobalMemoryPool());
 
 	// intersect them with required xforms and schedule jobs
-	ULONG candidates_size = xform_set->Size();
 	xform_set->Intersection(CXformFactory::Pxff()->PxfsImplementation());
-	ULONG after_impl = xform_set->Size();
-	ULONG stage_size = psc->Peng()->PxfsCurrentStage()->Size();
 	xform_set->Intersection(psc->Peng()->PxfsCurrentStage());
-	ULONG after_stage = xform_set->Size();
-	{
-		FILE *f = fopen("/tmp/dpe_debug.log", "a");
-		if (f) {
-			fprintf(f, "op_eopid=%u candidates=%u after_impl=%u stage_size=%u after_stage=%u\n",
-				(unsigned)pop->Eopid(), candidates_size, after_impl, stage_size, after_stage);
-			fclose(f);
-		}
-	}
 	ScheduleTransformations(psc, xform_set);
 	xform_set->Release();
 
