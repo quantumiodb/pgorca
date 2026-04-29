@@ -4729,10 +4729,11 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 	CustomScan *cs = makeNode(CustomScan);
 	cs->methods = &DynamicTableScanCS_methods;
 	cs->scan.scanrelid = 0;	// no single relation — scans partitions dynamically
-	cs->custom_private = list_make3(
+	cs->custom_private = list_make4(
 		makeInteger(scan_id),
 		makeInteger(oidRel),
-		makeInteger(param_id));
+		makeInteger(param_id),
+		makeInteger(index));	// RTE index used by scan quals for static pruning
 	cs->custom_exprs = NIL;
 	cs->custom_plans = NIL;
 

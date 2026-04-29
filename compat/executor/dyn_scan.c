@@ -19,9 +19,11 @@
 #include "executor/nodeCustom.h"
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
+#include "nodes/pathnodes.h"
 #include "optimizer/optimizer.h"
 #include "partitioning/partbounds.h"
 #include "partitioning/partdesc.h"
+#include "partitioning/partprune.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
@@ -42,9 +44,10 @@
 /* ----------------------------------------------------------------
  * custom_private layout for DynamicTableScanCS
  *
- *   custom_private = list_make3(makeInteger(scan_id),
+ *   custom_private = list_make4(makeInteger(scan_id),
  *                               makeInteger(root_oid),
- *                               makeInteger(param_id))
+ *                               makeInteger(param_id),
+ *                               makeInteger(scan_relid))  -- RTE index for static pruning
  *
  *   custom_exprs   = NIL
  *   custom_plans   = NIL
@@ -90,6 +93,12 @@ typedef struct DTSState
 
 	List	   *orig_qual;
 	ExprState  *qual_state;
+
+	/*
+	 * Static partition set computed from quals at begin time.
+	 * NULL means no static pruning was possible (treat as all partitions).
+	 */
+	Bitmapset  *static_parts;
 } DTSState;
 
 /* Forward declarations of all callbacks */
@@ -349,6 +358,107 @@ ps_explain(CustomScanState *node, List *ancestors, ExplainState *es)
  * DynamicTableScanCS implementation
  * ================================================================ */
 
+/*
+ * compute_static_parts_from_quals
+ *
+ * Determine the set of partition indices that can possibly match quals by
+ * delegating to PostgreSQL's own partition pruning engine via
+ * prune_append_rel_partitions().
+ *
+ * We build a minimal RelOptInfo and PartitionScheme from the open relation's
+ * partition metadata, set baserestrictinfo to the scan quals (plain Expr
+ * nodes; gen_partprune_steps_internal handles both RestrictInfo-wrapped and
+ * unwrapped clauses), and let the standard pruning code do all the work.
+ *
+ * scanrelid must equal the varno used in the quals so that the Var nodes in
+ * partexprs[] match the Var nodes in the clause expressions.
+ *
+ * Returns NULL if no static pruning is possible (scan all partitions).
+ */
+static Bitmapset *
+compute_static_parts_from_quals(Relation root_rel, List *quals, Index scanrelid)
+{
+	PartitionKey key;
+	PartitionDesc pdesc;
+	PartitionSchemeData scheme;
+	RelOptInfo	fake_rel;
+	List	  **partexprs;
+	TupleDesc	root_tdesc;
+	Bitmapset  *result;
+	int			i;
+
+	if (quals == NIL)
+		return NULL;
+
+	key = RelationGetPartitionKey(root_rel);
+	if (key == NULL)
+		return NULL;
+
+	pdesc = RelationGetPartitionDesc(root_rel, false);
+	if (pdesc->nparts == 0)
+		return NULL;
+
+	/*
+	 * PartitionScheme and PartitionKey carry the same metadata; copy the
+	 * pointers directly — no allocation needed.
+	 */
+	memset(&scheme, 0, sizeof(scheme));
+	scheme.strategy		 = key->strategy;
+	scheme.partnatts	 = key->partnatts;
+	scheme.partopfamily	 = key->partopfamily;
+	scheme.partopcintype = key->partopcintype;
+	scheme.partcollation = key->partcollation;
+	scheme.parttyplen	 = key->parttyplen;
+	scheme.parttypbyval	 = key->parttypbyval;
+	scheme.partsupfunc	 = key->partsupfunc;
+
+	/*
+	 * partexprs[i] must be a one-element List containing a Var that matches
+	 * the Var the quals use for partition key column i.  For simple column
+	 * keys (partattrs[i] != 0) this is straightforward.  Expression keys
+	 * (partattrs[i] == 0) would require translating the expression's varnos,
+	 * so we skip them conservatively.
+	 */
+	root_tdesc = RelationGetDescr(root_rel);
+	partexprs = (List **) palloc(sizeof(List *) * key->partnatts);
+	for (i = 0; i < key->partnatts; i++)
+	{
+		Form_pg_attribute attr;
+
+		if (key->partattrs[i] == 0)
+			return NULL;		/* expression partition key */
+
+		attr = TupleDescAttr(root_tdesc, key->partattrs[i] - 1);
+		partexprs[i] = list_make1(makeVar(scanrelid,
+										  key->partattrs[i],
+										  attr->atttypid,
+										  attr->atttypmod,
+										  attr->attcollation,
+										  0));
+	}
+
+	/*
+	 * prune_append_rel_partitions() reads: part_scheme, nparts, boundinfo,
+	 * partition_qual, partexprs, and baserestrictinfo.  Everything else can
+	 * stay zero/NULL.
+	 */
+	memset(&fake_rel, 0, sizeof(fake_rel));
+	fake_rel.type			  = T_RelOptInfo;
+	fake_rel.relid			  = scanrelid;
+	fake_rel.part_scheme	  = &scheme;
+	fake_rel.nparts			  = pdesc->nparts;
+	fake_rel.boundinfo		  = pdesc->boundinfo;
+	fake_rel.partition_qual	  = NIL; /* top-level partition, not a child */
+	fake_rel.partexprs		  = partexprs;
+	fake_rel.nullable_partexprs =
+		(List **) palloc0(sizeof(List *) * key->partnatts);
+	fake_rel.baserestrictinfo = quals;
+
+	result = prune_append_rel_partitions(&fake_rel);
+
+	return result;
+}
+
 static Node *
 dts_create_scan_state(CustomScan *cscan)
 {
@@ -364,9 +474,11 @@ dts_begin(CustomScanState *node, EState *estate, int eflags)
 	DTSState   *state = (DTSState *) node;
 	CustomScan *cscan = (CustomScan *) node->ss.ps.plan;
 
-	/* Extract custom_private: scan_id, root_oid, param_id */
+	/* Extract custom_private: scan_id, root_oid, param_id, scan_relid */
 	state->root_oid = intVal(lsecond(cscan->custom_private));
 	state->param_id = intVal(lthird(cscan->custom_private));
+	Index		scan_relid = (list_length(cscan->custom_private) >= 4)
+		? (Index) intVal(lfourth(cscan->custom_private)) : 0;
 
 	/* Get or create shared state via PARAM_EXEC.
 	 * palloc0 zero-initializes ParamExecData, so value==0 is the sentinel
@@ -420,6 +532,12 @@ dts_begin(CustomScanState *node, EState *estate, int eflags)
 	state->orig_qual = cscan->scan.plan.qual;
 	state->qual_state = ExecInitQual(cscan->scan.plan.qual, (PlanState *) node);
 	cscan->scan.plan.qual = NIL;
+
+	/* Compute static partition set from quals for static pruning */
+	state->static_parts = (scan_relid > 0)
+		? compute_static_parts_from_quals(state->root_rel, state->orig_qual,
+										  scan_relid)
+		: NULL;
 }
 
 static TupleTableSlot *
@@ -430,15 +548,32 @@ dts_exec(CustomScanState *node)
 
 	if (!state->scan_started)
 	{
+		bms_free(state->approved);
+		state->approved = NULL;
+
 		if (state->shared && state->shared->finalized)
 		{
-			/* DPE path: PartitionSelectorCS has finalized the approved set */
-			state->approved = bms_copy(state->shared->approved_partitions);
+			/* DPE path: intersect DPE-approved set with static pruning */
+			Bitmapset  *dpe = bms_copy(state->shared->approved_partitions);
+
+			if (state->static_parts != NULL)
+			{
+				state->approved = bms_intersect(dpe, state->static_parts);
+				bms_free(dpe);
+			}
+			else
+				state->approved = dpe;
+		}
+		else if (state->static_parts != NULL)
+		{
+			/* Static pruning only (no DPE yet) */
+			state->approved = bms_copy(state->static_parts);
 		}
 		else
 		{
-			/* No PartitionSelector in this plan (e.g. MergeJoin): scan all */
+			/* No pruning available: scan all partitions */
 			PartitionDesc pdesc = RelationGetPartitionDesc(state->root_rel, false);
+
 			for (int i = 0; i < pdesc->nparts; i++)
 				state->approved = bms_add_member(state->approved, i);
 		}
@@ -592,6 +727,13 @@ dts_end(CustomScanState *node)
 		table_close(state->root_rel, AccessShareLock);
 		state->root_rel = NULL;
 	}
+	if (state->static_parts)
+	{
+		bms_free(state->static_parts);
+		state->static_parts = NULL;
+	}
+	bms_free(state->approved);
+	state->approved = NULL;
 }
 
 static void
@@ -620,6 +762,8 @@ dts_rescan(CustomScanState *node)
 		state->cur_rel = NULL;
 	}
 
+	bms_free(state->approved);
+	state->approved = NULL;
 	state->scan_started = false;
 	state->cur_part = -1;
 }
