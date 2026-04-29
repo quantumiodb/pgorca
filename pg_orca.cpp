@@ -531,9 +531,6 @@ extern "C" {
 
 void _PG_init(void)
 {
-    FILE *f = fopen("/tmp/dpe_debug.log", "a");
-    if (f) { fprintf(f, "[_PG_init] pg_orca loaded\n"); fclose(f); }
-
     DefineCustomBoolVariable(
         "pg_orca.enable_orca",
         "Enable the ORCA query optimizer.",
