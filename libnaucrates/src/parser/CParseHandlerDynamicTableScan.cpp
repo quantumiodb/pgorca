@@ -163,7 +163,9 @@ CParseHandlerDynamicTableScan::EndElement(const XMLCh *const,  // element_uri,
 	mdid_partitions_array->AddRef();
 	CDXLPhysicalDynamicTableScan *dxl_op =
 		GPOS_NEW(m_mp) CDXLPhysicalDynamicTableScan(
-			m_mp, table_descr, mdid_partitions_array, m_selector_ids);
+			m_mp, table_descr, mdid_partitions_array, m_selector_ids,
+			0 /* scan_id: not stored in XML, only needed for in-memory DPE path */
+		);
 
 	m_dxl_node = GPOS_NEW(m_mp) CDXLNode(m_mp, dxl_op);
 	// set statistics and physical properties

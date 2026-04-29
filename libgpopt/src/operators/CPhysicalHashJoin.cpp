@@ -1317,14 +1317,16 @@ CPhysicalHashJoin::PppsRequiredForJoins(CMemoryPool *mp,
 
 	// HashJoin DPE: partition table is on the outer (index 0), while the
 	// inner (index 1) provides probe values.  If outer has partition
-	// consumers and the join predicate references partition keys, require
-	// EpptPropagator on the inner child so AppendEnforcers inserts a
-	// PartitionSelector node.
+	// consumers and the join predicate links partition keys to inner columns,
+	// require EpptPropagator on the inner child so AppendEnforcers inserts a
+	// PartitionSelector wrapping the inner scan.
 	if (child_index == 1)
 	{
 		CExpression *pexprScalar =
 			exprhdl.PexprScalarExactChild(2 /* scalar child index */);
-		CColRefSet *pcrsOutputOuter = exprhdl.DeriveOutputColumns(0);
+		// Inner child (t2) columns are the "allowed refs" — we look for
+		// predicates of the form: outer_part_key = inner_col.
+		CColRefSet *pcrsOutputInner = exprhdl.DeriveOutputColumns(1);
 		CPartInfo *part_info_outer = exprhdl.DerivePartitionInfo(0);
 
 		CPartitionPropagationSpec *pps_result =
@@ -1345,7 +1347,7 @@ CPhysicalHashJoin::PppsRequiredForJoins(CMemoryPool *mp,
 				CColRef2dArray *pdrgpdrgpcr =
 					(*part_keys_array)[ulKey]->Pdrgpdrgpcr();
 				pexprCmp = CPredicateUtils::PexprExtractPredicatesOnPartKeys(
-					mp, pexprScalar, pdrgpdrgpcr, pcrsOutputOuter,
+					mp, pexprScalar, pdrgpdrgpcr, pcrsOutputInner,
 					true /* fUseConstraints */);
 			}
 

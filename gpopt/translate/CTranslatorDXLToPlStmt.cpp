@@ -1627,6 +1627,18 @@ CTranslatorDXLToPlStmt::TranslateDXLHashJoin(
 		(Plan *) TranslateDXLHash(right_tree_dxlnode, &right_dxl_translate_ctxt,
 								  translation_context_arr_with_siblings);
 
+	// HashJoin DPE: when the outer child is DynamicTableScanCS, the inner
+	// (Hash node) must be fully built before DTS starts scanning so that
+	// PartitionSelectorCS can finalize the approved partition set.
+	// Prevent PG's "early probe" optimization (which probes outer before
+	// building hash) by ensuring DTS startup_cost >= Hash total_cost.
+	if (IsA(left_plan, CustomScan) &&
+		((CustomScan *) left_plan)->methods == &DynamicTableScanCS_methods)
+	{
+		if (left_plan->startup_cost < right_plan->total_cost)
+			left_plan->startup_cost = right_plan->total_cost;
+	}
+
 	CDXLTranslationContextArray *child_contexts =
 		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
 	child_contexts->Append(&left_dxl_translate_ctxt);
@@ -4108,20 +4120,20 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 									nullptr /*base_table_context*/,
 									child_contexts, output_context);
 
-		// Get scan_id, selector_id, root OID from the DXL operator
+		// Get scan_id and root OID from the DXL operator
 		ULONG scan_id = partition_selector_dxlop->ScanId();
-		ULONG selector_id = partition_selector_dxlop->SelectorId();
 		CMDIdGPDB *mdid =
 			CMDIdGPDB::CastMdid(partition_selector_dxlop->GetRelMdId());
 		Oid root_oid = mdid->Oid();
 
-		// Allocate a PARAM_EXEC param_id for the selector_id (same mapping
-		// used by TranslateJoinPruneParamids in TranslateDXLDynTblScan)
+		// Allocate a PARAM_EXEC slot shared with DynamicTableScanCS.  Both
+		// sides key on scan_id (not selector_id) so they agree on the same
+		// slot regardless of which side is translated first.
 		OID oid_type =
 			CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
 				->Oid();
 		ULONG param_id =
-			m_dxl_to_plstmt_context->GetParamIdForSelector(oid_type, selector_id);
+			m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
 
 		// Extract probe key expression from the DXL filter.
 		// The filter at [1] is a scalar comparison: [0]=partkey, [1]=probeExpr.
@@ -4144,6 +4156,10 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 		cs->custom_exprs = list_make1(probe_expr);
 		cs->custom_plans = list_make1(child_plan);
 		cs->scan.plan.targetlist = child_plan->targetlist;
+		/* Set lefttree so EXPLAIN's deparse context can resolve OUTER_VAR refs
+		 * in the HASH→PS→child targetlist chain. Execution uses custom_plans,
+		 * not lefttree, so this only affects ruleutils.c deparse. */
+		cs->scan.plan.lefttree = child_plan->lefttree;
 
 		Plan *plan = &cs->scan.plan;
 		plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
@@ -4694,17 +4710,25 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 		TranslateJoinPruneParamids(dyn_tbl_scan_dxlop->GetSelectorIds(),
 								   oid_type, m_dxl_to_plstmt_context);
 
-	// Use the first param_id (single-level partitioning)
-	int param_id = -1;
+	// Use ORCA's scan_id (stored in the DXL node) as the key for param slot
+	// allocation.  CDXLPhysicalPartitionSelector::ScanId() references the same
+	// value, so both sides always agree on the same PARAM_EXEC slot.
+	ULONG scan_id = dyn_tbl_scan_dxlop->ScanId();
+
+	// Use the first param_id from selector_ids (populated for NLJ DPE where PS
+	// is adjacent to DTS).  For HashJoin DPE, DTS and PS are on opposite sides
+	// of the join so selector_ids is empty; fall back to scan_id keyed allocation
+	// which PartitionSelectorCS also uses, ensuring both agree on the same slot.
+	int param_id;
 	if (join_prune_paramids != NIL)
 		param_id = linitial_int(join_prune_paramids);
+	else
+		param_id = (int) m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
 
 	// Build DynamicTableScanCS CustomScan
 	CustomScan *cs = makeNode(CustomScan);
 	cs->methods = &DynamicTableScanCS_methods;
 	cs->scan.scanrelid = 0;	// no single relation — scans partitions dynamically
-
-	ULONG scan_id = dyn_tbl_scan_dxlop->GetDXLTableDescr()->GetAssignedQueryIdForTargetRel();
 	cs->custom_private = list_make3(
 		makeInteger(scan_id),
 		makeInteger(oidRel),
