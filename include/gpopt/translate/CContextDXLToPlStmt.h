@@ -59,37 +59,25 @@ using HMUlDxltrctx =
 //---------------------------------------------------------------------------
 class CContextDXLToPlStmt
 {
-private:
-	// cte consumer information
-	struct SCTEConsumerInfo
+public:
+	// CTE plan info: written when translating CTEProducer, read when
+	// translating CTEConsumer
+	struct SCTEPlanInfo
 	{
-		// list of ShareInputScan represent cte consumers
-		List *m_cte_consumer_list;
+		int plan_id;   // 1-based index into PlannedStmt.subplans
+		int param_id;  // PARAM_EXEC slot number for CteScan leader/follower
 
-		// ctor
-		SCTEConsumerInfo(List *plan_cte) : m_cte_consumer_list(plan_cte)
+		SCTEPlanInfo(int pid, int prmid) : plan_id(pid), param_id(prmid)
 		{
-		}
-
-		void
-		AddCTEPlan(ShareInputScan *share_input_scan)
-		{
-			GPOS_ASSERT(nullptr != share_input_scan);
-			m_cte_consumer_list =
-				gpdb::LAppend(m_cte_consumer_list, share_input_scan);
-		}
-
-		~SCTEConsumerInfo()
-		{
-			gpdb::ListFree(m_cte_consumer_list);
 		}
 	};
 
-	// hash maps mapping ULONG -> SCTEConsumerInfo
-	using HMUlCTEConsumerInfo =
-		CHashMap<ULONG, SCTEConsumerInfo, gpos::HashValue<ULONG>,
+private:
+	// hash map mapping ULONG (cte_id) -> SCTEPlanInfo
+	using HMUlCTEPlanInfo =
+		CHashMap<ULONG, SCTEPlanInfo, gpos::HashValue<ULONG>,
 				 gpos::Equals<ULONG>, CleanupDelete<ULONG>,
-				 CleanupDelete<SCTEConsumerInfo>>;
+				 CleanupDelete<SCTEPlanInfo>>;
 
 	using HMUlIndex =
 		CHashMap<ULONG, Index, gpos::HashValue<ULONG>, gpos::Equals<ULONG>,
@@ -128,8 +116,9 @@ private:
 	// index of the target relation in the rtable or 0 if not a DML statement
 	ULONG m_result_relation_index;
 
-	// hash map of the cte identifiers and the cte consumers with the same cte identifier
-	HMUlCTEConsumerInfo *m_cte_consumer_info;
+	// cte_id → SCTEPlanInfo; written by RegisterCTEPlan (Producer), read by
+	// GetCTEPlanInfo (Consumer)
+	HMUlCTEPlanInfo *m_cte_plan_info;
 
 	// CTAS distribution policy
 	GpPolicy *m_distribution_policy;
@@ -175,11 +164,14 @@ public:
 	// retrieve the next parameter id
 	ULONG GetNextParamId(OID typeoid);
 
-	// add a newly found CTE consumer
-	void AddCTEConsumerInfo(ULONG cte_id, ShareInputScan *share_input_scan);
+	// Register CTE subplan (called when translating CTEProducer): adds the plan
+	// to subplans, allocates a PARAM_EXEC slot, and records the mapping.
+	// Returns the 1-based plan_id.
+	int RegisterCTEPlan(ULONG cte_id, Plan *cte_subplan);
 
-	// return the list of shared input scan plans representing the CTE consumers
-	List *GetCTEConsumerList(ULONG cte_id) const;
+	// Retrieve plan_id and param_id for a previously registered CTE (called
+	// when translating CTEConsumer).  Asserts if cte_id was never registered.
+	SCTEPlanInfo GetCTEPlanInfo(ULONG cte_id) const;
 
 	// return list of range table entries
 	List *

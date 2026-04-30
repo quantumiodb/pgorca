@@ -142,7 +142,8 @@ public:
 
 	// load information from CTE columns
 	void LoadCTEColumns(ULONG query_level, ULONG RTE_index,
-						const ULongPtrArray *pdrgpulCTE, List *target_list);
+						const ULongPtrArray *pdrgpulCTE, List *target_list,
+						List *alias_colnames = nullptr);
 
 	// load up mapping information from scalar projection list
 	void LoadProjectElements(ULONG query_level, ULONG RTE_index,

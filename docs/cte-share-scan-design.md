@@ -496,13 +496,3 @@ tuplestore，第二个成为 follower 并分配独立读指针，共享同一 tu
 
 ---
 
-## 与旧设计（CustomScan）的对比
-
-| 维度 | CustomScan 方案 | 原生 CteScan 方案（本方案） |
-|------|----------------|--------------------------|
-| 新增文件 | `nodeOrcaShareScan.c`、`.h` | 无 |
-| 执行器实现 | 需自行实现 Producer/Consumer/Sequence 逻辑 | 零，复用 PG18 `nodeCtescan.c` |
-| 翻译层改动 | 3 个函数 + Context 新增方法 + 注册 CustomScan | 3 个函数 + Context 新增方法 |
-| 计划结构变化 | 保留 Sequence 结构，节点类型变为 CustomScan | Sequence 消失，结构向 PG18 标准对齐 |
-| EXPLAIN 输出 | 显示 `Custom Scan (pg_orca_sequence)` 等 | 显示标准 `CTE Scan on <name>` |
-| 未来维护 | 需维护自定义 executor 节点 | 完全跟随 PG18 CteScan 演进 |

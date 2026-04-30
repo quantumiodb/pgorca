@@ -326,13 +326,15 @@ CMappingVarColId::LoadDerivedTblColumns(
 void
 CMappingVarColId::LoadCTEColumns(ULONG query_level, ULONG RTE_index,
 								 const ULongPtrArray *CTE_columns,
-								 List *target_list)
+								 List *target_list, List *alias_colnames)
 {
 	GPOS_ASSERT(nullptr != CTE_columns);
 	GPOS_ASSERT((ULONG) gpdb::ListLength(target_list) >= CTE_columns->Size());
 
 	ULONG idx = 0;
 	ListCell *lc = nullptr;
+	ListCell *alias_lc = (alias_colnames != nullptr) ? list_head(alias_colnames)
+													  : nullptr;
 	ForEach(lc, target_list)
 	{
 		TargetEntry *target_entry = (TargetEntry *) lfirst(lc);
@@ -341,9 +343,18 @@ CMappingVarColId::LoadCTEColumns(ULONG query_level, ULONG RTE_index,
 			GPOS_ASSERT(0 < target_entry->resno);
 			ULONG CTE_colid = *((*CTE_columns)[idx]);
 
+			// Prefer the CTE column alias (e.g., "a" from WITH v(a,b)) over
+			// the body's target entry resname (e.g., function name "cte_func1").
+			const CHAR *col_name_str = target_entry->resname;
+			if (alias_lc != nullptr)
+			{
+				String *alias_str = (String *) lfirst(alias_lc);
+				col_name_str = strVal(alias_str);
+				alias_lc = lnext(alias_colnames, alias_lc);
+			}
+
 			CWStringDynamic *column_name =
-				CDXLUtils::CreateDynamicStringFromCharArray(
-					m_mp, target_entry->resname);
+				CDXLUtils::CreateDynamicStringFromCharArray(m_mp, col_name_str);
 			this->Insert(query_level, RTE_index, INT(target_entry->resno),
 						 CTE_colid, column_name);
 			idx++;

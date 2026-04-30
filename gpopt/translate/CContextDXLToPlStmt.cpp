@@ -63,7 +63,7 @@ CContextDXLToPlStmt::CContextDXLToPlStmt(
 	  m_agg_trans_infos(nullptr),
 	  m_part_prune_infos(nullptr)
 {
-	m_cte_consumer_info = GPOS_NEW(m_mp) HMUlCTEConsumerInfo(m_mp);
+	m_cte_plan_info = GPOS_NEW(m_mp) HMUlCTEPlanInfo(m_mp);
 	m_part_selector_to_param_map = GPOS_NEW(m_mp) UlongToUlongMap(m_mp);
 	m_scan_id_to_param_map = GPOS_NEW(m_mp) UlongToUlongMap(m_mp);
 	m_used_rte_indexes = GPOS_NEW(m_mp) HMUlIndex(m_mp);
@@ -79,7 +79,7 @@ CContextDXLToPlStmt::CContextDXLToPlStmt(
 //---------------------------------------------------------------------------
 CContextDXLToPlStmt::~CContextDXLToPlStmt()
 {
-	m_cte_consumer_info->Release();
+	m_cte_plan_info->Release();
 	m_part_selector_to_param_map->Release();
 	m_scan_id_to_param_map->Release();
 	m_used_rte_indexes->Release();
@@ -159,52 +159,52 @@ CContextDXLToPlStmt::GetParamTypes()
 
 //---------------------------------------------------------------------------
 //	@function:
-//		CContextDXLToPlStmt::AddCTEConsumerInfo
+//		CContextDXLToPlStmt::RegisterCTEPlan
 //
 //	@doc:
-//		Add information about the newly found CTE entry
+//		Called when translating a CTEProducer node.  Adds the CTE subplan to
+//		PlannedStmt.subplans, allocates a PARAM_EXEC slot for the CteScan
+//		leader/follower mechanism, and records the mapping from cte_id to
+//		(plan_id, param_id).  Returns the 1-based plan_id.
 //
 //---------------------------------------------------------------------------
-void
-CContextDXLToPlStmt::AddCTEConsumerInfo(ULONG cte_id,
-										ShareInputScan *share_input_scan)
+int
+CContextDXLToPlStmt::RegisterCTEPlan(ULONG cte_id, Plan *cte_subplan)
 {
-	GPOS_ASSERT(nullptr != share_input_scan);
+	GPOS_ASSERT(nullptr != cte_subplan);
 
-	SCTEConsumerInfo *cte_info = m_cte_consumer_info->Find(&cte_id);
-	if (nullptr != cte_info)
-	{
-		cte_info->AddCTEPlan(share_input_scan);
-		return;
-	}
+	// Append to subplans; plan_id is the resulting 1-based length.
+	AddSubplan(cte_subplan);
+	int plan_id = gpdb::ListLength(m_subplan_entries_list);
 
-	List *cte_plan = ListMake1(share_input_scan);
+	// Allocate a PARAM_EXEC slot with InvalidOid (same as PG native CTEs).
+	int param_id = (int) GetNextParamId(InvalidOid);
 
 	ULONG *key = GPOS_NEW(m_mp) ULONG(cte_id);
-	BOOL result GPOS_ASSERTS_ONLY = m_cte_consumer_info->Insert(
-		key, GPOS_NEW(m_mp) SCTEConsumerInfo(cte_plan));
+	SCTEPlanInfo *info = GPOS_NEW(m_mp) SCTEPlanInfo(plan_id, param_id);
+	BOOL inserted GPOS_ASSERTS_ONLY = m_cte_plan_info->Insert(key, info);
+	GPOS_ASSERT(inserted);
 
-	GPOS_ASSERT(result);
+	return plan_id;
 }
 
 //---------------------------------------------------------------------------
 //	@function:
-//		CContextDXLToPlStmt::GetCTEConsumerList
+//		CContextDXLToPlStmt::GetCTEPlanInfo
 //
 //	@doc:
-//		Return the list of GPDB plan nodes representing the CTE consumers
-//		with the given CTE identifier
+//		Called when translating a CTEConsumer node.  Returns the SCTEPlanInfo
+//		(plan_id, param_id) that was recorded by RegisterCTEPlan for the same
+//		cte_id.  Asserts if not found (indicates out-of-order translation).
+//
 //---------------------------------------------------------------------------
-List *
-CContextDXLToPlStmt::GetCTEConsumerList(ULONG cte_id) const
+CContextDXLToPlStmt::SCTEPlanInfo
+CContextDXLToPlStmt::GetCTEPlanInfo(ULONG cte_id) const
 {
-	SCTEConsumerInfo *cte_info = m_cte_consumer_info->Find(&cte_id);
-	if (nullptr != cte_info)
-	{
-		return cte_info->m_cte_consumer_list;
-	}
-
-	return nullptr;
+	SCTEPlanInfo *info = m_cte_plan_info->Find(&cte_id);
+	GPOS_ASSERT(nullptr != info &&
+				"CTEConsumer translated before its CTEProducer");
+	return *info;
 }
 
 //---------------------------------------------------------------------------

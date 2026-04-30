@@ -3855,13 +3855,35 @@ CTranslatorQueryToDXL::TranslateCTEToDXL(const RangeTblEntry *rte,
 	ULongPtrArray *colid_array_cte_consumer =
 		GenerateColIds(m_mp, op_colid_array_cte_producer->Size());
 
-	// load the new columns from the CTE
+	// Build a CMDNameArray from CTE column alias names only when the user
+	// explicitly provided them (e.g. "a","b" from WITH v(a,b) AS ...).
+	// rte->eref->colnames is always populated (with effective names), so we
+	// use rte->alias->colnames instead — that list is non-NIL only when the
+	// user wrote explicit aliases in the CTE definition.
+	List *alias_colnames =
+		(rte->alias != nullptr) ? rte->alias->colnames : NIL;
+	CMDNameArray *output_colnames = nullptr;
+	if (alias_colnames != NIL)
+	{
+		output_colnames = GPOS_NEW(m_mp) CMDNameArray(m_mp);
+		ListCell *lc = nullptr;
+		ForEach(lc, alias_colnames)
+		{
+			const char *alias = strVal(lfirst(lc));
+			CWStringDynamic *wstr =
+				CDXLUtils::CreateDynamicStringFromCharArray(m_mp, alias);
+			output_colnames->Append(GPOS_NEW(m_mp) CMDName(m_mp, wstr));
+			GPOS_DELETE(wstr);
+		}
+	}
+
 	m_var_to_colid_map->LoadCTEColumns(
 		current_query_level, rt_index, colid_array_cte_consumer,
-		const_cast<List *>(cte_producer_target_list));
+		const_cast<List *>(cte_producer_target_list), alias_colnames);
 
 	CDXLLogicalCTEConsumer *cte_consumer_dxlop = GPOS_NEW(m_mp)
-		CDXLLogicalCTEConsumer(m_mp, cte_id, colid_array_cte_consumer);
+		CDXLLogicalCTEConsumer(m_mp, cte_id, colid_array_cte_consumer,
+							   output_colnames);
 	CDXLNode *cte_dxlnode = GPOS_NEW(m_mp) CDXLNode(m_mp, cte_consumer_dxlop);
 
 	return cte_dxlnode;
@@ -4626,6 +4648,28 @@ CTranslatorQueryToDXL::ConstructCTEProducerList(List *cte_list,
 
 		Query *cte_query = CQueryMutators::NormalizeQuery(
 			m_mp, m_md_accessor, (Query *) cte->ctequery, cte_query_level + 1);
+
+		// Apply CTE column aliases (e.g., "a","b" from WITH v(a,b)) to the CTE
+		// body's target list resnames.  NormalizeQuery returns a copy of the
+		// query, so it is safe to modify it in place.  Without this, ORCA would
+		// use the body's raw expression names (e.g., "cte_func1") as column
+		// aliases throughout the plan, including in the outer SELECT output.
+		if (cte->aliascolnames != NIL)
+		{
+			ListCell *alias_lc = list_head(cte->aliascolnames);
+			ListCell *te_lc = nullptr;
+			ForEach(te_lc, cte_query->targetList)
+			{
+				if (alias_lc == nullptr)
+					break;
+				TargetEntry *te = (TargetEntry *) lfirst(te_lc);
+				if (!te->resjunk)
+				{
+					te->resname = strVal(lfirst(alias_lc));
+					alias_lc = lnext(cte->aliascolnames, alias_lc);
+				}
+			}
+		}
 
 		// the query representing the cte can only access variables defined in the current level as well as
 		// those defined at prior query levels

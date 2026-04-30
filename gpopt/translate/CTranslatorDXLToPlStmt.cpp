@@ -68,6 +68,7 @@ extern "C" {
 #include <limits>  // std::numeric_limits
 #include <numeric>
 #include <tuple>
+#include <vector>
 
 #include "gpos/base.h"
 #include "gpos/common/CBitSet.h"
@@ -4479,7 +4480,10 @@ CTranslatorDXLToPlStmt::TranslateDXLMaterialize(
 //		CTranslatorDXLToPlStmt::TranslateDXLCTEProducerToSharedScan
 //
 //	@doc:
-//		Translate DXL CTE Producer node into GPDB share input scan plan node
+//		Translate DXL CTE Producer node into a PG18 CTE subplan.
+//		The child plan is registered in PlannedStmt.subplans via
+//		RegisterCTEPlan(), which also allocates the PARAM_EXEC slot used by
+//		CteScan's leader/follower mechanism.
 //
 //---------------------------------------------------------------------------
 Plan *
@@ -4487,57 +4491,43 @@ CTranslatorDXLToPlStmt::TranslateDXLCTEProducerToSharedScan(
 	const CDXLNode *cte_producer_dxlnode, CDXLTranslateContext *output_context,
 	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
 {
-	// ShareInputScan (used for CTE sharing) is a CBDB/GPDB-specific plan node
-	// that does not exist in single-node PG18 (T_ShareInputScan = T_Invalid).
-	// Raise an unsupported-op error so ORCA falls back to standard_planner,
-	// which handles CTEs via inlining or CteScan as appropriate.
-	GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
-			   GPOS_WSZ_LIT("CTE Producer (ShareInputScan not supported in PG18)"));
-
 	CDXLPhysicalCTEProducer *cte_prod_dxlop =
 		CDXLPhysicalCTEProducer::Cast(cte_producer_dxlnode->GetOperator());
 	ULONG cte_id = cte_prod_dxlop->Id();
 
-	// create the shared input scan representing the CTE Producer
-	ShareInputScan *shared_input_scan = MakeNode(ShareInputScan);
-	shared_input_scan->share_id = cte_id;
-	shared_input_scan->discard_output = true;
-	Plan *plan = &(shared_input_scan->scan.plan);
-	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
-
-	// store share scan node for the translation of CTE Consumers
-	m_dxl_to_plstmt_context->AddCTEConsumerInfo(cte_id, shared_input_scan);
-
-	// translate cost of the producer
-	TranslatePlanCosts(cte_producer_dxlnode, plan);
-
-	// translate child plan
-	CDXLNode *project_list_dxlnode = (*cte_producer_dxlnode)[0];
+	CDXLNode *proj_list_dxlnode = (*cte_producer_dxlnode)[0];
 	CDXLNode *child_dxlnode = (*cte_producer_dxlnode)[1];
 
+	// Translate the CTE body into a subplan.
 	CDXLTranslateContext child_context(m_mp, false,
 									   output_context->GetColIdToParamIdMap());
 	Plan *child_plan = TranslateDXLOperatorToPlan(
 		child_dxlnode, &child_context, ctxt_translation_prev_siblings);
-	GPOS_ASSERT(nullptr != child_plan && "child plan cannot be NULL");
+	GPOS_ASSERT(nullptr != child_plan);
 
+	// The child plan's targetlist is already correct from its own translation.
+	// We don't overwrite it — doing so would create OUTER_VAR references that
+	// point to the wrong slot (e.g. Sort with N cols, but projlist has N+1
+	// entries including a computed expression).
+	// We still call TranslateDXLProjList for its side effect of populating
+	// output_context with colid mappings (needed by callers that need to
+	// resolve producer output colids), but we discard the returned TL.
 	CDXLTranslationContextArray *child_contexts =
 		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
 	child_contexts->Append(&child_context);
-	// translate proj list
-	plan->targetlist =
-		TranslateDXLProjList(project_list_dxlnode,
-							 nullptr,  // base table translation context
-							 child_contexts, output_context);
-
-	plan->lefttree = child_plan;
-	plan->qual = NIL;
-	SetParamIds(plan);
-
-	// cleanup
+	(void) TranslateDXLProjList(proj_list_dxlnode,
+								nullptr,  // base table translation context
+								child_contexts, output_context);
+	TranslatePlanCosts(cte_producer_dxlnode, child_plan);
+	SetParamIds(child_plan);
 	child_contexts->Release();
 
-	return (Plan *) shared_input_scan;
+	// Register in subplans and record cte_id → (plan_id, param_id).
+	m_dxl_to_plstmt_context->RegisterCTEPlan(cte_id, child_plan);
+
+	// Return child_plan to satisfy the Plan* interface; the caller
+	// (TranslateDXLSequence) ignores this return value for CTEProducers.
+	return child_plan;
 }
 
 //---------------------------------------------------------------------------
@@ -4545,7 +4535,9 @@ CTranslatorDXLToPlStmt::TranslateDXLCTEProducerToSharedScan(
 //		CTranslatorDXLToPlStmt::TranslateDXLCTEConsumerToSharedScan
 //
 //	@doc:
-//		Translate DXL CTE Consumer node into GPDB share input scan plan node
+//		Translate DXL CTE Consumer node into a PG18 CteScan plan node.
+//		Uses the (plan_id, param_id) pair registered by TranslateDXLCTEProducerToSharedScan
+//		for the same cte_id.
 //
 //---------------------------------------------------------------------------
 Plan *
@@ -4553,70 +4545,119 @@ CTranslatorDXLToPlStmt::TranslateDXLCTEConsumerToSharedScan(
 	const CDXLNode *cte_consumer_dxlnode, CDXLTranslateContext *output_context,
 	CDXLTranslationContextArray * /*ctxt_translation_prev_siblings*/)
 {
-	// Same as TranslateDXLCTEProducerToSharedScan: ShareInputScan does not
-	// exist in single-node PG18, so fall back to standard_planner.
-	GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
-			   GPOS_WSZ_LIT("CTE Consumer (ShareInputScan not supported in PG18)"));
-
 	CDXLPhysicalCTEConsumer *cte_consumer_dxlop =
 		CDXLPhysicalCTEConsumer::Cast(cte_consumer_dxlnode->GetOperator());
 	ULONG cte_id = cte_consumer_dxlop->Id();
 
-	ShareInputScan *share_input_scan_cte_consumer = MakeNode(ShareInputScan);
-	share_input_scan_cte_consumer->share_id = cte_id;
-	share_input_scan_cte_consumer->discard_output = false;
+	// Look up the subplan info recorded by the CTEProducer translation.
+	CContextDXLToPlStmt::SCTEPlanInfo cte_info =
+		m_dxl_to_plstmt_context->GetCTEPlanInfo(cte_id);
 
-	Plan *plan = &(share_input_scan_cte_consumer->scan.plan);
+	// Add an RTE_CTE entry to the range table.
+	RangeTblEntry *rte = MakeNode(RangeTblEntry);
+	rte->rtekind = RTE_CTE;
+	rte->ctename = pstrdup("cte");  // placeholder; only affects EXPLAIN output
+	rte->ctelevelsup = 0;
+	rte->self_reference = false;
+	rte->eref = MakeNode(Alias);
+	rte->eref->aliasname = pstrdup("cte");
+	rte->eref->colnames = NIL;
+	rte->lateral = false;
+	rte->inh = false;
+	rte->inFromCl = true;
+	rte->perminfoindex = 0;
+	m_dxl_to_plstmt_context->AddRTE(rte);
+	Index scan_relid =
+		(Index) gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList());
+
+	// Build the CteScan node.
+	CteScan *cte_scan = MakeNode(CteScan);
+	Plan *plan = &cte_scan->scan.plan;
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+	cte_scan->scan.scanrelid = scan_relid;
+	cte_scan->ctePlanId = cte_info.plan_id;
+	cte_scan->cteParam = cte_info.param_id;
 
-	// translate operator costs
 	TranslatePlanCosts(cte_consumer_dxlnode, plan);
 
-#ifdef GPOS_DEBUG
+	// The CteScan's targetlist must expose ALL columns from the CTE subplan
+	// (not just the subset the outer query references), so that the scan slot
+	// and tuplestore access work correctly.  We mirror what PG's standard
+	// planner does: one TE per subplan output column, Var(scan_relid, attno).
+	//
+	// The consumer's output_colids_array maps consumer colids positionally to
+	// producer (subplan) columns.  We use this to register the per-colid
+	// mappings that parent nodes need to resolve their column references.
 	ULongPtrArray *output_colids_array =
 		cte_consumer_dxlop->GetOutputColIdsArray();
-#endif
 
-	// generate the target list of the CTE Consumer
-	plan->targetlist = NIL;
-	CDXLNode *project_list_dxlnode = (*cte_consumer_dxlnode)[0];
-	const ULONG num_of_proj_list_elem = project_list_dxlnode->Arity();
-	GPOS_ASSERT(num_of_proj_list_elem == output_colids_array->Size());
-	for (ULONG ul = 0; ul < num_of_proj_list_elem; ul++)
+	// Retrieve the already-translated CTE subplan to copy its targetlist schema.
+	Plan *cte_subplan = (Plan *) gpdb::ListNth(
+		m_dxl_to_plstmt_context->GetSubplanEntriesList(), cte_info.plan_id - 1);
+	List *subplan_tlist = cte_subplan->targetlist;
+	const ULONG num_subplan_cols = (ULONG) gpdb::ListLength(subplan_tlist);
+
+	// Build an alias name array indexed by subplan column position (0-based).
+	// The consumer's projlist carries the CTE column aliases (e.g., WITH v(a,b)
+	// gives alias "a" for position 0).  output_colids_array[i] is the consumer
+	// colid for subplan column i, and proj_list_dxlnode child i has the alias.
+	CDXLNode *proj_list_dxlnode = (*cte_consumer_dxlnode)[0];
+	const ULONG num_consumer_cols = proj_list_dxlnode->Arity();
+	GPOS_ASSERT(num_consumer_cols == output_colids_array->Size());
+
+	// alias_names[ul] = CTE alias for subplan column ul, or nullptr if not in
+	// the consumer projlist (extra columns not referenced by the outer query).
+	std::vector<CHAR *> alias_names(num_subplan_cols, nullptr);
+	for (ULONG ul = 0; ul < num_consumer_cols; ul++)
 	{
-		CDXLNode *proj_elem_dxlnode = (*project_list_dxlnode)[ul];
+		CDXLNode *proj_elem_dxlnode = (*proj_list_dxlnode)[ul];
 		CDXLScalarProjElem *sc_proj_elem_dxlop =
 			CDXLScalarProjElem::Cast(proj_elem_dxlnode->GetOperator());
-		ULONG colid = sc_proj_elem_dxlop->Id();
-		GPOS_ASSERT(colid == *(*output_colids_array)[ul]);
-
-		CDXLNode *sc_ident_dxlnode = (*proj_elem_dxlnode)[0];
-		CDXLScalarIdent *sc_ident_dxlop =
-			CDXLScalarIdent::Cast(sc_ident_dxlnode->GetOperator());
-		OID oid_type = CMDIdGPDB::CastMdid(sc_ident_dxlop->MdidType())->Oid();
-
-		Var *var =
-			gpdb::MakeVar(OUTER_VAR, (AttrNumber)(ul + 1), oid_type,
-						  sc_ident_dxlop->TypeModifier(), 0 /* varlevelsup */);
-
-		CHAR *resname = CTranslatorUtils::CreateMultiByteCharStringFromWCString(
-			sc_proj_elem_dxlop->GetMdNameAlias()->GetMDName()->GetBuffer());
-		TargetEntry *target_entry = gpdb::MakeTargetEntry(
-			(Expr *) var, (AttrNumber)(ul + 1), resname, false /* resjunk */);
-		plan->targetlist = gpdb::LAppend(plan->targetlist, target_entry);
-
-		output_context->InsertMapping(colid, target_entry);
+		alias_names[ul] =
+			CTranslatorUtils::CreateMultiByteCharStringFromWCString(
+				sc_proj_elem_dxlop->GetMdNameAlias()->GetMDName()->GetBuffer());
 	}
 
-	plan->qual = nullptr;
+	// Build a full targetlist for the CteScan (one entry per subplan column).
+	plan->targetlist = NIL;
+	for (ULONG ul = 0; ul < num_subplan_cols; ul++)
+	{
+		TargetEntry *sub_te =
+			(TargetEntry *) gpdb::ListNth(subplan_tlist, (int) ul);
+		OID type_oid = gpdb::ExprType((Node *) sub_te->expr);
+		INT typmod = gpdb::ExprTypeMod((Node *) sub_te->expr);
+		OID collation = gpdb::ExprCollation((Node *) sub_te->expr);
 
+		Var *var = gpdb::MakeVar((Index) scan_relid, (AttrNumber)(ul + 1),
+								 type_oid, typmod, 0 /* varlevelsup */);
+		var->varcollid = collation;
+		// Use the CTE column alias if available; fall back to the subplan name.
+		CHAR *resname = (alias_names[ul] != nullptr)
+							? alias_names[ul]
+							: ((sub_te->resname != nullptr)
+								   ? pstrdup(sub_te->resname)
+								   : nullptr);
+		TargetEntry *te = gpdb::MakeTargetEntry((Expr *) var,
+												(AttrNumber)(ul + 1),
+												resname, false);
+		plan->targetlist = gpdb::LAppend(plan->targetlist, te);
+	}
+
+	// Register per-colid mappings for the consumer's output columns.
+	// output_colids_array[i] = consumer colid for subplan column i+1.
+	for (ULONG ul = 0; ul < num_consumer_cols; ul++)
+	{
+		ULONG consumer_colid = *(*output_colids_array)[ul];
+		// The consumer's i-th output corresponds to subplan column i+1.
+		TargetEntry *te =
+			(TargetEntry *) gpdb::ListNth(plan->targetlist, (int) ul);
+		output_context->InsertMapping(consumer_colid, te);
+	}
+
+	plan->qual = NIL;
 	SetParamIds(plan);
 
-	// store share scan node for the translation of CTE Consumers
-	m_dxl_to_plstmt_context->AddCTEConsumerInfo(cte_id,
-												share_input_scan_cte_consumer);
-
-	return (Plan *) share_input_scan_cte_consumer;
+	return (Plan *) cte_scan;
 }
 
 //---------------------------------------------------------------------------
@@ -4624,7 +4665,13 @@ CTranslatorDXLToPlStmt::TranslateDXLCTEConsumerToSharedScan(
 //		CTranslatorDXLToPlStmt::TranslateDXLSequence
 //
 //	@doc:
-//		Translate DXL sequence node into GPDB Sequence plan node
+//		Translate DXL Sequence node into PG18 plan.
+//
+//		ORCA emits Sequence { CTEProducer* , main_plan } for WITH queries.
+//		In PG18 there is no Sequence plan node; instead each CTEProducer
+//		becomes a subplan in PlannedStmt.subplans (via RegisterCTEPlan), and
+//		the Sequence node itself is "folded away" — we simply return the main
+//		plan (last child).
 //
 //---------------------------------------------------------------------------
 Plan *
@@ -4632,48 +4679,62 @@ CTranslatorDXLToPlStmt::TranslateDXLSequence(
 	const CDXLNode *sequence_dxlnode, CDXLTranslateContext *output_context,
 	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
 {
-	// create append plan node
-	Sequence *psequence = MakeNode(Sequence);
-
-	Plan *plan = &(psequence->plan);
-	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
-
-	// translate operator costs
-	TranslatePlanCosts(sequence_dxlnode, plan);
-
 	ULONG arity = sequence_dxlnode->Arity();
+	// child[0] = projlist, child[1..arity-2] = CTEProducers, child[arity-1] = main plan
 
 	CDXLTranslateContext child_context(m_mp, false,
 									   output_context->GetColIdToParamIdMap());
 
-	for (ULONG ul = 1; ul < arity; ul++)
+	// Translate each CTEProducer non-terminal child; these register themselves
+	// into PlannedStmt.subplans via RegisterCTEPlan().
+	for (ULONG ul = 1; ul < arity - 1; ul++)
 	{
 		CDXLNode *child_dxlnode = (*sequence_dxlnode)[ul];
-
-		Plan *child_plan = TranslateDXLOperatorToPlan(
-			child_dxlnode, &child_context, ctxt_translation_prev_siblings);
-
-		psequence->subplans = gpdb::LAppend(psequence->subplans, child_plan);
+		GPOS_ASSERT(EdxlopPhysicalCTEProducer ==
+					child_dxlnode->GetOperator()->GetDXLOperator());
+		// Return value intentionally ignored: the subplan is registered as a
+		// side-effect inside TranslateDXLCTEProducerToSharedScan.
+		TranslateDXLOperatorToPlan(child_dxlnode, &child_context,
+								   ctxt_translation_prev_siblings);
 	}
 
-	CDXLNode *project_list_dxlnode = (*sequence_dxlnode)[0];
+	// Translate the last child (main plan) and return it directly.
+	CDXLNode *main_dxlnode = (*sequence_dxlnode)[arity - 1];
+	Plan *main_plan = TranslateDXLOperatorToPlan(main_dxlnode, &child_context,
+												  ctxt_translation_prev_siblings);
 
-	CDXLTranslationContextArray *child_contexts =
-		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
-	child_contexts->Append(&child_context);
+	// Propagate column mappings from child_context to output_context.
+	// The Sequence's own projlist carries the authoritative output aliases
+	// (renamed by PdxlnTranslate to match the original query's target list).
+	// Apply those aliases to the main plan's targetlist entries, then expose
+	// the (now-renamed) TEs to output_context.
+	CDXLNode *proj_list_dxlnode = (*sequence_dxlnode)[0];
+	const ULONG num_proj = proj_list_dxlnode->Arity();
+	for (ULONG ul = 0; ul < num_proj; ul++)
+	{
+		CDXLNode *proj_elem = (*proj_list_dxlnode)[ul];
+		CDXLScalarProjElem *proj_elem_op =
+			CDXLScalarProjElem::Cast(proj_elem->GetOperator());
+		ULONG colid = proj_elem_op->Id();
 
-	// translate proj list
-	plan->targetlist =
-		TranslateDXLProjList(project_list_dxlnode,
-							 nullptr,  // base table translation context
-							 child_contexts, output_context);
+		// Look up the TE that the main plan registered for this column.
+		TargetEntry *te =
+			const_cast<TargetEntry *>(child_context.GetTargetEntry(colid));
+		if (nullptr != te)
+		{
+			// Apply the Sequence's alias to the main plan's TE so that the
+			// output column name matches what the original query requested
+			// (e.g. "b.error AS orig_error").
+			const CMDName *seq_alias = proj_elem_op->GetMdNameAlias();
+			te->resname = CTranslatorUtils::CreateMultiByteCharStringFromWCString(
+				seq_alias->GetMDName()->GetBuffer());
 
-	SetParamIds(plan);
+			// Re-expose the renamed TE to output_context under this colid.
+			output_context->InsertMapping(colid, te);
+		}
+	}
 
-	// cleanup
-	child_contexts->Release();
-
-	return (Plan *) psequence;
+	return main_plan;
 }
 
 //---------------------------------------------------------------------------

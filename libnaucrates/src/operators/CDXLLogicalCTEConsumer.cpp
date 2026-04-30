@@ -15,6 +15,7 @@
 #include "gpos/string/CWStringDynamic.h"
 
 #include "naucrates/dxl/CDXLUtils.h"
+#include "naucrates/md/CMDName.h"
 #include "naucrates/dxl/operators/CDXLNode.h"
 #include "naucrates/dxl/xml/CXMLSerializer.h"
 #include "naucrates/dxl/xml/dxltokens.h"
@@ -32,7 +33,21 @@ using namespace gpdxl;
 //---------------------------------------------------------------------------
 CDXLLogicalCTEConsumer::CDXLLogicalCTEConsumer(
 	CMemoryPool *mp, ULONG id, ULongPtrArray *output_colids_array)
-	: CDXLLogical(mp), m_id(id), m_output_colids_array(output_colids_array)
+	: CDXLLogical(mp),
+	  m_id(id),
+	  m_output_colids_array(output_colids_array),
+	  m_output_colnames(nullptr)
+{
+	GPOS_ASSERT(nullptr != output_colids_array);
+}
+
+CDXLLogicalCTEConsumer::CDXLLogicalCTEConsumer(
+	CMemoryPool *mp, ULONG id, ULongPtrArray *output_colids_array,
+	CMDNameArray *output_colnames)
+	: CDXLLogical(mp),
+	  m_id(id),
+	  m_output_colids_array(output_colids_array),
+	  m_output_colnames(output_colnames)
 {
 	GPOS_ASSERT(nullptr != output_colids_array);
 }
@@ -48,6 +63,7 @@ CDXLLogicalCTEConsumer::CDXLLogicalCTEConsumer(
 CDXLLogicalCTEConsumer::~CDXLLogicalCTEConsumer()
 {
 	m_output_colids_array->Release();
+	CRefCount::SafeRelease(m_output_colnames);
 }
 
 //---------------------------------------------------------------------------

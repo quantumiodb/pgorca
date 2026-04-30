@@ -14,9 +14,12 @@
 #include "gpos/base.h"
 
 #include "naucrates/dxl/operators/CDXLLogical.h"
+#include "naucrates/md/CMDName.h"
 
 namespace gpdxl
 {
+using namespace gpmd;
+
 //---------------------------------------------------------------------------
 //	@class:
 //		CDXLLogicalCTEConsumer
@@ -34,12 +37,20 @@ private:
 	// output column ids
 	ULongPtrArray *m_output_colids_array;
 
+	// optional CTE column alias names (e.g. from WITH v(a,b)); may be nullptr
+	CMDNameArray *m_output_colnames;
+
 public:
 	CDXLLogicalCTEConsumer(CDXLLogicalCTEConsumer &) = delete;
 
-	// ctor
+	// ctor (without column names — backward compat)
 	CDXLLogicalCTEConsumer(CMemoryPool *mp, ULONG id,
 						   ULongPtrArray *output_colids_array);
+
+	// ctor (with CTE column alias names)
+	CDXLLogicalCTEConsumer(CMemoryPool *mp, ULONG id,
+						   ULongPtrArray *output_colids_array,
+						   CMDNameArray *output_colnames);
 
 	// dtor
 	~CDXLLogicalCTEConsumer() override;
@@ -61,6 +72,13 @@ public:
 	GetOutputColIdsArray() const
 	{
 		return m_output_colids_array;
+	}
+
+	// CTE column alias names; nullptr if not provided
+	CMDNameArray *
+	GetOutputColNames() const
+	{
+		return m_output_colnames;
 	}
 
 	// serialize operator in DXL format

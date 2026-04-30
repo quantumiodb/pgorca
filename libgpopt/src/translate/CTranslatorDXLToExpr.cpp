@@ -1375,6 +1375,13 @@ CTranslatorDXLToExpr::PexprLogicalCTEConsumer(const CDXLNode *dxlnode)
 		CLogicalCTEProducer::PopConvert(pexprProducer->Pop())->Pdrgpcr();
 	CColRefArray *pdrgpcrConsumer = CUtils::PdrgpcrCopy(m_mp, pdrgpcrProducer);
 
+	// If the DXL consumer carries CTE column alias names (e.g. "a","b" from
+	// WITH v(a,b)), rename the consumer colrefs now.  This makes the alias names
+	// propagate through all of ORCA's optimization so that physical plan projlist
+	// elements use the alias names, which in turn appear in EXPLAIN VERBOSE output
+	// and top-level query output column headers.
+	CMDNameArray *output_colnames = pdxlopCTEConsumer->GetOutputColNames();
+
 	// add new colrefs to mapping
 	const ULONG num_cols = pdrgpcrConsumer->Size();
 	GPOS_ASSERT(pdrgpulCols->Size() == num_cols);
@@ -1382,6 +1389,13 @@ CTranslatorDXLToExpr::PexprLogicalCTEConsumer(const CDXLNode *dxlnode)
 	{
 		ULONG *pulColId = GPOS_NEW(m_mp) ULONG(*(*pdrgpulCols)[ul]);
 		CColRef *colref = (*pdrgpcrConsumer)[ul];
+
+		// Apply the CTE column alias name if provided.
+		if (output_colnames != nullptr && ul < output_colnames->Size())
+		{
+			const CMDName *alias = (*output_colnames)[ul];
+			colref->Rename(m_mp, alias->GetMDName());
+		}
 
 		BOOL result GPOS_ASSERTS_ONLY = m_phmulcr->Insert(pulColId, colref);
 		GPOS_ASSERT(result);

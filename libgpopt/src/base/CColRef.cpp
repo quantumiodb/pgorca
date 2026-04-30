@@ -178,3 +178,10 @@ CColRef::Equals(const CColRef2dArray *pdrgdrgpcr1,
 
 	return true;
 }
+
+void
+CColRef::Rename(CMemoryPool *mp, const CWStringConst *new_name)
+{
+	GPOS_DELETE(m_pname);
+	m_pname = GPOS_NEW(mp) CName(mp, new_name);
+}

@@ -233,6 +233,9 @@ public:
 		m_mdid_table = mdid_table;
 	}
 
+	// rename: replace m_pname with a new CName built from the given wide string
+	void Rename(CMemoryPool *mp, const CWStringConst *new_name);
+
 };	// class CColRef
 
 // shorthand for printing
