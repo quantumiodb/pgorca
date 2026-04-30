@@ -1,250 +1,465 @@
-# CTE 共享扫描设计：CustomScan + PARAM_EXEC
+# CTE 支持设计：适配 PG18 原生 CteScan
 
 ## 背景
 
-TPC-H Q15 在 pg_orca 中触发 fallback，根本原因是 DXL 翻译层遇到 CTE Producer/Consumer 节点时直接抛出异常：
+ORCA 为 CTE 生成的 DXL 物理计划结构（Sequence + CTEProducer + CTEConsumer）无法直接映射到
+PG18 的执行模型。当前翻译层遇到这三类节点时直接抛出异常，导致所有含 CTE 的查询回退到
+`standard_planner`。
 
-```cpp
-// CTranslatorDXLToPlStmt.cpp
-TranslateDXLCTEProducerToSharedScan() → GPOS_RAISE(ExmiQuery2DXLUnsupportedFeature)
-TranslateDXLCTEConsumerToSharedScan() → GPOS_RAISE(ExmiQuery2DXLUnsupportedFeature)
+本文档描述将 ORCA DXL CTE 节点翻译为 **PG18 原生 CteScan** 的完整设计方案。放弃
+CustomScan 路线，改为让翻译层将 ORCA 的计划结构"折叠"为 PG18 期望的形式：CTE 子计划进入
+`PlannedStmt.subplans`，主树中以 `CteScan` 节点引用它。
+
+---
+
+## PG18 原生 CTE 执行模型
+
+### 计划树结构
+
+```
+PlannedStmt {
+    planTree:   CteScan { ctePlanId=1, cteParam=0, scanrelid=N }
+    rtable:     [ ..., RTE_CTE { ctename="cte", ctelevelsup=0 }, ... ]
+    subplans:   [ <CTE 子计划 Plan*> ]          ← subplans[ctePlanId-1]
+    paramExecTypes: [ InvalidOid ]              ← param 0 的类型占位
+}
 ```
 
-ORCA 为 CTE 生成的 DXL 物理计划结构：
+### 关键字段
+
+| 字段 | 含义 |
+|------|------|
+| `CteScan.ctePlanId` | 1-based，指向 `PlannedStmt.subplans[ctePlanId-1]` |
+| `CteScan.cteParam`  | PARAM_EXEC 槽编号，executor 用来共享 `CteScanState*` 指针（leader-follower 机制） |
+| `CteScan.scan.scanrelid` | rtable 中对应 `RTE_CTE` 的 1-based 索引 |
+
+### Executor 执行流程
+
+1. `ExecInitCteScan`：
+   - 通过 `ctePlanId-1` 在 `es_subplanstates` 中找到 CTE 子计划的 `PlanState`
+   - 检查 `es_param_exec_vals[cteParam]`：若为 NULL，当前节点为 **leader**，创建 tuplestore，
+     将自身指针写入 param 槽；否则为 **follower**，从 leader 的 `cte_table` 分配独立读指针
+2. `CteScanNext`：按需从 CTE 子计划拉取行并追加到 tuplestore；多个 CteScan 共享同一
+   tuplestore，各持独立读指针
+
+---
+
+## ORCA DXL 计划结构
+
+ORCA 为 `WITH cte AS (...) SELECT ... FROM cte` 生成：
 
 ```
 CDXLPhysicalSequence
-  ├── CDXLPhysicalCTEProducer (share_id=0)
-  │     └── [CTE 计算子计划，如 lineitem 聚合]
-  └── [主计划，内含一或多个 CDXLPhysicalCTEConsumer]
+  ├── [0] projlist
+  ├── [1] CDXLPhysicalCTEProducer (cte_id=0)
+  │         ├── [0] projlist
+  │         └── [1] <CTE 子计划，如 SeqScan/Agg 等>
+  └── [2] <主计划，内含 CDXLPhysicalCTEConsumer (cte_id=0)>
 ```
 
-PostgreSQL 18 没有 `Sequence`（T_Sequence=5004）和 `ShareInputScan`（T_ShareInputScan=5002）节点，两者在 `compat/cdb/cdb_plan_nodes.h` 中只有存根定义，不可执行。
+多个 CTE 时，Sequence 有多个 CTEProducer 子节点，最后一个子节点是主计划。
 
-注意：当前 `TranslateDXLSequence` 能成功将 DXL 翻译为 `Sequence` Plan 节点，但该节点的 NodeTag（5004）不被 PG18 executor 识别，执行阶段会崩溃。因此 Sequence 节点也必须替换为 CustomScan。
+---
 
-## 方案选型
+## 翻译策略
 
-### 备选一：适配 PG18 原生 CteScan
+### 核心思路
 
-需要在翻译时把 Producer **从主树中剥离、挂到 `PlannedStmt.subplans`**（initplan 机制）。这要求重构计划树结构，翻译层改动具有侵入性，且破坏 ORCA cost model 对 Producer 节点的估算。
+将 ORCA 的"Sequence 驱动 Producer"结构**拆解**为 PG18 的"initplan + CteScan"结构：
 
-### 备选二：CustomScan + PARAM_EXEC（采用）
+1. **CDXLPhysicalCTEProducer** → 子计划加入 `PlannedStmt.subplans`，分配 PARAM_EXEC 槽
+2. **CDXLPhysicalSequence** → 直接返回**最后一个子节点**（主计划）的翻译结果，Sequence 节点消失
+3. **CDXLPhysicalCTEConsumer** → 生成 `CteScan` 节点 + `RTE_CTE` 条目
 
-保留 ORCA 原有计划结构，将三个 GPDB 专属节点替换为 CustomScan 实现。Producer 与 Consumer 通过 PG18 的 `PARAM_EXEC` 槽（`estate->es_param_exec_vals`）共享 tuplestore 指针。
+### 翻译顺序保证
 
-选择理由：翻译层改动局部（三个函数）、ORCA 语义完整保留、无全局状态、与 PG18 现有机制（nodeCtescan.c 也用相同的 PARAM_EXEC 模式）一致。
+`TranslateDXLSequence` 按 `ul = 1 .. arity-1` 顺序翻译子节点：
+- `ul=1`：CTEProducer → 调用 `TranslateDXLCTEProducerToPlan`，此时分配 `param_id`，
+  加入 `m_subplan_entries_list`，记录 `cte_id → (plan_id, param_id)` 映射
+- `ul=arity-1`：主计划 → 翻译时遇到 CTEConsumer，查映射取 `param_id` 和 `plan_id`，
+  生成 `CteScan`
 
-## 节点映射
+Producer 必然先于 Consumer 翻译，映射在 Consumer 翻译时已存在。
 
-| ORCA DXL 节点 | CustomScan 名称 | 语义 |
-|---|---|---|
-| `CDXLPhysicalSequence` | `pg_orca_sequence` | 依次驱动子节点，返回最后一个子节点的行 |
-| `CDXLPhysicalCTEProducer` | `pg_orca_share_producer` | 将子计划所有行物化到 tuplestore，写入 PARAM_EXEC 槽，返回 NULL |
-| `CDXLPhysicalCTEConsumer` | `pg_orca_share_consumer` | 从 PARAM_EXEC 槽取 tuplestore 指针，分配独立读指针，顺序读取 |
+---
 
-## 状态结构
+## 数据结构变更
 
-```c
-/* Producer 扩展状态 */
-typedef struct OrcaShareProducerState {
-    CustomScanState css;          /* 必须是第一个字段 */
-    int             param_id;     /* es_param_exec_vals 下标 */
-    bool            materialized; /* 已物化，避免重复执行 */
-} OrcaShareProducerState;
+### `CContextDXLToPlStmt`
 
-/* Consumer 扩展状态 */
-typedef struct OrcaShareConsumerState {
-    CustomScanState css;
-    int             param_id;
-    int             ts_pos;       /* tuplestore 读指针编号（每个 Consumer 独立） */
-    bool            isready;
-} OrcaShareConsumerState;
-
-/* Sequence 扩展状态 */
-typedef struct OrcaSequenceState {
-    CustomScanState css;
-    int             nplans;
-    PlanState     **subplanStates;
-    bool            drained;      /* 非末尾子节点已排空 */
-} OrcaSequenceState;
-```
-
-## PARAM_EXEC 共享机制
-
-### 翻译阶段（plan build time）
-
-`CContextDXLToPlStmt` 新增两个方法和一个 `cte_id → param_id` 映射：
+新增 CTE 映射，替换旧的 `SCTEConsumerInfo`：
 
 ```cpp
-// 翻译 Producer 时调用：分配 PARAM_EXEC 槽，记录映射
-ULONG AllocCTEParamId(ULONG cte_id);   // GetNextParamId(INTERNALOID) + 记录
+// cte_id → CTEPlanInfo，在 Producer 翻译时写入，Consumer 翻译时读取
+struct SCTEPlanInfo {
+    int  plan_id;   // 1-based，subplans 中的位置
+    int  param_id;  // PARAM_EXEC 槽编号
+    SCTEPlanInfo(int pid, int prmid) : plan_id(pid), param_id(prmid) {}
+};
 
-// 翻译 Consumer 时调用：查找对应 param_id
-ULONG GetCTEParamId(ULONG cte_id) const;
+using HMUlCTEPlanInfo =
+    CHashMap<ULONG, SCTEPlanInfo, gpos::HashValue<ULONG>, gpos::Equals<ULONG>,
+             CleanupDelete<ULONG>, CleanupDelete<SCTEPlanInfo>>;
+
+HMUlCTEPlanInfo *m_cte_plan_info;   // 替换 m_cte_consumer_info
 ```
 
-DXL 子节点翻译顺序：Sequence 的 child[0] 是 projlist，child[1..N-1] 是子计划。ORCA 保证 Producer 是 Sequence 的第一个非 projlist 子节点（child[1]），翻译循环按 `for (ul = 1; ul < arity; ul++)` 顺序执行。因此 Producer 翻译时先调用 `AllocCTEParamId`，Consumer 翻译时查到的 `param_id` 已存在。`GetCTEParamId` 中应加 `GPOS_ASSERT` 断言 param_id 存在，若缺失说明翻译顺序假设被打破。
+新增两个方法（替换 `AddCTEConsumerInfo` / `GetCTEConsumerList`）：
 
-### 执行阶段（runtime）
+```cpp
+// Producer 翻译时调用：加入 subplans，分配 PARAM_EXEC 槽，记录映射
+// 返回分配的 plan_id (1-based)
+int RegisterCTEPlan(ULONG cte_id, Plan *cte_subplan);
 
-**Producer ExecCustomScan（首次调用）：**
+// Consumer 翻译时调用：取回 plan_id 和 param_id
+// 若未找到则 GPOS_ASSERT 失败（说明翻译顺序被破坏）
+SCTEPlanInfo GetCTEPlanInfo(ULONG cte_id) const;
+```
 
-```c
-/* 在 estate->es_query_cxt 下创建，确保生命周期覆盖所有 Consumer */
-MemoryContext oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
-Tuplestorestate *ts = tuplestore_begin_heap(true, false, work_mem);
-MemoryContextSwitchTo(oldcxt);
-PlanState *child = (PlanState *) linitial(node->custom_ps);
-for (;;) {
-    TupleTableSlot *slot = ExecProcNode(child);
-    if (TupIsNull(slot)) break;
-    tuplestore_puttupleslot(ts, slot);
+`RegisterCTEPlan` 实现逻辑：
+
+```cpp
+int CContextDXLToPlStmt::RegisterCTEPlan(ULONG cte_id, Plan *cte_subplan)
+{
+    // 加入 subplans 列表（1-based plan_id = 当前长度 + 1）
+    AddSubplan(cte_subplan);
+    int plan_id = list_length(m_subplan_entries_list);  // 已追加后的长度即 plan_id
+
+    // 分配 PARAM_EXEC 槽（InvalidOid，与 PG 原生行为一致）
+    int param_id = (int) GetNextParamId(InvalidOid);
+
+    // 记录映射
+    ULONG *key = GPOS_NEW(m_mp) ULONG(cte_id);
+    SCTEPlanInfo *info = GPOS_NEW(m_mp) SCTEPlanInfo(plan_id, param_id);
+    m_cte_plan_info->Insert(key, info);
+
+    return plan_id;
 }
-tuplestore_rescan(ts);
-
-/* 写入 PARAM_EXEC 槽，Consumer 从这里取指针 */
-estate->es_param_exec_vals[state->param_id].value  = PointerGetDatum(ts);
-estate->es_param_exec_vals[state->param_id].isnull = false;
-state->materialized = true;
-return NULL;   /* discard_output = true */
 ```
 
-**Consumer 首次访问（access method 内）：**
+### `CContextDXLToPlStmt.h`
 
-```c
-/* Sequence 保证 Producer 已运行，PARAM_EXEC 槽已写入 */
-Tuplestorestate *ts = (Tuplestorestate *)
-    DatumGetPointer(estate->es_param_exec_vals[state->param_id].value);
-Assert(ts != NULL);
+- 删除 `SCTEConsumerInfo`、`HMUlCTEConsumerInfo`、`m_cte_consumer_info`
+- 删除 `AddCTEConsumerInfo`、`GetCTEConsumerList`
+- 新增 `SCTEPlanInfo`、`HMUlCTEPlanInfo`、`m_cte_plan_info`
+- 新增 `RegisterCTEPlan`、`GetCTEPlanInfo`
 
-/* 每个 Consumer 分配独立读指针，互不干扰 */
-state->ts_pos = tuplestore_alloc_read_pointer(ts, EXEC_FLAG_REWIND);
-tuplestore_select_read_pointer(ts, state->ts_pos);
-tuplestore_rescan(ts);
-state->isready = true;
-```
+---
 
-### 执行顺序保证
+## 翻译函数实现
 
-Sequence 的 ExecCustomScan 确保 Producer 先于 Consumer 执行：
+### `TranslateDXLSequence` — 拆解 Sequence
 
 ```
-第一次调用 Sequence.ExecCustomScan:
-  for subplanStates[0 .. nplans-2]:
-      do ExecProcNode(subplan) until NULL    ← 驱动 Producer 物化，写入 PARAM_EXEC
-  drained = true
-
-每次调用:
-  return ExecProcNode(subplanStates[nplans-1])  ← 主计划（含 Consumer）
-  （Consumer 此时可安全读取 PARAM_EXEC 槽）
+旧行为：生成 Sequence { subplans = [child1, child2, ...] }
+新行为：
+  - 遍历 child[1 .. arity-2]（CTEProducer 们），各自翻译为子计划加入 subplans
+  - 翻译 child[arity-1]（主计划）
+  - 直接返回主计划的 Plan*，Sequence 节点不创建
 ```
 
-同一 CTE 被多次引用时，多个 Consumer 节点持有相同 `param_id`，各自分配独立读指针，并发读取互不影响。
+伪代码：
 
-## Projection 设计
+```cpp
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLSequence(
+    const CDXLNode *sequence_dxlnode, CDXLTranslateContext *output_context,
+    CDXLTranslationContextArray *ctxt_translation_prev_siblings)
+{
+    ULONG arity = sequence_dxlnode->Arity();
+    // child[0] = projlist, child[1..arity-2] = CTEProducers, child[arity-1] = main plan
 
-| 节点 | `custom_scan_tlist` | `plan->targetlist` | 执行时投影来源 |
-|---|---|---|---|
-| Sequence | NIL（空扫描槽，不使用） | OUTER_VAR Vars（TranslateDXLProjList 生成） | `ecxt_outertuple` = 最后子节点槽 |
-| Producer | NIL | 原 projlist（仅 EXPLAIN 展示） | 不使用（永远返回 NULL） |
-| Consumer | INDEX_VAR 类型描述 Var | INDEX_VAR 恒等投影 | `ecxt_scantuple` = tuplestore 槽（ExecScan） |
+    CDXLTranslateContext child_context(m_mp, false,
+                                       output_context->GetColIdToParamIdMap());
 
-**PG18 关键行为**：`ExecInitCustomScan` 当 `scanrelid=0` 时调用
-`ExecAssignScanProjectionInfoWithVarno(&css->ss, INDEX_VAR)`。若 `plan->targetlist`
-含 OUTER_VAR Vars（Sequence 场景），生成的 `ps_ProjInfo` 读 `ecxt_outertuple`，
-与 `INDEX_VAR` 参数无关；执行时只需设置 `ecxt_outertuple = last_child_slot` 后调用
-`ExecProject` 即可。
+    // 翻译所有 CTEProducer 子节点（加入 subplans，不进主树）
+    for (ULONG ul = 1; ul < arity - 1; ul++)
+    {
+        CDXLNode *child_dxlnode = (*sequence_dxlnode)[ul];
+        // 必须是 CTEProducer，否则 GPOS_ASSERT
+        GPOS_ASSERT(EdxlopPhysicalCTEProducer ==
+                    child_dxlnode->GetOperator()->GetDXLOperator());
+        TranslateDXLOperatorToPlan(child_dxlnode, &child_context,
+                                   ctxt_translation_prev_siblings);
+        // 注意：CTEProducer 翻译函数负责调用 RegisterCTEPlan，返回值在此丢弃
+    }
 
-Consumer 使用 `ExecScan` 模式，access method 填充 `ss_ScanTupleSlot`（类型由
-`custom_scan_tlist` 决定），ExecScan 负责 qual 过滤和投影。
+    // 翻译最后一个子节点（主计划）并直接返回
+    CDXLNode *main_dxlnode = (*sequence_dxlnode)[arity - 1];
+    Plan *main_plan = TranslateDXLOperatorToPlan(main_dxlnode, &child_context,
+                                                  ctxt_translation_prev_siblings);
 
-## EXPLAIN 输出
+    // 将主计划的输出列映射传播到 output_context
+    // （原 Sequence 的 projlist 由主计划的 targetlist 覆盖）
+    CDXLNode *proj_list = (*sequence_dxlnode)[0];
+    CDXLTranslationContextArray *child_contexts =
+        GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
+    child_contexts->Append(&child_context);
+    main_plan->targetlist = TranslateDXLProjList(proj_list, nullptr,
+                                                  child_contexts, output_context);
+    SetParamIds(main_plan);
+    child_contexts->Release();
 
-三个 CustomScan 节点均实现 `ExplainCustomScan` 回调，展示调试所需的关键信息：
-
-| 节点 | 展示字段 |
-|---|---|
-| `pg_orca_sequence` | 子计划数量 `nplans` |
-| `pg_orca_share_producer` | `share_id`、`param_id` |
-| `pg_orca_share_consumer` | `share_id`、`param_id` |
-
-## Translation 层改动
-
-### `TranslateDXLSequence` → `pg_orca_sequence`
-
-```
-- makeNode(CustomScan)，methods = OrcaSeqScanMethods
-- scan.scanrelid = 0，custom_scan_tlist = NIL
-- 子计划加入 cscan->custom_plans（原加入 psequence->subplans）
-- plan->targetlist = TranslateDXLProjList(...)    保持不变，OUTER_VAR Vars
-- custom_private = NIL（Sequence 不需要 share_id）
-```
-
-### `TranslateDXLCTEProducerToSharedScan` → `pg_orca_share_producer`
-
-```
-- 删除 GPOS_RAISE
-- makeNode(CustomScan)，methods = OrcaProducerScanMethods
-- scan.scanrelid = 0
-- param_id = m_dxl_to_plstmt_context->AllocCTEParamId(cte_id)
-- cscan->custom_private = list_make1_int((int)param_id)
-- cscan->custom_plans   = list_make1(child_plan)
-- plan->targetlist = TranslateDXLProjList(...)    保留，EXPLAIN 展示
-- 删除 AddCTEConsumerInfo 调用
-- cscan->custom_private 同时存入 share_id：list_make2_int((int)param_id, (int)cte_id)，供 EXPLAIN 展示
+    return main_plan;
+}
 ```
 
-### `TranslateDXLCTEConsumerToSharedScan` → `pg_orca_share_consumer`
+**注意**：若 Sequence 只有一个子节点（无 CTEProducer，只有主计划），或者 arity == 2，
+则 `ul=1..arity-2` 循环体不执行，直接翻译 `child[1]` 作为主计划返回。
+Sequence 中只有 CTEProducer 被特殊处理；其他类型的非末尾子节点（如分区场景的 DynamicSeqScan
+初始化）若将来出现，需扩展此函数。
+
+---
+
+### `TranslateDXLCTEProducerToPlan` — 生成子计划
+
+```cpp
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLCTEProducerToSharedScan(
+    const CDXLNode *cte_producer_dxlnode, CDXLTranslateContext *output_context,
+    CDXLTranslationContextArray *ctxt_translation_prev_siblings)
+{
+    CDXLPhysicalCTEProducer *cte_prod_dxlop =
+        CDXLPhysicalCTEProducer::Cast(cte_producer_dxlnode->GetOperator());
+    ULONG cte_id = cte_prod_dxlop->Id();
+
+    // 翻译 CTE 子计划（child[1]）
+    CDXLNode *proj_list_dxlnode = (*cte_producer_dxlnode)[0];
+    CDXLNode *child_dxlnode     = (*cte_producer_dxlnode)[1];
+
+    CDXLTranslateContext child_context(m_mp, false,
+                                       output_context->GetColIdToParamIdMap());
+    Plan *child_plan = TranslateDXLOperatorToPlan(child_dxlnode, &child_context,
+                                                   ctxt_translation_prev_siblings);
+
+    CDXLTranslationContextArray *child_contexts =
+        GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
+    child_contexts->Append(&child_context);
+    child_plan->targetlist = TranslateDXLProjList(proj_list_dxlnode, nullptr,
+                                                   child_contexts, output_context);
+    TranslatePlanCosts(cte_producer_dxlnode, child_plan);
+    SetParamIds(child_plan);
+    child_contexts->Release();
+
+    // 注册到 subplans，记录 cte_id → (plan_id, param_id)
+    m_dxl_to_plstmt_context->RegisterCTEPlan(cte_id, child_plan);
+
+    // 翻译函数约定返回 Plan*，但 Sequence 翻译器不会使用此返回值
+    // 返回 child_plan 仅为满足接口签名
+    return child_plan;
+}
+```
+
+---
+
+### `TranslateDXLCTEConsumerToSharedScan` — 生成 CteScan
+
+```cpp
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLCTEConsumerToSharedScan(
+    const CDXLNode *cte_consumer_dxlnode, CDXLTranslateContext *output_context,
+    CDXLTranslationContextArray * /*ctxt_translation_prev_siblings*/)
+{
+    CDXLPhysicalCTEConsumer *cte_consumer_dxlop =
+        CDXLPhysicalCTEConsumer::Cast(cte_consumer_dxlnode->GetOperator());
+    ULONG cte_id = cte_consumer_dxlop->Id();
+
+    // 查找 Producer 已注册的信息
+    CContextDXLToPlStmt::SCTEPlanInfo cte_info =
+        m_dxl_to_plstmt_context->GetCTEPlanInfo(cte_id);
+
+    // 在 rtable 中添加 RTE_CTE 条目
+    RangeTblEntry *rte = makeNode(RangeTblEntry);
+    rte->rtekind    = RTE_CTE;
+    rte->ctename    = pstrdup("<orca_cte>");  // 仅用于 EXPLAIN，可填 CTE 名称
+    rte->ctelevelsup = 0;
+    rte->self_reference = false;
+    rte->eref       = makeAlias("<orca_cte>", NIL);
+    rte->lateral    = false;
+    rte->inh        = false;
+    rte->inFromCl   = true;
+    m_dxl_to_plstmt_context->AddRTE(rte);
+    Index scan_relid = list_length(m_dxl_to_plstmt_context->GetRTableEntriesList());
+
+    // 构建 CteScan 节点
+    CteScan *cte_scan = makeNode(CteScan);
+    Plan *plan = &cte_scan->scan.plan;
+    plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+    cte_scan->scan.scanrelid = scan_relid;
+    cte_scan->ctePlanId      = cte_info.plan_id;   // 1-based subplan index
+    cte_scan->cteParam       = cte_info.param_id;  // PARAM_EXEC slot
+
+    TranslatePlanCosts(cte_consumer_dxlnode, plan);
+
+    // 翻译投影列
+    CDXLNode *proj_list_dxlnode = (*cte_consumer_dxlnode)[0];
+    const ULONG num_cols = proj_list_dxlnode->Arity();
+    plan->targetlist = NIL;
+
+    for (ULONG ul = 0; ul < num_cols; ul++)
+    {
+        CDXLNode *proj_elem_dxlnode = (*proj_list_dxlnode)[ul];
+        CDXLScalarProjElem *sc_proj_elem_dxlop =
+            CDXLScalarProjElem::Cast(proj_elem_dxlnode->GetOperator());
+        ULONG colid = sc_proj_elem_dxlop->Id();
+
+        CDXLNode *sc_ident_dxlnode = (*proj_elem_dxlnode)[0];
+        CDXLScalarIdent *sc_ident_dxlop =
+            CDXLScalarIdent::Cast(sc_ident_dxlnode->GetOperator());
+        OID type_oid  = CMDIdGPDB::CastMdid(sc_ident_dxlop->MdidType())->Oid();
+        INT typmod    = sc_ident_dxlop->TypeModifier();
+        OID collation = gpdb::TypeCollation(type_oid);
+
+        // CteScan 从 scanslot 读取，使用 INDEX_VAR（scanrelid 为 CTE RTE）
+        // 但 PG18 实际以 OUTER_VAR 引用子计划输出，对于 CteScan 而言
+        // 使用 INDEX_VAR，attno 对应子计划输出列顺序（1-based）
+        Var *var = gpdb::MakeVar(INDEX_VAR, (AttrNumber)(ul + 1),
+                                  type_oid, typmod, collation, 0);
+        char *resname = CTranslatorUtils::CreateMultiByteCharStringFromWCString(
+            sc_proj_elem_dxlop->GetColumnName()->GetBuffer());
+        TargetEntry *te = gpdb::MakeTargetEntry((Expr *) var,
+                                                (AttrNumber)(ul + 1),
+                                                resname, false);
+        plan->targetlist = gpdb::LAppend(plan->targetlist, te);
+
+        // 向 output_context 注册此列的映射（colid → TargetEntry）
+        output_context->InsertMapping(colid, te);
+    }
+
+    plan->qual = NIL;
+    SetParamIds(plan);
+
+    return (Plan *) cte_scan;
+}
+```
+
+**关于 INDEX_VAR vs OUTER_VAR**：PG18 `ExecInitCteScan` 调用
+`ExecAssignScanProjectionInfoWithVarno(&css->ss, INDEX_VAR)`，scan tuple slot 按
+`INDEX_VAR` 投影。targetlist 中的 Var 需使用 `INDEX_VAR` 且 `varattno` 对应子计划输出
+列的位置（1-based），与 `ExecScan` 框架一致。
+
+---
+
+## `PlannedStmt` 组装
+
+`TranslateDXLToPlan` 中已有：
+
+```cpp
+planned_stmt->subplans = m_dxl_to_plstmt_context->GetSubplanEntriesList();
+planned_stmt->paramExecTypes = m_dxl_to_plstmt_context->GetParamTypes();
+```
+
+这两行无需修改——`RegisterCTEPlan` 调用 `AddSubplan` 和 `GetNextParamId`，自动维护这两个列表。
+
+`planned_stmt->initPlan` 保持 NIL。PG18 的 `CteScan` 使用 `ctePlanId` 直接索引
+`es_subplanstates`，不需要 initPlan 机制驱动（executor 在 `ExecInitNode` 阶段统一初始化
+所有 subplans）。
+
+---
+
+## 多 CTE / 嵌套 CTE
+
+### 多个独立 CTE
+
+```sql
+WITH a AS (...), b AS (...)
+SELECT ... FROM a JOIN b ON ...
+```
+
+ORCA 生成：
 
 ```
-- 删除 GPOS_RAISE
-- makeNode(CustomScan)，methods = OrcaConsumerScanMethods
-- scan.scanrelid = 0
-- param_id = m_dxl_to_plstmt_context->GetCTEParamId(cte_id)
-- cscan->custom_private = list_make1_int((int)param_id)
-- 遍历 projlist 构建 custom_scan_tlist 和 plan->targetlist：
-    type_oid = CMDIdGPDB::CastMdid(sc_ident_op->MdidType())->Oid()
-    typmod   = sc_ident_op->TypeModifier()
-    collid   = 优先从 DXL ScalarIdent 获取 collation，若无则 gpdb::TypeCollation(type_oid)
-    var      = MakeVar(INDEX_VAR, attrno, type_oid, typmod, collid, 0)
-    te       = MakeTargetEntry(var, attrno, resname, false)
-    output_context->InsertMapping(output_colid, te)
-- 删除 AddCTEConsumerInfo 调用
-- cscan->custom_private 同时存入 share_id：list_make2_int((int)param_id, (int)cte_id)，供 EXPLAIN 展示
+Sequence
+  ├── CTEProducer(cte_id=0)  → subplans[0], param_id=0
+  ├── CTEProducer(cte_id=1)  → subplans[1], param_id=1
+  └── HashJoin
+        ├── CTEConsumer(0)   → CteScan(ctePlanId=1, cteParam=0)
+        └── CTEConsumer(1)   → CteScan(ctePlanId=2, cteParam=1)
 ```
 
-### 清理死代码
+`TranslateDXLSequence` 遍历 `ul=1..arity-2`，依次翻译两个 CTEProducer，各自调用
+`RegisterCTEPlan`，分配独立的 `plan_id` 和 `param_id`。
 
-Producer/Consumer 改为 CustomScan 后，以下旧代码不再使用，应一并删除：
+### 嵌套 CTE
 
-- `SCTEConsumerInfo` 结构体及 `HMUlCTEConsumerInfo` 类型定义（`CContextDXLToPlStmt.h`）
-- `m_cte_consumer_info` 成员变量及其构造/析构中的初始化和释放
-- `AddCTEConsumerInfo` / `GetCTEConsumerList` 方法（`.h` 和 `.cpp`）
-- `TranslateDXLCTEProducerToSharedScan` / `TranslateDXLCTEConsumerToSharedScan` 中 `GPOS_RAISE` 之后的死代码
+```sql
+WITH a AS (...), b AS (SELECT ... FROM a ...)
+SELECT ... FROM b
+```
 
-## 新增 / 修改文件
+ORCA 为嵌套 CTE 生成嵌套 Sequence：
 
-| 文件 | 变更类型 | 说明 |
-|---|---|---|
-| `executor/nodeOrcaShareScan.c` | 新增 | 三个 CustomScan 节点的 executor 实现 |
-| `include/nodeOrcaShareScan.h` | 新增 | 声明注册函数和三个 ScanMethods 指针 |
-| `CMakeLists.txt` | 修改 | `add_library` 中加入 `executor/nodeOrcaShareScan.c` |
-| `pg_orca.cpp` | 修改 | `_PG_init` 中调用 `RegisterOrcaShareScanMethods()` |
-| `gpopt/translate/CTranslatorDXLToPlStmt.cpp` | 修改 | 上述三个翻译函数 |
-| `gpopt/translate/CContextDXLToPlStmt.cpp` | 修改 | 新增 `AllocCTEParamId` / `GetCTEParamId` |
-| `include/gpopt/translate/CContextDXLToPlStmt.h` | 修改 | 声明新方法和 cte_id→param_id 映射 |
+```
+Sequence(outer)
+  ├── CTEProducer(cte_id=0)   ← a 的定义
+  └── Sequence(inner)
+        ├── CTEProducer(cte_id=1) ← b 的定义，内含 CTEConsumer(0)
+        └── CTEConsumer(1)        ← 主查询引用 b
+```
 
-## 边界情况
+翻译时，outer Sequence 翻译 `CTEProducer(0)` 后，递归翻译 inner Sequence：
+- inner Sequence 翻译 `CTEProducer(1)` 时遇到 `CTEConsumer(0)`，此时映射已存在，生成
+  `CteScan(ctePlanId=1, cteParam=0)`，整个 CTEProducer(1) 的子计划含一个 CteScan
+- inner Sequence 最后返回主计划（含 `CTEConsumer(1)` 翻译出的 `CteScan(ctePlanId=2, cteParam=1)`）
+
+无需特殊处理嵌套情况，递归翻译天然正确。
+
+### 同一 CTE 被多次引用
+
+```sql
+WITH cte AS (...) SELECT * FROM cte c1, cte c2
+```
+
+ORCA 生成一个 CTEProducer + 两个 CTEConsumer。`RegisterCTEPlan` 只调用一次（Producer），
+两个 Consumer 调用 `GetCTEPlanInfo` 得到相同的 `plan_id` 和 `param_id`，生成两个
+`CteScan` 节点。
+
+PG18 executor 的 leader-follower 机制处理多个 CteScan：第一个初始化的成为 leader 并创建
+tuplestore，第二个成为 follower 并分配独立读指针，共享同一 tuplestore，互不干扰。
+
+---
+
+## 递归 CTE
+
+递归 CTE（`WITH RECURSIVE`）是独立问题，不在本次范围内。ORCA 不支持递归 CTE 优化（直接
+回退到 standard_planner），此设计不改变这一行为。
+
+---
+
+## 需修改/新增的文件
+
+| 文件 | 变更 |
+|------|------|
+| `include/gpopt/translate/CContextDXLToPlStmt.h` | 删除 `SCTEConsumerInfo`/`HMUlCTEConsumerInfo`/`m_cte_consumer_info`/`AddCTEConsumerInfo`/`GetCTEConsumerList`；新增 `SCTEPlanInfo`/`HMUlCTEPlanInfo`/`m_cte_plan_info`/`RegisterCTEPlan`/`GetCTEPlanInfo` |
+| `gpopt/translate/CContextDXLToPlStmt.cpp` | 实现 `RegisterCTEPlan`、`GetCTEPlanInfo`；删除旧 CTE 方法 |
+| `gpopt/translate/CTranslatorDXLToPlStmt.cpp` | 重写 `TranslateDXLSequence`（折叠为主计划）、`TranslateDXLCTEProducerToSharedScan`（生成子计划）、`TranslateDXLCTEConsumerToSharedScan`（生成 CteScan） |
+
+不需要新增文件，不需要 CustomScan 注册，不需要修改 `pg_orca.cpp`。
+
+---
+
+## 边界情况与约束
 
 | 场景 | 处理方式 |
-|---|---|
-| 同一 CTE 被引用多次 | 多个 Consumer 持有相同 param_id，各自 `tuplestore_alloc_read_pointer`，独立读指针 |
-| 嵌套 CTE | 每个 CTE 分配独立 param_id，PARAM_EXEC 数组天然隔离，无全局栈 |
-| 多层 Sequence 嵌套 | ORCA 可能为嵌套 CTE 生成 Sequence 嵌套结构，每层独立驱动子节点，语义正确 |
-| EXPLAIN ONLY | 物化在 ExecCustomScan 中惰性发生，EXPLAIN 不触发执行，无副作用 |
-| Consumer Rescan | `tuplestore_select_read_pointer` + `tuplestore_rescan` 当前读指针 |
-| Producer Rescan | V1 中为 no-op：`materialized=true` 时直接返回。Sequence 结构保证 Producer 只被驱动一次。若未来需要在 NestLoop 内侧支持真正的 rescan，需引入引用计数或 barrier 机制，不在 V1 范围内 |
-| tuplestore 生命周期 | tuplestore 创建在 `estate->es_query_cxt` 下，确保生命周期覆盖所有 Consumer。Sequence 的 EndCustomScan 按**逆序**销毁子节点（先 End Consumer 再 End Producer），Producer EndCustomScan 调用 `tuplestore_end`，Consumer EndCustomScan 仅清理自身状态 |
-| nParamExec | `CContextDXLToPlStmt::GetNextParamId` 维护分配计数，翻译完成后赋值给 `PlannedStmt.nParamExec`，确保 executor 分配足够大的 `es_param_exec_vals` 数组 |
-| 错误中止 | tuplestore 在 `es_query_cxt` 下分配，随 EState 销毁时一并释放；PARAM_EXEC 槽同理 |
+|------|----------|
+| Sequence 只有主计划（arity=2） | `ul=1..arity-2` 范围为空，直接翻译并返回 child[1] |
+| Consumer 翻译时 cte_id 未找到 | `GetCTEPlanInfo` 中 `GPOS_ASSERT` 失败，说明 ORCA 生成了非预期的结构 |
+| Sequence 的非末尾子节点不是 CTEProducer | `GPOS_ASSERT` 失败，目前 ORCA 不会生成此类结构 |
+| EXPLAIN（不执行） | CteScan 是普通计划节点，EXPLAIN 按标准路径工作，无副作用 |
+| Consumer Rescan | 由 `nodeCtescan.c` 原生处理：`tuplestore_select_read_pointer` + `tuplestore_rescan` |
+| nParamExec | `GetNextParamId` 维护 `m_param_types_list`，`planned_stmt->paramExecTypes` 自动正确 |
+| RTE_CTE 的 ctename | 填写实际 CTE 名称需要从 DXL metadata 获取；V1 可填占位符，不影响执行正确性，仅影响 EXPLAIN 显示 |
+| 递归 CTE | 继续回退到 standard_planner，无变化 |
+
+---
+
+## 与旧设计（CustomScan）的对比
+
+| 维度 | CustomScan 方案 | 原生 CteScan 方案（本方案） |
+|------|----------------|--------------------------|
+| 新增文件 | `nodeOrcaShareScan.c`、`.h` | 无 |
+| 执行器实现 | 需自行实现 Producer/Consumer/Sequence 逻辑 | 零，复用 PG18 `nodeCtescan.c` |
+| 翻译层改动 | 3 个函数 + Context 新增方法 + 注册 CustomScan | 3 个函数 + Context 新增方法 |
+| 计划结构变化 | 保留 Sequence 结构，节点类型变为 CustomScan | Sequence 消失，结构向 PG18 标准对齐 |
+| EXPLAIN 输出 | 显示 `Custom Scan (pg_orca_sequence)` 等 | 显示标准 `CTE Scan on <name>` |
+| 未来维护 | 需维护自定义 executor 节点 | 完全跟随 PG18 CteScan 演进 |
