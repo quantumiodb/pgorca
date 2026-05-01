@@ -36,6 +36,48 @@ Summary: ORCA faster on 3 queries, roughly equal on 4, slower on 15.
 
 ---
 
+## Cross-Scale-Factor Summary (SF=1 / 3 / 4 / 5)
+
+All runs: single-node PG 18, warm buffer cache, `max_parallel_workers_per_gather=0`.
+SF=5 ORCA uses the Q16 correlated-NL cost fix (commit `be2f347`); SF=3/4 do not.
+
+| Query | PG SF=3 | ORCA SF=3 | Ratio | PG SF=4 | ORCA SF=4 | Ratio | PG SF=5 | ORCA SF=5 | Ratio |
+|-------|--------:|----------:|------:|--------:|----------:|------:|--------:|----------:|------:|
+| Q1    | 31,548  |  32,620   | 1.03  | 42,098  |  43,573   | 1.04  | 52,740  |  54,853   | 1.04  |
+| Q2    |  2,401  |   3,955   | 1.65  |  3,986  |   4,803   | 1.20  |  4,391  |   5,541   | 1.26  |
+| Q3    | 11,151  |   9,547   | 0.86  | 16,136  |  12,734   | 0.79  | 20,473  |  16,402   | 0.80  |
+| Q4    |  3,720  |  15,273   | **4.11** |  4,995  |  20,633   | **4.13** |  6,300  |  27,099   | **4.30** |
+| Q5    |  3,834  |   9,661   | 2.52  |  9,581  |  12,524   | 1.31  |  9,999  |  16,143   | 1.61  |
+| Q6    |  6,995  |   7,108   | 1.02  |  9,356  |   9,457   | 1.01  | 11,658  |  12,003   | 1.03  |
+| Q7    |  8,311  |   9,696   | 1.17  | 11,316  |  12,740   | 1.13  | 14,312  |  16,128   | 1.13  |
+| Q8    |  3,153  |   5,002   | 1.59  |  4,416  |   5,963   | 1.35  |  4,698  |   7,186   | 1.53  |
+| Q9    | 30,290  |  16,049   | **0.53** | 30,405  |  21,249   | **0.70** | 33,777  |  27,320   | **0.81** |
+| Q10   |  9,084  |   9,306   | 1.02  | 12,117  |  12,466   | 1.03  | 14,363  |  15,871   | 1.11  |
+| Q11   |  1,500  |   2,150   | 1.43  |  1,997  |   2,834   | 1.42  |  2,525  |   3,557   | 1.41  |
+| Q12   | 10,768  |  11,408   | 1.06  | 14,312  |  15,258   | 1.07  | 17,995  |  20,024   | 1.11  |
+| Q13   |  5,725  |   6,153   | 1.07  |  7,926  |   8,319   | 1.05  | 10,040  |  11,250   | 1.12  |
+| Q14   |  7,033  |   6,860   | 0.98  |  9,390  |   9,171   | 0.98  | 11,785  |  11,696   | 0.99  |
+| Q15   |  7,130  |   7,378   | 1.03  |  9,587  |   9,954   | 1.04  | 11,923  |  12,615   | 1.06  |
+| Q16   |  3,591  |   3,662   | 1.02  |  4,930  |   4,982   | 1.01  |  6,268  |   6,479   | 1.03  |
+| Q17   |  5,069  |     382   | **0.08** |  6,802  |     487   | **0.07** |  8,574  |     696   | **0.08** |
+| Q18   | 32,021  |  29,244   | **0.91** | 49,282  |  39,040   | **0.79** | 62,261  |  50,469   | **0.81** |
+| Q19   |    512  |     708   | 1.38  |    669  |     950   | 1.42  |    935  |   1,162   | 1.24  |
+| Q20   |  2,287  |  11,669   | **5.10** |  3,124  |  15,447   | **4.94** |  3,941  |  19,889   | **5.05** |
+| Q21   | 16,768  |  30,972   | 1.85  | 22,528  |  39,927   | 1.77  | 28,360  |  49,895   | 1.76  |
+| Q22   |  1,857  |   3,443   | 1.85  |  2,488  |   4,660   | 1.87  |  3,214  |   6,351   | 1.98  |
+| **Total** | **204,749** | **232,244** | **1.13** | **277,440** | **307,166** | **1.11** | **340,531** | **392,621** | **1.15** |
+
+**Observations across scale factors:**
+- **Q17** remains ORCA's biggest win at all SFs: ~12–14× faster (NL index scan via `lineitem_l_partkey_idx`).
+- **Q9, Q18** are consistent ORCA wins: Q9 at 0.53–0.81×, Q18 at 0.79–0.91× (better join order).
+- **Q3** is a consistent modest ORCA win: 0.79–0.86×.
+- **Q4** regresses at all SF≥3 (4.1–4.3×): NL Semi Join calibration valid only at SF=1 scale; at higher SF, outer row count grows beyond warm-cache coverage and NL becomes genuinely expensive.
+- **Q20** is a consistent large regression (5×): eager subquery decorrelation (SF-independent issue).
+- **Q21** is a consistent 1.8× regression (join order issue with anti/semi joins).
+- Overall ORCA/PG ratio improves at higher SF: 1.33× (SF=1) → **1.11–1.15× (SF=3–5)**, because planning overhead is amortized over longer execution.
+
+---
+
 ## Key Findings
 
 **ORCA wins:**
@@ -124,6 +166,44 @@ rows and building an 88 MB hash table. PG uses a **Nested Loop Semi Join** with
 
 Also resolved: **Q17** is now ORCA's biggest win at **0.12× of PG** (8.6× faster), using
 `lineitem_l_partkey_idx` with the same calibrated NL cost model.
+
+---
+
+### Q16 — Fixed ✓
+
+**Commit:** `be2f347 fix: correct correlated NL join cost underestimate in CostNLJoin`
+
+**Root cause:** Q16 uses a `NOT IN (SELECT s_suppkey FROM supplier WHERE ...)` subquery.
+At SF=5, ORCA chose `CPhysicalCorrelatedInnerNLJoin` (SubPlan semantics) over
+`CPhysicalLeftAntiSemiHashJoinNotIn` because `CostNLJoin` underestimated the correlated
+plan's cost by ~4M×.
+
+`CostChildren` adds the inner child cost (568.80 — cost of one supplier scan) only once,
+as if it were a one-time setup. For a correlated NL join, the inner subplan re-executes
+once per outer row. At SF=5 the outer group has ~4M rows, so the true cost is
+4M × 568 ≈ 2.3B, far exceeding the Hash Anti Join cost of 2065.
+
+| | Correct plan (Hash Anti Join) | Chosen plan (SubPlan) |
+|--|---|---|
+| ORCA estimated cost | 2065 | **1938** (underestimate) |
+| True cost (actual) | ~2065 | ~4M × 568 ≈ 2.3B |
+| SF=5 runtime | ~6 s | **~30 minutes** |
+
+**Fix:** In `CostNLJoin()`, detect `FCorrelatedNLJoin` and add
+`(num_rows_outer − 1) × pdCost[1]` to account for repeated inner execution:
+
+```cpp
+if (CUtils::FCorrelatedNLJoin(exprhdl.Pop()) && pci->ChildCount() >= 2 &&
+    num_rows_outer > 1.0)
+{
+    CDouble dInnerCostOnce(pci->PdCost()[1]);
+    costChild = CCost(costChild.Get() +
+                      dInnerCostOnce.Get() * (num_rows_outer - 1.0));
+}
+```
+
+**Result:** Q16 SF=5: **~30 minutes → 7 seconds** (1.03× vs PG). Q16 is ≈1.01–1.03× at all SFs.
+Overall SF=5 ratio: 6.40× → **1.15×** (the Q16 SubPlan disaster was the entire gap at SF=5).
 
 ---
 
