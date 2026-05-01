@@ -88,6 +88,12 @@ bool  optimizer_print_memo_after_optimization   = false;
 bool  optimizer_print_optimization_context      = false;
 bool  optimizer_cte_inlining                    = true;
 
+/* Minidump generation: 0=never, 1=onerror, 2=always */
+#define OPTIMIZER_MINIDUMP_NEVER   0
+#define OPTIMIZER_MINIDUMP_ONERROR 1
+#define OPTIMIZER_MINIDUMP_ALWAYS  2
+int   optimizer_minidump                        = OPTIMIZER_MINIDUMP_NEVER;
+
 /* xforms array: indexed by xform id, true means disabled */
 bool  optimizer_xforms[512] = {false};
 
@@ -675,6 +681,19 @@ void _PG_init(void)
         "optimizer_use_streaming_hashagg",
         "Use streaming hash agg in ORCA-generated local partial hash aggregations.",
         NULL, &optimizer_use_streaming_hashagg, true,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    static const struct config_enum_entry minidump_options[] = {
+        {"never",   OPTIMIZER_MINIDUMP_NEVER,   false},
+        {"onerror", OPTIMIZER_MINIDUMP_ONERROR, false},
+        {"always",  OPTIMIZER_MINIDUMP_ALWAYS,  false},
+        {NULL, 0, false}
+    };
+    DefineCustomEnumVariable(
+        "optimizer_minidump",
+        "Generate ORCA minidump: never, onerror, or always.",
+        NULL, &optimizer_minidump, OPTIMIZER_MINIDUMP_NEVER,
+        minidump_options,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     MarkGUCPrefixReserved("optimizer");

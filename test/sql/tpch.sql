@@ -1,11 +1,14 @@
 -- disable parallel 
 set max_parallel_workers_per_gather=0;
+LOAD 'pg_orca';
 
 CREATE EXTENSION IF NOT EXISTS pg_tpch;
 
 set pg_orca.enable_orca to off;
 SELECT * FROM create_tpch_tables(false);
 SELECT table_name, rows, heap_time_ms FROM tpch_dbgen(1);
+
+CREATE INDEX ON lineitem (l_partkey);  -- for PG Q17
 
 ANALYZE;
 

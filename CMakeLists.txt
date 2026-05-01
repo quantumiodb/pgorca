@@ -230,6 +230,46 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 # -------------------------------------------------------------------
+# Standalone optimizer tool: orca_dxl
+#
+# Links the pure ORCA core (libgpos + libnaucrates + libgpopt +
+# libgpdbcost) without the PostgreSQL integration layer, so it can
+# run on a .mdp minidump file without a live PostgreSQL instance.
+# -------------------------------------------------------------------
+add_executable(orca_dxl
+    tools/orca_dxl.cpp
+    $<TARGET_OBJECTS:orca_core>
+)
+
+target_compile_definitions(orca_dxl PRIVATE
+    $<$<CONFIG:Debug>:GPOS_DEBUG>
+    USE_CMAKE
+)
+
+target_compile_options(orca_dxl PRIVATE
+    -Wall
+    -Wno-unused-parameter
+    -Wno-sign-compare
+)
+
+target_include_directories(orca_dxl PRIVATE
+    ${CMAKE_SOURCE_DIR}/libgpos/include
+    ${CMAKE_SOURCE_DIR}/libnaucrates/include
+    ${CMAKE_SOURCE_DIR}/libgpopt/include
+    ${CMAKE_SOURCE_DIR}/libgpdbcost/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/compat
+    SYSTEM
+    ${PG_SERVER_INCLUDEDIR}
+    ${PG_INCLUDEDIR}
+    ${XERCES_INCLUDE}
+    ${EXTRA_SYSTEM_INCLUDES}
+)
+
+target_link_libraries(orca_dxl PRIVATE ${XERCES_LIB} ${CMAKE_DL_LIBS})
+
+# -------------------------------------------------------------------
 # Install
 # -------------------------------------------------------------------
 install(TARGETS pg_orca
