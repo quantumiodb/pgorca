@@ -1879,6 +1879,10 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 		CColRefSet *pcrsUsed = pexprIndexCond->DeriveUsedColumns();
 		if (!pcrsUsed->FMember((*pdrgpcrIndexColumns)[0]))
 		{
+			// Predicate does not cover the leading index column: the B-tree
+			// must be scanned nearly in full because matching rows are spread
+			// across all leaf pages.  Scale the random-I/O term by
+			// (table_pages / rows_per_rebind) to discourage such plans.
 			ULONG rel_pages = CStatistics::CastStats(stats)->RelPages();
 			if (rel_pages > 0 && dRowsIndex > CDouble(0))
 			{
@@ -1886,6 +1890,14 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 					dIndexScanTupRandomFactor *
 					(CDouble(rel_pages) / dRowsIndex);
 			}
+		}
+		else if (pci->NumRebinds() > 1)
+		{
+			// Leading-column predicate inside an NL join (NumRebinds > 1):
+			// repeated probes on the same B-tree are served mostly from the
+			// buffer cache on single-node PG, so the per-probe random-I/O
+			// cost is much lower than a cold-disk probe.
+			dEffectiveRandomFactor = dIndexScanTupRandomFactor / CDouble(5.0);
 		}
 	}
 
