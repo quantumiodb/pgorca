@@ -1420,6 +1420,23 @@ CCostModelGPDB::CostNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	CCost costChild =
 		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
 
+	// For correlated NL joins (SubPlan semantics), the inner child is a
+	// subplan that is re-executed once per outer row.  CostChildren adds
+	// pdCost[1] only once (as a one-time setup cost).  Multiply the inner
+	// child cost by the number of outer rows to reflect the true total.
+	//
+	// Without this correction ORCA underestimates correlated SubPlan cost by
+	// ~outer_rows× (e.g. Q16 NOT IN: 4M outer rows × 568 inner cost ≈ 2.3B,
+	// but ORCA sees only 568), causing it to prefer SubPlan over Hash Anti Join.
+	if (CUtils::FCorrelatedNLJoin(exprhdl.Pop()) && pci->ChildCount() >= 2 &&
+		num_rows_outer > 1.0)
+	{
+		CDouble dInnerCostOnce(pci->PdCost()[1]);
+		// CostChildren already counted the inner once; add (outer_rows - 1) more
+		costChild = CCost(costChild.Get() +
+						  dInnerCostOnce.Get() * (num_rows_outer - 1.0));
+	}
+
 	CCost costTotal = CCost(costLocal + costChild);
 
 	// amplify NLJ cost based on NLJ factor and stats estimation risk
@@ -1903,7 +1920,7 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 			// the per-row heap-fetch term are much cheaper than the cold-disk
 			// MPP model assumes.
 			//
-			// Values derived from OLS regression on SF=2 TPC-H, PG 18, warm cache:
+			// Values derived from OLS regression on SF=1 TPC-H, PG 18, warm cache:
 			//   Model: T_per_probe = α + r×W_real×β
 			//   Exp3: lineitem_pkey heap-fetch, r=1..7, K=10000 fixed (R²≈0.999)
 			//   α = 4.914e-3 ms/probe → dEffRandom = α/C_unit = 4.259e-3
