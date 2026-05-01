@@ -1873,6 +1873,7 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 	// (table_pages / rows_per_rebind) so the planner prefers seq-scan +
 	// hash-join over nested-loop + non-leading index scan.
 	CDouble dEffectiveRandomFactor = dIndexScanTupRandomFactor;
+	CDouble dEffectiveScanTupCostUnit = dIndexScanTupCostUnit;
 	if (pdrgpcrIndexColumns->Size() > 0)
 	{
 		CExpression *pexprIndexCond = exprhdl.PexprScalarRepChild(0);
@@ -1894,17 +1895,20 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 		else if (pci->NumRebinds() > 1)
 		{
 			// Leading-column predicate inside an NL join (NumRebinds > 1):
-			// repeated probes on the same B-tree are served mostly from the
-			// buffer cache on single-node PG, so the per-probe random-I/O
-			// cost is much lower than a cold-disk probe.
+			// On single-node PG with a warm buffer cache the B-tree root and
+			// upper pages are always pinned, and the heap pages for a selective
+			// lookup are often already in cache.  Both the random-I/O term and
+			// the per-row heap-fetch term are much cheaper than the cold-disk
+			// MPP model assumes, so scale both down.
 			dEffectiveRandomFactor = dIndexScanTupRandomFactor / CDouble(5.0);
+			dEffectiveScanTupCostUnit = dIndexScanTupCostUnit / CDouble(4.0);
 		}
 	}
 
 	pdrgpcrIndexColumns->Release();
 
 	CDouble dCostPerIndexRow = ulIndexKeys * dIndexFilterCostUnit +
-							   dTableWidth * dIndexScanTupCostUnit +
+							   dTableWidth * dEffectiveScanTupCostUnit +
 							   ulIncludedColWidth * dIndexOnlyScanTupCostUnit;
 	return CCost(pci->NumRebinds() *
 				 (dRowsIndex * dCostPerIndexRow + dEffectiveRandomFactor +
