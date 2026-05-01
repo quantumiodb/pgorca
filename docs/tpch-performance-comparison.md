@@ -1,36 +1,38 @@
 # TPC-H Performance Comparison: ORCA vs PostgreSQL Native Planner
 
-Test environment: TPC-H SF=2, PostgreSQL 18, single-node, parallelism disabled
+Test environment: TPC-H **SF=1**, PostgreSQL 18, single-node, parallelism disabled
 (`max_parallel_workers_per_gather=0`), warm buffer cache.
 
 ## Execution Time
 
 | Query | PG (ms) | ORCA (ms) | Ratio (ORCA/PG) | Result |
 |-------|--------:|----------:|----------------:|--------|
-| Q1    | 10,500  | 10,971    | 1.04x           | ≈      |
-| Q2    |    488  |  2,243    | 4.59x           | PG     |
-| Q3    |  2,812  |  3,167    | 1.13x           | ≈      |
-| Q4    |  1,134  |  1,179    | 1.04x ✓ (fixed) | ≈      |
-| Q5    |  1,138  |  4,214    | 3.70x           | PG     |
-| Q6    |  2,196  |  2,210    | 1.01x           | ≈      |
-| Q7    |  1,821  |  3,604    | 1.98x           | PG     |
-| Q8    |    939  |  3,017    | 3.21x           | PG     |
-| Q9    |  7,773  |  6,169    | **0.79x**       | **ORCA** |
-| Q10   |  2,846  |  1,829    | **0.64x**       | **ORCA** |
-| Q11   |    504  |    868    | 1.72x           | PG     |
-| Q12   |  3,589  |  3,453    | 0.96x           | ≈      |
-| Q13   |  1,783  |  1,919    | 1.08x           | ≈      |
-| Q14   |  2,200  |  2,598    | 1.18x           | ≈      |
-| Q15   |  2,233  |  2,416    | 1.08x           | ≈      |
-| Q16   |  1,152  |  1,220    | 1.06x           | ≈      |
-| Q17   |  1,539  |    179    | **0.12x** ✓ (fixed) | **ORCA 8.6x** |
-| Q18   |  7,865  |  9,275    | 1.18x           | ≈      |
-| Q19   |    142  |    329    | 2.33x           | PG     |
-| Q20   |    693  |  3,787    | 5.47x           | PG     |
-| Q21   |  3,585  | 11,145    | 3.11x           | PG     |
-| Q22   |    608  |  1,129    | 1.86x           | PG     |
+| Q1    | 10,512  | 10,898    | 1.04x           | ≈      |
+| Q2    |    485  |  2,237    | 4.61x           | PG     |
+| Q3    |  2,818  |  3,162    | 1.12x           | ≈      |
+| Q4    |  1,129  |  1,179    | 1.04x ✓ (fixed) | ≈      |
+| Q5    |  1,133  |  4,250    | 3.75x           | PG     |
+| Q6    |  2,200  |  2,216    | 1.01x           | ≈      |
+| Q7    |  1,821  |  3,632    | 1.99x           | PG     |
+| Q8    |    953  |  3,041    | 3.19x           | PG     |
+| Q9    |  7,821  |  6,229    | **0.80x**       | **ORCA 1.3x** |
+| Q10   |  2,843  |  1,846    | **0.65x**       | **ORCA 1.5x** |
+| Q11   |    506  |    866    | 1.71x           | PG     |
+| Q12   |  3,559  |  3,442    | 0.97x           | ≈      |
+| Q13   |  1,794  |  1,928    | 1.07x           | ≈      |
+| Q14   |  2,194  |  2,594    | 1.18x           | PG     |
+| Q15   |  2,223  |  2,402    | 1.08x           | PG     |
+| Q16   |  1,146  |  1,209    | 1.06x           | ≈      |
+| Q17   |  1,566  |    179    | **0.11x** ✓ (fixed) | **ORCA 8.7x** |
+| Q18   |  7,931  |  9,268    | 1.17x           | PG     |
+| Q19   |    143  |    331    | 2.31x           | PG     |
+| Q20   |    708  |  3,779    | 5.33x           | PG     |
+| Q21   |  3,571  | 11,141    | 3.12x           | PG     |
+| Q22   |    605  |  1,147    | 1.90x           | PG     |
 
-**Total (22 queries):** PG ~57,539 ms vs ORCA ~76,921 ms — ORCA is **1.34x slower** overall.
+**Total (22 queries):** PG ~57,663 ms vs ORCA ~76,975 ms — ORCA is **1.33x slower** overall.
+
+Summary: ORCA faster on 3 queries, roughly equal on 4, slower on 15.
 
 ---
 
