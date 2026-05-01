@@ -2,8 +2,8 @@
 //	Greenplum Database
 //	Copyright (C) 2018 VMware, Inc. or its affiliates.
 //
-//	Base Index Apply operator for Inner and Outer Join;
-//	a variant of inner/outer apply that captures the need to implement a
+//	Base Index Apply operator for Inner, Outer, Semi and Anti-Semi Join;
+//	a variant of inner/outer/semi apply that captures the need to implement a
 //	correlated-execution strategy on the physical side, where the inner
 //	side is an index scan with parameters from outer side
 //---------------------------------------------------------------------------
@@ -19,13 +19,21 @@ namespace gpopt
 {
 class CLogicalIndexApply : public CLogicalApply
 {
+public:
+	enum EIndexJoinType
+	{
+		EijtInner,
+		EijtLeftOuter,
+		EijtLeftSemi,
+		EijtLeftAntiSemi,
+	};
+
 private:
 protected:
 	// columns used from Apply's outer child used by index in Apply's inner child
 	CColRefArray *m_pdrgpcrOuterRefs;
 
-	// is this an outer join?
-	BOOL m_fOuterJoin;
+	EIndexJoinType m_eIndexJoinType;
 
 	// a copy of the original join predicate that has been pushed down to the inner side
 	CExpression *m_origJoinPred;
@@ -35,7 +43,7 @@ public:
 
 	// ctor
 	CLogicalIndexApply(CMemoryPool *mp, CColRefArray *pdrgpcrOuterRefs,
-					   BOOL fOuterJoin, CExpression *origJoinPred);
+					   EIndexJoinType eijt, CExpression *origJoinPred);
 
 	// ctor for patterns
 	explicit CLogicalIndexApply(CMemoryPool *mp);
@@ -64,11 +72,28 @@ public:
 		return m_pdrgpcrOuterRefs;
 	}
 
-	// outer column references accessor
 	BOOL
 	FouterJoin() const
 	{
-		return m_fOuterJoin;
+		return m_eIndexJoinType == EijtLeftOuter;
+	}
+
+	BOOL
+	FSemiJoin() const
+	{
+		return m_eIndexJoinType == EijtLeftSemi;
+	}
+
+	BOOL
+	FAntiSemiJoin() const
+	{
+		return m_eIndexJoinType == EijtLeftAntiSemi;
+	}
+
+	EIndexJoinType
+	IndexJoinType() const
+	{
+		return m_eIndexJoinType;
 	}
 
 	CExpression *
@@ -86,6 +111,12 @@ public:
 	DeriveOutputColumns(CMemoryPool *mp, CExpressionHandle &exprhdl) override
 	{
 		GPOS_ASSERT(3 == exprhdl.Arity());
+
+		if (m_eIndexJoinType == EijtLeftSemi ||
+			m_eIndexJoinType == EijtLeftAntiSemi)
+		{
+			return PcrsDeriveOutputPassThru(exprhdl);
+		}
 
 		return PcrsDeriveOutputCombineLogical(mp, exprhdl);
 	}

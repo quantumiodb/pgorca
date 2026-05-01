@@ -13,6 +13,7 @@
 
 #include "gpos/base.h"
 
+
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/base/CUtils.h"
 #include "gpopt/operators/CLogicalApply.h"
@@ -237,16 +238,24 @@ CXformJoin2IndexApply::CreateAlternativesForBtreeIndex(
 			CXformUtils::AddALinearStackOfUnaryExpressions(
 				mp, indexGetWithOptionalSelect, nodesToInsertAboveIndexGet,
 				endOfNodesToInsertAboveIndexGet);
-		BOOL isOuterJoin = false;
+		CLogicalIndexApply::EIndexJoinType joinType;
 
 		switch (joinOp->Eopid())
 		{
 			case COperator::EopLogicalInnerJoin:
-				isOuterJoin = false;
+				joinType = CLogicalIndexApply::EijtInner;
 				break;
 
 			case COperator::EopLogicalLeftOuterJoin:
-				isOuterJoin = true;
+				joinType = CLogicalIndexApply::EijtLeftOuter;
+				break;
+
+			case COperator::EopLogicalLeftSemiJoin:
+				joinType = CLogicalIndexApply::EijtLeftSemi;
+				break;
+
+			case COperator::EopLogicalLeftAntiSemiJoin:
+				joinType = CLogicalIndexApply::EijtLeftAntiSemi;
 				break;
 
 			default:
@@ -258,7 +267,7 @@ CXformJoin2IndexApply::CreateAlternativesForBtreeIndex(
 		CExpression *pexprIndexApply = GPOS_NEW(mp) CExpression(
 			mp,
 			GPOS_NEW(mp)
-				CLogicalIndexApply(mp, colref_array, isOuterJoin, origJoinPred),
+				CLogicalIndexApply(mp, colref_array, joinType, origJoinPred),
 			pexprOuter, rightChildOfApply,
 			CPredicateUtils::PexprConjunction(mp, nullptr /*pdrgpexpr*/));
 		pxfres->Add(pexprIndexApply);
@@ -306,16 +315,24 @@ CXformJoin2IndexApply::CreateHomogeneousBitmapIndexApplyAlternatives(
 			CXformUtils::AddALinearStackOfUnaryExpressions(
 				mp, indexGetWithOptionalSelect, nodesToInsertAboveIndexGet,
 				endOfNodesToInsertAboveIndexGet);
-		BOOL isOuterJoin = false;
+		CLogicalIndexApply::EIndexJoinType joinType;
 
 		switch (joinOp->Eopid())
 		{
 			case COperator::EopLogicalInnerJoin:
-				isOuterJoin = false;
+				joinType = CLogicalIndexApply::EijtInner;
 				break;
 
 			case COperator::EopLogicalLeftOuterJoin:
-				isOuterJoin = true;
+				joinType = CLogicalIndexApply::EijtLeftOuter;
+				break;
+
+			case COperator::EopLogicalLeftSemiJoin:
+				joinType = CLogicalIndexApply::EijtLeftSemi;
+				break;
+
+			case COperator::EopLogicalLeftAntiSemiJoin:
+				joinType = CLogicalIndexApply::EijtLeftAntiSemi;
 				break;
 
 			default:
@@ -327,7 +344,7 @@ CXformJoin2IndexApply::CreateHomogeneousBitmapIndexApplyAlternatives(
 		CExpression *pexprIndexApply = GPOS_NEW(mp) CExpression(
 			mp,
 			GPOS_NEW(mp)
-				CLogicalIndexApply(mp, colref_array, isOuterJoin, origJoinPred),
+				CLogicalIndexApply(mp, colref_array, joinType, origJoinPred),
 			pexprOuter, rightChildOfApply,
 			CPredicateUtils::PexprConjunction(mp, nullptr /*pdrgpexpr*/));
 		pxfres->Add(pexprIndexApply);

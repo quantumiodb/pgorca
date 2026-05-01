@@ -451,3 +451,205 @@ CXformJoin2IndexApplyGeneric::Transform(CXformContext *pxfctxt,
 
 	CRefCount::SafeRelease(pexprAllPredicates);
 }
+
+
+CXform::EXformPromise
+CXformSemiJoin2IndexApplyGeneric::Exfp(CExpressionHandle &exprhdl) const
+{
+	if (0 == exprhdl.DeriveUsedColumns(2)->Size() ||
+		exprhdl.DeriveHasSubquery(2) || exprhdl.HasOuterRefs() ||
+		1 != exprhdl.DeriveJoinDepth(1))
+	{
+		return CXform::ExfpNone;
+	}
+
+	return CXform::ExfpHigh;
+}
+
+
+void
+CXformSemiJoin2IndexApplyGeneric::Transform(CXformContext *pxfctxt,
+											 CXformResult *pxfres,
+											 CExpression *pexpr) const
+{
+	GPOS_ASSERT(nullptr != pxfctxt);
+	GPOS_ASSERT(FPromising(pxfctxt->Pmp(), this, pexpr));
+	GPOS_ASSERT(FCheckPattern(pexpr));
+
+
+	CMemoryPool *mp = pxfctxt->Pmp();
+
+	CExpression *pexprOuter = (*pexpr)[0];
+	CExpression *pexprInner = (*pexpr)[1];
+	CExpression *pexprScalar = (*pexpr)[2];
+
+	CExpression *pexprAllPredicates = pexprScalar;
+	CExpression *selectThatIsParentOfGet = nullptr;
+	CExpression *pexprGet = nullptr;
+	CExpression *nodesToInsertAboveIndexGet = nullptr;
+	CExpression *endOfNodesToInsertAboveIndexGet = nullptr;
+
+	CTableDescriptor *ptabdescInner = nullptr;
+	const CColRefSet *distributionCols = nullptr;
+	CLogicalDynamicGet *popDynamicGet = nullptr;
+	CAutoRef<CColRefSet> groupingColsToCheck;
+
+	for (CExpression *pexprCurrInnerChild = pexprInner; nullptr == pexprGet;
+		 pexprCurrInnerChild =
+			 (nullptr == pexprGet ? (*pexprCurrInnerChild)[0] : nullptr))
+	{
+		switch (pexprCurrInnerChild->Pop()->Eopid())
+		{
+			case COperator::EopLogicalSelect:
+				if ((*pexprCurrInnerChild)[1]->DeriveHasSubquery())
+				{
+					return;
+				}
+				selectThatIsParentOfGet = pexprCurrInnerChild;
+				break;
+
+			case COperator::EopLogicalGbAgg:
+			case COperator::EopLogicalProject:
+			{
+				if ((*pexprCurrInnerChild)[1]->DeriveHasSubquery())
+				{
+					return;
+				}
+
+				CColRefSet *joinPredUsedCols = GPOS_NEW(mp)
+					CColRefSet(mp, *(pexprScalar->DeriveUsedColumns()));
+
+				joinPredUsedCols->Exclude(pexprOuter->DeriveOutputColumns());
+				joinPredUsedCols->Exclude(
+					(*pexprCurrInnerChild)[0]->DeriveOutputColumns());
+				BOOL joinPredUsesProjectedColumns = (0 < joinPredUsedCols->Size());
+				joinPredUsedCols->Release();
+
+				if (joinPredUsesProjectedColumns)
+				{
+					return;
+				}
+
+				if (COperator::EopLogicalGbAgg ==
+					pexprCurrInnerChild->Pop()->Eopid())
+				{
+					CLogicalGbAgg *grbyAggOp =
+						CLogicalGbAgg::PopConvert(pexprCurrInnerChild->Pop());
+
+					GPOS_ASSERT(nullptr != grbyAggOp);
+					if (nullptr != grbyAggOp->Pdrgpcr() &&
+						0 < grbyAggOp->Pdrgpcr()->Size())
+					{
+						CColRefSet *groupingCols =
+							GPOS_NEW(mp) CColRefSet(mp, grbyAggOp->Pdrgpcr());
+
+						groupingCols->Intersection(groupingColsToCheck.Value());
+						CRefCount::SafeRelease(groupingColsToCheck.Value());
+						groupingColsToCheck = groupingCols;
+
+						if (0 == groupingCols->Size())
+						{
+							return;
+						}
+					}
+					else
+					{
+						return;
+					}
+				}
+				selectThatIsParentOfGet = nullptr;
+			}
+			break;
+
+			case COperator::EopLogicalGet:
+			{
+				CLogicalGet *popGet =
+					CLogicalGet::PopConvert(pexprCurrInnerChild->Pop());
+
+				ptabdescInner = popGet->Ptabdesc();
+				distributionCols = popGet->PcrsDist();
+				pexprGet = pexprCurrInnerChild;
+
+				if (popGet->HasSecurityQuals())
+				{
+					return;
+				}
+
+				if (nullptr != groupingColsToCheck.Value() &&
+					(!groupingColsToCheck->ContainsAll(distributionCols) ||
+					 ptabdescInner->GetRelDistribution() ==
+						 IMDRelation::EreldistrRandom))
+				{
+					return;
+				}
+			}
+			break;
+
+			case COperator::EopLogicalDynamicGet:
+			{
+				popDynamicGet =
+					CLogicalDynamicGet::PopConvert(pexprCurrInnerChild->Pop());
+				ptabdescInner = popDynamicGet->Ptabdesc();
+				distributionCols = popDynamicGet->PcrsDist();
+				if (nullptr != groupingColsToCheck.Value() &&
+					!groupingColsToCheck->ContainsAll(distributionCols))
+				{
+					return;
+				}
+				pexprGet = pexprCurrInnerChild;
+
+				if (popDynamicGet->HasSecurityQuals())
+				{
+					return;
+				}
+
+				if (nullptr != groupingColsToCheck.Value() &&
+					(!groupingColsToCheck->ContainsAll(distributionCols) ||
+					 ptabdescInner->GetRelDistribution() ==
+						 IMDRelation::EreldistrRandom))
+				{
+					return;
+				}
+			}
+			break;
+
+			default:
+				return;
+		}
+	}
+
+	if (nullptr != selectThatIsParentOfGet)
+	{
+		pexprAllPredicates = CPredicateUtils::PexprConjunction(
+			mp, pexprAllPredicates, (*selectThatIsParentOfGet)[1]);
+	}
+	else
+	{
+		pexprAllPredicates->AddRef();
+	}
+
+	if (pexprInner != pexprGet && pexprInner != selectThatIsParentOfGet)
+	{
+		nodesToInsertAboveIndexGet = pexprInner;
+
+		if (nullptr != selectThatIsParentOfGet)
+		{
+			endOfNodesToInsertAboveIndexGet = selectThatIsParentOfGet;
+		}
+		else
+		{
+			endOfNodesToInsertAboveIndexGet = pexprGet;
+		}
+	}
+
+	// semi/anti-semi joins never need the outer-join distribution check
+
+	CreateHomogeneousIndexApplyAlternatives(
+		mp, pexpr->Pop(), pexprOuter, pexprGet, pexprAllPredicates, pexprScalar,
+		nodesToInsertAboveIndexGet, endOfNodesToInsertAboveIndexGet,
+		ptabdescInner, pxfres,
+		(m_generateBitmapPlans ? IMDIndex::EmdindBitmap
+							   : IMDIndex::EmdindBtree));
+
+	CRefCount::SafeRelease(pexprAllPredicates);
+}
