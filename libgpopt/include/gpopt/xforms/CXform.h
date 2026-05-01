@@ -239,6 +239,7 @@ public:
 		ExfFullJoinCommutativity,
 		ExfSplitWindowFunc,
 		ExfDynamicGet2AppendTableScan,
+		ExfSemiJoin2IndexGetApply,
 		ExfInvalid,
 		ExfSentinel = ExfInvalid
 	};

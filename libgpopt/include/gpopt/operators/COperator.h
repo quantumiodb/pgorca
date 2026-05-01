@@ -198,6 +198,8 @@ public:
 		EopPhysicalCorrelatedInnerNLJoin,
 		EopPhysicalLeftOuterNLJoin,
 		EopPhysicalLeftOuterIndexNLJoin,
+		EopPhysicalLeftSemiIndexNLJoin,
+		EopPhysicalLeftAntiSemiIndexNLJoin,
 		EopPhysicalCorrelatedLeftOuterNLJoin,
 		EopPhysicalLeftSemiNLJoin,
 		EopPhysicalCorrelatedLeftSemiNLJoin,

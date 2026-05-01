@@ -76,6 +76,56 @@ public:
 
 };	// class CXformJoin2IndexApplyGeneric
 
+
+class CXformSemiJoin2IndexApplyGeneric : public CXformJoin2IndexApply
+{
+private:
+	BOOL m_generateBitmapPlans;
+
+public:
+	CXformSemiJoin2IndexApplyGeneric(
+		const CXformSemiJoin2IndexApplyGeneric &) = delete;
+
+	explicit CXformSemiJoin2IndexApplyGeneric(CMemoryPool *mp,
+											   BOOL generateBitmapPlans)
+		: CXformJoin2IndexApply(GPOS_NEW(mp) CExpression(
+			  mp,
+			  GPOS_NEW(mp)
+				  CPatternNode(mp, CPatternNode::EmtMatchSemiOrAntiSemiJoin),
+			  GPOS_NEW(mp) CExpression(mp, GPOS_NEW(mp) CPatternLeaf(mp)),
+			  GPOS_NEW(mp) CExpression(mp, GPOS_NEW(mp) CPatternTree(mp)),
+			  GPOS_NEW(mp) CExpression(mp, GPOS_NEW(mp) CPatternTree(mp)))),
+		  m_generateBitmapPlans(generateBitmapPlans)
+	{
+	}
+
+	~CXformSemiJoin2IndexApplyGeneric() override = default;
+
+	EXformId
+	Exfid() const override
+	{
+		return ExfSemiJoin2IndexGetApply;
+	}
+
+	const CHAR *
+	SzId() const override
+	{
+		return "CXformSemiJoin2IndexGetApply";
+	}
+
+	EXformPromise Exfp(CExpressionHandle &exprhdl) const override;
+
+	void Transform(CXformContext *pxfctxt, CXformResult *pxfres,
+				   CExpression *pexpr) const override;
+
+	BOOL
+	IsApplyOnce() override
+	{
+		return true;
+	}
+
+};	// class CXformSemiJoin2IndexApplyGeneric
+
 }  // namespace gpopt
 
 #endif	// !GPOPT_CXformJoin2IndexApplyGeneric_H

@@ -1254,7 +1254,9 @@ CCostModelGPDB::CostIndexNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	GPOS_ASSERT(nullptr != pci);
 	GPOS_ASSERT(
 		COperator::EopPhysicalInnerIndexNLJoin == exprhdl.Pop()->Eopid() ||
-		COperator::EopPhysicalLeftOuterIndexNLJoin == exprhdl.Pop()->Eopid());
+		COperator::EopPhysicalLeftOuterIndexNLJoin == exprhdl.Pop()->Eopid() ||
+		COperator::EopPhysicalLeftSemiIndexNLJoin == exprhdl.Pop()->Eopid() ||
+		COperator::EopPhysicalLeftAntiSemiIndexNLJoin == exprhdl.Pop()->Eopid());
 
 	const DOUBLE num_rows_outer = pci->PdRows()[0];
 	const DOUBLE dWidthOuter = pci->GetWidth()[0];
@@ -2579,6 +2581,8 @@ CCostModelGPDB::Cost(
 
 		case COperator::EopPhysicalInnerIndexNLJoin:
 		case COperator::EopPhysicalLeftOuterIndexNLJoin:
+		case COperator::EopPhysicalLeftSemiIndexNLJoin:
+		case COperator::EopPhysicalLeftAntiSemiIndexNLJoin:
 		{
 			return CostIndexNLJoin(m_mp, exprhdl, this, pci);
 		}
