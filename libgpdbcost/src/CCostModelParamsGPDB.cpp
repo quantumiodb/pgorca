@@ -46,15 +46,19 @@ const CDouble CCostModelParamsGPDB::DIndexBlockCostUnitVal = 1.27e-06;
 const CDouble CCostModelParamsGPDB::DIndexFilterCostUnitVal = 1.65e-04;
 
 // index scan cost unit per tuple per width. includes the cost to read from the
-// index and the heap.
+// index and the heap (heap-fetch cost beyond the index key lookup).
+// Original calibration value for cold-disk MPP systems.
+// For NL join context, a separate calibrated value is used in CostIndexScan().
 const CDouble CCostModelParamsGPDB::DIndexScanTupCostUnitVal = 3.66e-06;
 
 // index only scan cost unit per tuple per width. includes only the cost to
 // read from the index, _not_ the heap.
 const CDouble CCostModelParamsGPDB::DIndexOnlyScanTupCostUnitVal = 3.66e-06;
 
-// index scan random IO factor: ~3 random page reads per B-tree probe at 4×
-// seq cost per page (41 rows × 200 bytes × DTableScanCostUnitVal = 4.5e-3/page)
+// index scan random IO factor: per-probe B-tree traversal + random heap I/O overhead.
+// Original calibration value for cold-disk MPP systems.
+// For NL join context (NumRebinds > 1), a separate calibrated value is used in
+// CostIndexScan() derived from OLS regression on single-node PG warm-cache measurements.
 const CDouble CCostModelParamsGPDB::DIndexScanTupRandomFactorVal = 0.05;
 
 // filter column cost unit

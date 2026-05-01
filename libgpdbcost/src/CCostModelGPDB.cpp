@@ -1901,9 +1901,18 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 			// upper pages are always pinned, and the heap pages for a selective
 			// lookup are often already in cache.  Both the random-I/O term and
 			// the per-row heap-fetch term are much cheaper than the cold-disk
-			// MPP model assumes, so scale both down.
-			dEffectiveRandomFactor = dIndexScanTupRandomFactor / CDouble(5.0);
-			dEffectiveScanTupCostUnit = dIndexScanTupCostUnit / CDouble(4.0);
+			// MPP model assumes.
+			//
+			// Values derived from OLS regression on SF=2 TPC-H, PG 18, warm cache:
+			//   Model: T_per_probe = α + r×W_real×β
+			//   Exp3: lineitem_pkey heap-fetch, r=1..7, K=10000 fixed (R²≈0.999)
+			//   α = 4.914e-3 ms/probe → dEffRandom = α/C_unit = 4.259e-3
+			//   β = 6.628e-6 ms/(probe·row·byte), W_real=98, C_unit=1.154 ms/unit
+			//   dEffScanTupCostUnit = (W_real×β/C_unit - ulKeys×dIF) / W_orca
+			//                      = (98×6.628e-6/1.154 - 2×1.65e-4) / 135
+			//                      = 1.725e-6
+			dEffectiveRandomFactor = CDouble(4.259e-3);
+			dEffectiveScanTupCostUnit = CDouble(1.725e-6);
 		}
 	}
 
