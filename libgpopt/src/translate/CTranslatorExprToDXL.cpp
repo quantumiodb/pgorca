@@ -49,7 +49,9 @@
 #include "gpopt/operators/CPhysicalIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalInnerIndexNLJoin.h"
+#include "gpopt/operators/CPhysicalLeftAntiSemiIndexNLJoin.h"
 #include "gpopt/operators/CPhysicalLeftOuterIndexNLJoin.h"
+#include "gpopt/operators/CPhysicalLeftSemiIndexNLJoin.h"
 #include "gpopt/operators/CPhysicalLimit.h"
 #include "gpopt/operators/CPhysicalMotionGather.h"
 #include "gpopt/operators/CPhysicalMotionHashDistribute.h"
@@ -418,6 +420,8 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 		case COperator::EopPhysicalInnerNLJoin:
 		case COperator::EopPhysicalInnerIndexNLJoin:
 		case COperator::EopPhysicalLeftOuterIndexNLJoin:
+		case COperator::EopPhysicalLeftSemiIndexNLJoin:
+		case COperator::EopPhysicalLeftAntiSemiIndexNLJoin:
 		case COperator::EopPhysicalLeftOuterNLJoin:
 		case COperator::EopPhysicalLeftSemiNLJoin:
 		case COperator::EopPhysicalLeftAntiSemiNLJoin:
@@ -4356,15 +4360,26 @@ CTranslatorExprToDXL::StoreIndexNLJOuterRefs(CPhysical *pop)
 {
 	CColRefArray *colref_array = nullptr;
 
-	if (COperator::EopPhysicalInnerIndexNLJoin == pop->Eopid())
+	switch (pop->Eopid())
 	{
-		colref_array =
-			CPhysicalInnerIndexNLJoin::PopConvert(pop)->PdrgPcrOuterRefs();
-	}
-	else
-	{
-		colref_array =
-			CPhysicalLeftOuterIndexNLJoin::PopConvert(pop)->PdrgPcrOuterRefs();
+		case COperator::EopPhysicalInnerIndexNLJoin:
+			colref_array =
+				CPhysicalInnerIndexNLJoin::PopConvert(pop)->PdrgPcrOuterRefs();
+			break;
+		case COperator::EopPhysicalLeftOuterIndexNLJoin:
+			colref_array =
+				CPhysicalLeftOuterIndexNLJoin::PopConvert(pop)->PdrgPcrOuterRefs();
+			break;
+		case COperator::EopPhysicalLeftSemiIndexNLJoin:
+			colref_array =
+				CPhysicalLeftSemiIndexNLJoin::PopConvert(pop)->PdrgPcrOuterRefs();
+			break;
+		case COperator::EopPhysicalLeftAntiSemiIndexNLJoin:
+			colref_array = CPhysicalLeftAntiSemiIndexNLJoin::PopConvert(pop)
+							   ->PdrgPcrOuterRefs();
+			break;
+		default:
+			GPOS_ASSERT(!"StoreIndexNLJOuterRefs: unknown index NLJ operator");
 	}
 	GPOS_ASSERT(colref_array != nullptr);
 
@@ -4420,6 +4435,8 @@ CTranslatorExprToDXL::PdxlnNLJoin(CExpression *pexprInnerNLJ,
 	GPOS_ASSERT_IMP(
 		COperator::EopPhysicalInnerIndexNLJoin != pop->Eopid() &&
 			COperator::EopPhysicalLeftOuterIndexNLJoin != pop->Eopid() &&
+			COperator::EopPhysicalLeftSemiIndexNLJoin != pop->Eopid() &&
+			COperator::EopPhysicalLeftAntiSemiIndexNLJoin != pop->Eopid() &&
 			COperator::EopPhysicalPartitionSelector !=
 				pexprInnerChild->Pop()->Eopid(),
 		pexprInnerChild->DeriveOuterReferences()->IsDisjoint(
@@ -4449,6 +4466,22 @@ CTranslatorExprToDXL::PdxlnNLJoin(CExpression *pexprInnerNLJ,
 			is_index_nlj = true;
 			StoreIndexNLJOuterRefs(pop);
 			outer_refs = CPhysicalLeftOuterIndexNLJoin::PopConvert(pop)
+							 ->PdrgPcrOuterRefs();
+			break;
+
+		case COperator::EopPhysicalLeftSemiIndexNLJoin:
+			join_type = EdxljtIn;
+			is_index_nlj = true;
+			StoreIndexNLJOuterRefs(pop);
+			outer_refs =
+				CPhysicalLeftSemiIndexNLJoin::PopConvert(pop)->PdrgPcrOuterRefs();
+			break;
+
+		case COperator::EopPhysicalLeftAntiSemiIndexNLJoin:
+			join_type = EdxljtLeftAntiSemijoin;
+			is_index_nlj = true;
+			StoreIndexNLJOuterRefs(pop);
+			outer_refs = CPhysicalLeftAntiSemiIndexNLJoin::PopConvert(pop)
 							 ->PdrgPcrOuterRefs();
 			break;
 

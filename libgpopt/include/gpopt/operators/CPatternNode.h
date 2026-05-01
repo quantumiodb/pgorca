@@ -31,6 +31,7 @@ public:
 	enum EMatchType
 	{
 		EmtMatchInnerOrLeftOuterJoin,
+		EmtMatchSemiOrAntiSemiJoin,
 		EmtSentinel
 	};
 
@@ -95,6 +96,10 @@ public:
 			case EmtMatchInnerOrLeftOuterJoin:
 				return COperator::EopLogicalInnerJoin == opid ||
 					   COperator::EopLogicalLeftOuterJoin == opid;
+
+			case EmtMatchSemiOrAntiSemiJoin:
+				return COperator::EopLogicalLeftSemiJoin == opid ||
+					   COperator::EopLogicalLeftAntiSemiJoin == opid;
 
 			default:
 				return false;

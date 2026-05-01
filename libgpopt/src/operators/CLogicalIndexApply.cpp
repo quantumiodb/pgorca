@@ -16,7 +16,7 @@ using namespace gpopt;
 CLogicalIndexApply::CLogicalIndexApply(CMemoryPool *mp)
 	: CLogicalApply(mp),
 	  m_pdrgpcrOuterRefs(nullptr),
-	  m_fOuterJoin(false),
+	  m_eIndexJoinType(EijtInner),
 	  m_origJoinPred(nullptr)
 {
 	m_fPattern = true;
@@ -24,11 +24,11 @@ CLogicalIndexApply::CLogicalIndexApply(CMemoryPool *mp)
 
 CLogicalIndexApply::CLogicalIndexApply(CMemoryPool *mp,
 									   CColRefArray *pdrgpcrOuterRefs,
-									   BOOL fOuterJoin,
+									   EIndexJoinType eijt,
 									   CExpression *origJoinPred)
 	: CLogicalApply(mp),
 	  m_pdrgpcrOuterRefs(pdrgpcrOuterRefs),
-	  m_fOuterJoin(fOuterJoin),
+	  m_eIndexJoinType(eijt),
 	  m_origJoinPred(origJoinPred)
 {
 	GPOS_ASSERT(nullptr != pdrgpcrOuterRefs);
@@ -123,7 +123,7 @@ CLogicalIndexApply::PopCopyWithRemappedColumns(CMemoryPool *mp,
 			mp, colref_mapping, must_exist);
 	}
 
-	result = GPOS_NEW(mp) CLogicalIndexApply(mp, colref_array, m_fOuterJoin,
+	result = GPOS_NEW(mp) CLogicalIndexApply(mp, colref_array, m_eIndexJoinType,
 											 remapped_orig_join_pred);
 	CRefCount::SafeRelease(remapped_orig_join_pred);
 

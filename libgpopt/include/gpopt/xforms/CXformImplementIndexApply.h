@@ -13,7 +13,9 @@
 #include "gpopt/operators/CLogicalIndexApply.h"
 #include "gpopt/operators/CPatternLeaf.h"
 #include "gpopt/operators/CPhysicalInnerIndexNLJoin.h"
+#include "gpopt/operators/CPhysicalLeftAntiSemiIndexNLJoin.h"
 #include "gpopt/operators/CPhysicalLeftOuterIndexNLJoin.h"
+#include "gpopt/operators/CPhysicalLeftSemiIndexNLJoin.h"
 #include "gpopt/operators/CPhysicalNLJoin.h"
 #include "gpopt/optimizer/COptimizerConfig.h"
 #include "gpopt/xforms/CXformImplementation.h"
@@ -97,15 +99,25 @@ public:
 		// assemble physical operator
 		CPhysicalNLJoin *pop = nullptr;
 
-		if (CLogicalIndexApply::PopConvert(pexpr->Pop())->FouterJoin())
+		switch (indexApply->IndexJoinType())
 		{
-			pop = GPOS_NEW(mp) CPhysicalLeftOuterIndexNLJoin(
-				mp, colref_array, indexApply->OrigJoinPred());
-		}
-		else
-		{
-			pop = GPOS_NEW(mp) CPhysicalInnerIndexNLJoin(
-				mp, colref_array, indexApply->OrigJoinPred());
+			case CLogicalIndexApply::EijtLeftOuter:
+				pop = GPOS_NEW(mp) CPhysicalLeftOuterIndexNLJoin(
+					mp, colref_array, indexApply->OrigJoinPred());
+				break;
+			case CLogicalIndexApply::EijtLeftSemi:
+				pop = GPOS_NEW(mp) CPhysicalLeftSemiIndexNLJoin(
+					mp, colref_array, indexApply->OrigJoinPred());
+				break;
+			case CLogicalIndexApply::EijtLeftAntiSemi:
+				pop = GPOS_NEW(mp) CPhysicalLeftAntiSemiIndexNLJoin(
+					mp, colref_array, indexApply->OrigJoinPred());
+				break;
+			case CLogicalIndexApply::EijtInner:
+			default:
+				pop = GPOS_NEW(mp) CPhysicalInnerIndexNLJoin(
+					mp, colref_array, indexApply->OrigJoinPred());
+				break;
 		}
 
 		CExpression *pexprResult = GPOS_NEW(mp)
