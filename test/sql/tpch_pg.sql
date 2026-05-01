@@ -49,8 +49,8 @@ set pg_orca.enable_orca to off;
 
 :query6;
 
-:query7;
 
+:query7;
 :query8;
 
 :query9;
