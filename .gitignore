@@ -1,6 +1,9 @@
 build/
 build-release/
 test/results/
+test/bench/results/
+Testing/
+minidumps/
 *.o
 *.so
 *.dylib
