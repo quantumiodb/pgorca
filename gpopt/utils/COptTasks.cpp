@@ -91,9 +91,6 @@ using namespace gpopt;
 using namespace gpdxl;
 using namespace gpdbcost;
 
-// Minidump GUC (defined in pg_orca.cpp): 0=never, 1=onerror, 2=always
-extern int optimizer_minidump;
-
 // size of error buffer
 #define GPOPT_ERROR_BUFFER_SIZE 10 * 1024 * 1024
 
@@ -934,9 +931,6 @@ COptTasks::OptimizeTask(void *ptr)
 	// load search strategy
 	CSearchStageArray *search_strategy_arr =
 		LoadSearchStrategy(mp, optimizer_search_strategy_path);
-
-	// Activate minidump trace flag for "onerror" or "always"
-	CAutoTraceFlag atfMinidump(EopttraceMinidump, optimizer_minidump > 0);
 
 	CBitSet *trace_flags = nullptr;
 	CBitSet *enabled_trace_flags = nullptr;

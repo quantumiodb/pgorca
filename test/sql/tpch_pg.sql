@@ -35,7 +35,7 @@ select query as query20 from tpch_queries(20); \gset
 select query as query21 from tpch_queries(21); \gset
 select query as query22 from tpch_queries(22); \gset
 set pg_orca.trace_fallback = on;
-set pg_orca.enable_orca to off;
+set pg_orca.enable_orca to on;
 \timing on
 :query1;
 
