@@ -13,6 +13,9 @@
 #include "gpopt/operators/CLogicalDynamicGet.h"
 #include "gpopt/operators/CLogicalGbAgg.h"
 #include "gpopt/operators/CLogicalGet.h"
+#include "gpopt/operators/CLogicalSelect.h"
+#include "gpopt/operators/CPredicateUtils.h"
+#include "gpopt/xforms/CXformResult.h"
 
 using namespace gpmd;
 using namespace gpopt;
@@ -189,32 +192,13 @@ CXformJoin2IndexApplyGeneric::Transform(CXformContext *pxfctxt,
 			case COperator::EopLogicalGbAgg:
 			case COperator::EopLogicalProject:
 				// We tolerate these operators in the tree (with some conditions, see below) and will
-				// just copy them into the result of the transform, any selects above this node won't
-				// be used for index predicates.
+				// just copy them into the result of the transform. Conjuncts of the join predicate
+				// that reference columns projected by these nodes (and thus invisible at the get)
+				// are split off and re-applied via a LogicalSelect wrapped around the IndexApply
+				// alternative below.
 				{
 					if ((*pexprCurrInnerChild)[1]->DeriveHasSubquery())
 					{
-						return;
-					}
-
-					CColRefSet *joinPredUsedCols = GPOS_NEW(mp)
-						CColRefSet(mp, *(pexprScalar->DeriveUsedColumns()));
-
-					joinPredUsedCols->Exclude(
-						pexprOuter->DeriveOutputColumns());
-					joinPredUsedCols->Exclude(
-						(*pexprCurrInnerChild)[0]->DeriveOutputColumns());
-					BOOL joinPredUsesProjectedColumns =
-						(0 < joinPredUsedCols->Size());
-					joinPredUsedCols->Release();
-
-					if (joinPredUsesProjectedColumns)
-					{
-						// The join predicate uses columns that neither come from the outer table
-						// nor from the child of this node, therefore it must reference columns that
-						// are produced by pexprCurrInnerChild. Note that in the future we could
-						// also try to split off the join preds and any select preds above this node
-						// that can be applied to the get.
 						return;
 					}
 
@@ -380,6 +364,64 @@ CXformJoin2IndexApplyGeneric::Transform(CXformContext *pxfctxt,
 		return;
 	}
 
+	// Split the candidate predicates into "pushable" conjuncts (only reference
+	// outer columns or columns visible at the get) and "residual" conjuncts
+	// (reference columns projected by Project/GbAgg nodes between the join and
+	// the get). Only pushable conjuncts can drive an IndexGet/BitmapIndex; the
+	// residual is re-applied above the IndexApply via a LogicalSelect wrapper.
+	CColRefSet *validCols = GPOS_NEW(mp) CColRefSet(mp);
+	validCols->Include(pexprOuter->DeriveOutputColumns());
+	validCols->Include(pexprGet->DeriveOutputColumns());
+
+	CExpressionArray *allConjuncts =
+		CPredicateUtils::PdrgpexprConjuncts(mp, pexprAllPredicates);
+	CExpressionArray *pushableConjuncts = GPOS_NEW(mp) CExpressionArray(mp);
+	CExpressionArray *residualConjuncts = GPOS_NEW(mp) CExpressionArray(mp);
+
+	for (ULONG ul = 0; ul < allConjuncts->Size(); ul++)
+	{
+		CExpression *pexprConj = (*allConjuncts)[ul];
+		pexprConj->AddRef();
+		if (validCols->ContainsAll(pexprConj->DeriveUsedColumns()))
+		{
+			pushableConjuncts->Append(pexprConj);
+		}
+		else
+		{
+			residualConjuncts->Append(pexprConj);
+		}
+	}
+	allConjuncts->Release();
+	validCols->Release();
+
+	if (0 == pushableConjuncts->Size())
+	{
+		pushableConjuncts->Release();
+		residualConjuncts->Release();
+		pexprAllPredicates->Release();
+		return;
+	}
+
+	CExpression *pexprResidualPred = nullptr;
+	if (0 < residualConjuncts->Size())
+	{
+		// Only rebuild the predicate expression when conjuncts were actually
+		// split off; otherwise leave pexprAllPredicates unchanged to keep memo
+		// equivalence with paths that did not enter this transform.
+		pexprAllPredicates->Release();
+		pexprAllPredicates =
+			CPredicateUtils::PexprConjunction(mp, pushableConjuncts);
+		pexprResidualPred =
+			CPredicateUtils::PexprConjunction(mp, residualConjuncts);
+	}
+	else
+	{
+		pushableConjuncts->Release();
+		residualConjuncts->Release();
+	}
+
+	const ULONG ulXformResultSizeBefore = pxfres->Pdrgpexpr()->Size();
+
 	// insert the btree or bitmap alternatives
 	CreateHomogeneousIndexApplyAlternatives(
 		mp, pexpr->Pop(), pexprOuter, pexprGet, pexprAllPredicates, pexprScalar,
@@ -387,6 +429,25 @@ CXformJoin2IndexApplyGeneric::Transform(CXformContext *pxfctxt,
 		ptabdescInner, pxfres,
 		(m_generateBitmapPlans ? IMDIndex::EmdindBitmap
 							   : IMDIndex::EmdindBtree));
+
+	// Wrap each newly-generated IndexApply alternative with a LogicalSelect
+	// carrying the residual conjuncts that reference projected columns.
+	if (nullptr != pexprResidualPred)
+	{
+		const ULONG ulXformResultSizeAfter = pxfres->Pdrgpexpr()->Size();
+		for (ULONG ul = ulXformResultSizeBefore; ul < ulXformResultSizeAfter;
+			 ul++)
+		{
+			CExpression *pexprAlt = (*pxfres->Pdrgpexpr())[ul];
+			pexprAlt->AddRef();
+			pexprResidualPred->AddRef();
+			CExpression *pexprWrapped = GPOS_NEW(mp)
+				CExpression(mp, GPOS_NEW(mp) CLogicalSelect(mp), pexprAlt,
+							pexprResidualPred);
+			pxfres->Pdrgpexpr()->Replace(ul, pexprWrapped);
+		}
+		pexprResidualPred->Release();
+	}
 
 	CRefCount::SafeRelease(pexprAllPredicates);
 }
