@@ -79,6 +79,9 @@ public:
 		EcpHashAggInputTupColumnCostUnit,  // cost for building hash table for per tuple per grouping column in hash aggregate
 		EcpHashAggInputTupWidthCostUnit,  // cost for building hash table for per tuple with unit width in hash aggregate
 		EcpHashAggOutputTupWidthCostUnit,  // cost for outputting for per tuple with unit width in hash aggregate
+		EcpHashAggInputTupColumnSpillingCostUnit,  // input column cost in hash aggregate if spilling
+		EcpHashAggInputTupWidthSpillingCostUnit,   // input width cost in hash aggregate if spilling
+		EcpHashAggOutputTupWidthSpillingCostUnit,  // output width cost in hash aggregate if spilling
 		// sort params
 		EcpSortTupWidthCostUnit,  // sorting cost per tuple with unit width
 		// tuple processing params
@@ -223,6 +226,15 @@ private:
 
 	// default value of cost for outputting for per tuple with unit width in hash aggregate
 	static const CDouble DHashAggOutputTupWidthCostUnitVal;
+
+	// default value of input column cost in hash aggregate if spilling
+	static const CDouble DHashAggInputTupColumnSpillingCostUnitVal;
+
+	// default value of input width cost in hash aggregate if spilling
+	static const CDouble DHashAggInputTupWidthSpillingCostUnitVal;
+
+	// default value of output width cost in hash aggregate if spilling
+	static const CDouble DHashAggOutputTupWidthSpillingCostUnitVal;
 
 	// default value of sorting cost per tuple with unit width
 	static const CDouble DSortTupWidthCostUnitVal;

@@ -853,23 +853,58 @@ CCostModelGPDB::CostHashAgg(CMemoryPool *mp, CExpressionHandle &exprhdl,
 		pcmgpdb->GetCostModelParams()
 			->PcpLookup(CCostModelParamsGPDB::EcpHashAggOutputTupWidthCostUnit)
 			->Get();
+	const CDouble dHashAggInputTupColumnSpillingCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(
+				CCostModelParamsGPDB::EcpHashAggInputTupColumnSpillingCostUnit)
+			->Get();
+	const CDouble dHashAggInputTupWidthSpillingCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(
+				CCostModelParamsGPDB::EcpHashAggInputTupWidthSpillingCostUnit)
+			->Get();
+	const CDouble dHashAggOutputTupWidthSpillingCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(
+				CCostModelParamsGPDB::EcpHashAggOutputTupWidthSpillingCostUnit)
+			->Get();
+	// reuse hash-join spilling threshold: if the hash table (groups × width)
+	// exceeds this, the agg spills to disk
+	const CDouble dSpillingMemThreshold =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpHJSpillingMemThreshold)
+			->Get();
 	GPOS_ASSERT(0 < dHashAggInputTupColumnCostUnit);
 	GPOS_ASSERT(0 < dHashAggInputTupWidthCostUnit);
 	GPOS_ASSERT(0 < dHashAggOutputTupWidthCostUnit);
 
-	// hashAgg cost contains three parts: build hash table, aggregate tuples, and output tuples.
-	// 1. build hash table is correlated with the number of num_input_rows
-	// and width of input tuples and the number of columns used.
-	// 2. cost of aggregate tuples depends on the complexity of aggregation
-	// algorithm and thus is ignored.
-	// 3. cost of output tuples is correlated with num_output_rows and
-	// width of returning tuples.
-	CCost costLocal = CCost(
-		pci->NumRebinds() *
-		(num_input_rows * ulGrpCols * dHashAggInputTupColumnCostUnit +
-		 num_input_rows * ulGrpCols * pci->Width() *
-			 dHashAggInputTupWidthCostUnit +
-		 num_output_rows * pci->Width() * dHashAggOutputTupWidthCostUnit));
+	// hashAgg cost: build hash table + aggregate + output.
+	// When the hash table (distinct groups × width) exceeds the spilling
+	// threshold, the agg must write and re-read data via disk, modelled by
+	// higher per-tuple cost units (same pattern as CostHashJoin spilling).
+	CCost costLocal(0);
+	if (num_output_rows * pci->Width() <= dSpillingMemThreshold)
+	{
+		// hash table fits in memory
+		costLocal = CCost(
+			pci->NumRebinds() *
+			(num_input_rows * ulGrpCols * dHashAggInputTupColumnCostUnit +
+			 num_input_rows * ulGrpCols * pci->Width() *
+				 dHashAggInputTupWidthCostUnit +
+			 num_output_rows * pci->Width() * dHashAggOutputTupWidthCostUnit));
+	}
+	else
+	{
+		// hash table spills to disk: use higher-cost spilling parameters
+		costLocal = CCost(
+			pci->NumRebinds() *
+			(num_input_rows * ulGrpCols *
+				 dHashAggInputTupColumnSpillingCostUnit +
+			 num_input_rows * ulGrpCols * pci->Width() *
+				 dHashAggInputTupWidthSpillingCostUnit +
+			 num_output_rows * pci->Width() *
+				 dHashAggOutputTupWidthSpillingCostUnit));
+	}
 	CCost costChild =
 		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
 

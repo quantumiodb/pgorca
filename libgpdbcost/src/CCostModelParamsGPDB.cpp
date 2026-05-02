@@ -136,6 +136,21 @@ const CDouble CCostModelParamsGPDB::DHashAggInputTupWidthCostUnitVal = 1.12e-07;
 const CDouble CCostModelParamsGPDB::DHashAggOutputTupWidthCostUnitVal =
 	5.61e-07;
 
+// hash agg spilling cost params — calibrated as 6× the non-spilling values.
+// When the hash table (distinct groups × width) exceeds the spilling threshold
+// (EcpHJSpillingMemThreshold, shared with hash join), the agg must write and
+// re-read data via disk, making each input tuple ~6× more expensive to process.
+// Calibrated on SF=10 TPC-H Q20: 5.44M groups, 9.1M input rows, 41 spill batches,
+// 277 MB disk usage; actual HashAgg overhead ~14 s ≈ 6× the in-memory estimate.
+const CDouble CCostModelParamsGPDB::DHashAggInputTupColumnSpillingCostUnitVal =
+	7.20e-04;  // = 6 × DHashAggInputTupColumnCostUnitVal
+
+const CDouble CCostModelParamsGPDB::DHashAggInputTupWidthSpillingCostUnitVal =
+	6.72e-07;  // = 6 × DHashAggInputTupWidthCostUnitVal
+
+const CDouble CCostModelParamsGPDB::DHashAggOutputTupWidthSpillingCostUnitVal =
+	3.37e-06;  // = 6 × DHashAggOutputTupWidthCostUnitVal
+
 // sorting cost per tuple with unit width
 const CDouble CCostModelParamsGPDB::DSortTupWidthCostUnitVal = 5.67e-06;
 
@@ -400,6 +415,21 @@ CCostModelParamsGPDB::CCostModelParamsGPDB(CMemoryPool *mp) : m_mp(mp)
 		EcpHashAggOutputTupWidthCostUnit, DHashAggOutputTupWidthCostUnitVal,
 		DHashAggOutputTupWidthCostUnitVal - 0.0,
 		DHashAggOutputTupWidthCostUnitVal + 0.0);
+	m_rgpcp[EcpHashAggInputTupColumnSpillingCostUnit] =
+		GPOS_NEW(mp) SCostParam(EcpHashAggInputTupColumnSpillingCostUnit,
+								DHashAggInputTupColumnSpillingCostUnitVal,
+								DHashAggInputTupColumnSpillingCostUnitVal - 0.0,
+								DHashAggInputTupColumnSpillingCostUnitVal + 0.0);
+	m_rgpcp[EcpHashAggInputTupWidthSpillingCostUnit] =
+		GPOS_NEW(mp) SCostParam(EcpHashAggInputTupWidthSpillingCostUnit,
+								DHashAggInputTupWidthSpillingCostUnitVal,
+								DHashAggInputTupWidthSpillingCostUnitVal - 0.0,
+								DHashAggInputTupWidthSpillingCostUnitVal + 0.0);
+	m_rgpcp[EcpHashAggOutputTupWidthSpillingCostUnit] =
+		GPOS_NEW(mp) SCostParam(EcpHashAggOutputTupWidthSpillingCostUnit,
+								DHashAggOutputTupWidthSpillingCostUnitVal,
+								DHashAggOutputTupWidthSpillingCostUnitVal - 0.0,
+								DHashAggOutputTupWidthSpillingCostUnitVal + 0.0);
 	m_rgpcp[EcpSortTupWidthCostUnit] = GPOS_NEW(mp) SCostParam(
 		EcpSortTupWidthCostUnit, DSortTupWidthCostUnitVal,
 		DSortTupWidthCostUnitVal - 0.0, DSortTupWidthCostUnitVal + 0.0);
