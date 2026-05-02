@@ -78,6 +78,21 @@ CXformSimplifySubquery::FSimplifyQuantified(CMemoryPool *mp,
 {
 	GPOS_ASSERT(CUtils::FQuantifiedSubquery(pexprScalar->Pop()));
 
+	// If the quantified subquery's inner has no outer refs, the SubqueryHandler
+	// will unnest it into a (non-correlated) LeftAntiSemiApplyNotIn /
+	// LeftSemiApplyIn that becomes a hash anti-/semi-join. The count(*)
+	// simplification, in contrast, bakes the outer column reference into a
+	// CASE expression inside the inner aggregate -- the resulting "decorrelated"
+	// subquery is in fact correlated and is materialized by the executor as
+	// a per-row SubPlan. ORCA's filter cost model does not multiply the SubPlan
+	// cost by outer rows, so this alternative wins on cost even though it is
+	// orders of magnitude slower at runtime. Skip the simplification here so
+	// the unnest path dominates.
+	if (!(*pexprScalar)[0]->HasOuterRefs())
+	{
+		return false;
+	}
+
 	CExpression *pexprNewSubquery = nullptr;
 	CExpression *pexprCmp = nullptr;
 	CXformUtils::QuantifiedToAgg(mp, pexprScalar, &pexprNewSubquery, &pexprCmp);
