@@ -1428,8 +1428,17 @@ CCostModelGPDB::CostNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	// Without this correction ORCA underestimates correlated SubPlan cost by
 	// ~outer_rows× (e.g. Q16 NOT IN: 4M outer rows × 568 inner cost ≈ 2.3B,
 	// but ORCA sees only 568), causing it to prefer SubPlan over Hash Anti Join.
+	//
+	// Only apply when the inner child has NO outer references.  When the inner
+	// subquery has outer refs (correlated predicates such as l_partkey = outer.ps_partkey),
+	// its standalone cost is estimated without those predicates bound to specific
+	// values — e.g., it scans all of lineitem rather than using the index with the
+	// bound key.  Multiplying that inflated standalone cost by outer_rows would
+	// produce a catastrophically wrong estimate (e.g. Q20: 7M × 8M = 56 trillion).
+	// In this case leave CostChildren's single-pass estimate as-is; the decorrelated
+	// alternative (HashAgg + Hash Join) is still correctly penalised relative to it.
 	if (CUtils::FCorrelatedNLJoin(exprhdl.Pop()) && pci->ChildCount() >= 2 &&
-		num_rows_outer > 1.0)
+		num_rows_outer > 1.0 && !exprhdl.HasOuterRefs(1 /*inner child*/))
 	{
 		CDouble dInnerCostOnce(pci->PdCost()[1]);
 		// CostChildren already counted the inner once; add (outer_rows - 1) more
