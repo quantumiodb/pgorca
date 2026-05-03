@@ -292,3 +292,10 @@ target_link_libraries(gporca_test PRIVATE ${XERCES_LIB})
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(gporca_test PRIVATE dl)
 endif()
+
+# -------------------------------------------------------------------
+# Packaging (DEB/RPM via CPack). Linux only.
+# -------------------------------------------------------------------
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(${CMAKE_SOURCE_DIR}/packaging/CPackConfig.cmake)
+endif()
