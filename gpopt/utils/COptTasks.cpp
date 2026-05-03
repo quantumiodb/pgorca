@@ -394,7 +394,7 @@ COptTasks::CreateOptimizerConfig(CMemoryPool *mp, ICostModel *cost_model,
 	DOUBLE damping_factor_groupby = (DOUBLE) 0.1 /* optimizer_damping_factor_groupby */;
 
 	/* GPDB-only GUCs — use fixed defaults for PG18 single-node mode */
-	ULONG cte_inlining_cutoff = (ULONG) 0;  /* optimizer_cte_inlining_bound: 0 means disable inlining when CTE count > 0 */
+	ULONG cte_inlining_cutoff = (ULONG) optimizer_cte_inlining_bound;
 	ULONG join_arity_for_associativity_commutativity =
 		(ULONG) 10;  /* optimizer_join_arity_for_associativity_commutativity: match join_order_threshold to avoid exponential search for large joins */
 	ULONG array_expansion_threshold =

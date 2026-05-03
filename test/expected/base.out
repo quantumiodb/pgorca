@@ -711,7 +711,7 @@ EXPLAIN VERBOSE WITH cte AS (SELECT * FROM orders LEFT JOIN nation ON orders.o_c
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Hash Join  (cost=0.00..862.41 rows=130 width=80)
    Output: orders.o_orderkey, orders.o_custkey, orders.o_orderstatus, orders.o_totalprice, orders.o_orderdate, orders.o_orderpriority, orders.o_clerk, orders.o_shippriority, orders.o_comment, nation.n_nationkey, nation.n_name, nation.n_regionkey, nation.n_comment
-   Hash Cond: ((orders.o_custkey = nation.n_regionkey) AND (orders.o_custkey = nation.n_regionkey))
+   Hash Cond: (orders.o_custkey = nation.n_regionkey)
    ->  Seq Scan on public.orders  (cost=0.00..431.07 rows=180 width=56)
          Output: orders.o_orderkey, orders.o_custkey, orders.o_orderstatus, orders.o_totalprice, orders.o_orderdate, orders.o_orderpriority, orders.o_clerk, orders.o_shippriority, orders.o_comment
          Filter: ((orders.o_custkey = 1) AND (orders.o_custkey = 1) AND (orders.o_orderkey = 1))

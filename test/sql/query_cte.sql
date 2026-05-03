@@ -2003,9 +2003,11 @@ create table bar (x int, y int);
 -- pg_orca: removed: set optimizer_cte_inlining=off;
 explain with v as (select x,y from bar) select v1.x from v v1, v v2 where v1.x = v2.x;
 
--- pg_orca: removed: set optimizer_cte_inlining=on;
--- pg_orca: removed: set optimizer_cte_inlining_bound=1000;
+SET optimizer_cte_inlining = on;
+SET optimizer_cte_inlining_bound = 1000;
 explain with v as (select x,y from bar) select v1.x from v v1, v v2 where v1.x = v2.x;
+RESET optimizer_cte_inlining_bound;
+RESET optimizer_cte_inlining;
 
 
 -- ========================================

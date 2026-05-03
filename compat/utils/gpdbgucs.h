@@ -28,6 +28,7 @@ extern bool optimizer_metadata_caching;
 /* --- int GUCs --- */
 extern int  optimizer_mdcache_size;
 extern int  optimizer_segments;
+extern int  optimizer_cte_inlining_bound;
 
 /* --- double GUCs --- */
 extern double optimizer_sort_factor;

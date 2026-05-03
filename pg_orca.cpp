@@ -87,6 +87,7 @@ bool  optimizer_print_memo_after_implementation = false;
 bool  optimizer_print_memo_after_optimization   = false;
 bool  optimizer_print_optimization_context      = false;
 bool  optimizer_cte_inlining                    = false;
+int   optimizer_cte_inlining_bound              = 0;
 
 /* xforms array: indexed by xform id, true means disabled */
 bool  optimizer_xforms[512] = {false};
@@ -669,6 +670,12 @@ void _PG_init(void)
         "optimizer_cte_inlining",
         "Enable CTE inlining in ORCA.",
         NULL, &optimizer_cte_inlining, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "optimizer_cte_inlining_bound",
+        "Maximum number of CTE references for inlining (0 = disable inlining).",
+        NULL, &optimizer_cte_inlining_bound, 0, 0, INT_MAX,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     DefineCustomBoolVariable(
