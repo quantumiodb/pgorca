@@ -192,7 +192,7 @@ explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C
 --explain select A.i, B.i, C.j from A, B, C where A.j = (select max(C.j) from C where C.j = A.j and C.i = (select min(A.i) from A where A.i = (select min(B.i) from B where B.i = C.i)));
 --explain select A.i, B.i, C.j from A, B, C where A.j = (select min(C.j) from C where C.j = A.j and C.i = (select max(A.i) from A where A.i = (select min(B.i) from B where B.i = C.i and A.j = C.j)));
 \echo '-- force_explain'
-explain select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A)) from A;
+explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A)) from A;
 \echo '-- force_explain'
 explain select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i)) from A;
 

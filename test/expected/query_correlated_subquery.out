@@ -401,20 +401,20 @@ explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C
 --explain select A.i, B.i, C.j from A, B, C where A.j = (select min(C.j) from C where C.j = A.j and C.i = (select max(A.i) from A where A.i = (select min(B.i) from B where B.i = C.i and A.j = C.j)));
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A)) from A;
-                                QUERY PLAN                                 
----------------------------------------------------------------------------
- Result  (cost=0.00..1795.99 rows=100 width=16)
+explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A)) from A;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Result
    SubPlan 1
-     ->  Seq Scan on a  (cost=0.00..431.00 rows=100 width=4)
-   ->  Hash Right Join  (cost=0.00..1795.98 rows=100 width=16)
+     ->  Seq Scan on a
+   ->  Hash Right Join
          Hash Cond: (c.j = a_1.j)
-         ->  HashAggregate  (cost=0.00..1364.57 rows=2101 width=12)
+         ->  HashAggregate
                Group Key: c.j
-               ->  Seq Scan on c  (cost=0.00..1363.34 rows=10000 width=4)
+               ->  Seq Scan on c
                      Filter: (i = (SubPlan 1).col1)
-         ->  Hash  (cost=431.00..431.00 rows=100 width=8)
-               ->  Seq Scan on a a_1  (cost=0.00..431.00 rows=100 width=8)
+         ->  Hash
+               ->  Seq Scan on a a_1
  Optimizer: pg_orca
 (12 rows)
 
