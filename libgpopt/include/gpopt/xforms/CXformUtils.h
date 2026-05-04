@@ -849,11 +849,40 @@ CXformUtils::ImplementMergeJoin(CXformContext *pxfctxt, CXformResult *pxfres,
 		}
 		else
 		{
-			// we have computed join keys on scalar child before, reuse them
-			AddHashOrMergeJoinAlternative<T>(mp, pexpr, pdrgpexprOuter,
-											 pdrgpexprInner,
-											 nullptr /* opfamilies */, pxfres,
-											 true /*is_hash_join_null_aware*/);
+			// The join-key cache is shared with hash join, which accepts
+			// keys like Cast(scId) or even CScalarFunc (e.g. substr(...)).
+			// Merge join can only order by plain ScalarIdents — its
+			// PosRequired() asserts CUtils::FScalarIdent on every clause
+			// and would otherwise segfault on the nullptr returned by
+			// PcrExtractFromScIdOrCastScId for non-ident shapes.  Stay
+			// in lockstep with the first-build path (FMergeJoinCompatible
+			// → FEqIdentsOfSameType) which also requires plain ScalarIdent
+			// on both sides.  Reject the merge-join alternative if any
+			// cached clause has a different shape; the matching hash-join
+			// alternative is generated independently and still applies.
+			BOOL mj_compatible = true;
+			const ULONG nkeys = pdrgpexprOuter->Size();
+			for (ULONG ul = 0; ul < nkeys; ul++)
+			{
+				if (!CUtils::FScalarIdent((*pdrgpexprOuter)[ul]) ||
+					!CUtils::FScalarIdent((*pdrgpexprInner)[ul]))
+				{
+					mj_compatible = false;
+					break;
+				}
+			}
+			if (mj_compatible)
+			{
+				AddHashOrMergeJoinAlternative<T>(
+					mp, pexpr, pdrgpexprOuter, pdrgpexprInner,
+					nullptr /* opfamilies */, pxfres,
+					true /*is_hash_join_null_aware*/);
+			}
+			else
+			{
+				pdrgpexprOuter->Release();
+				pdrgpexprInner->Release();
+			}
 		}
 
 		return;
