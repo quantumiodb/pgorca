@@ -96,9 +96,10 @@ jobs:
           $PSQL -c "ANALYZE;"
 
       - name: Run TPC-H queries with ORCA
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          PSQL="$PG_BIN/psql -v ON_ERROR_STOP=1"
+          PSQL="$PG_BIN/psql -v ON_ERROR_STOP=1 -P footer=off"
           TIMEOUT=60
           FAILED=0
 
@@ -107,14 +108,14 @@ jobs:
 
           for i in $(seq 1 22); do
             sql_file="results/tpch/q${i}.sql"
-            [[ -f "$sql_file" ]] || continue
+            [[ -f "$sql_file" ]] || { echo "MISSING: $sql_file"; continue; }
 
             if timeout "$TIMEOUT" $PSQL \
-                -c "\pset footer off" \
                 -c "$(cat "$sql_file")" \
                 > /tmp/q${i}.out 2>&1; then
-              rows=$(( $(wc -l < /tmp/q${i}.out) - 2 ))
-              rows=$(( rows < 0 ? 0 : rows ))
+              # output: header line, separator line, data rows
+              total=$(wc -l < /tmp/q${i}.out)
+              rows=$(( total > 2 ? total - 2 : 0 ))
               printf "Q%-3s %-8s %d\n" "$i" "OK" "$rows"
             else
               printf "Q%-3s FAIL\n" "$i"
