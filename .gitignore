@@ -1,5 +1,6 @@
 build/
 build-release/
+build-pkg/
 test/results/
 test/bench/results/
 Testing/
