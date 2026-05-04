@@ -14,6 +14,7 @@
 #include "gpos/base.h"
 
 #include "gpopt/operators/CExpressionHandle.h"
+#include "naucrates/statistics/CStatistics.h"
 
 
 using namespace gpopt;
@@ -145,5 +146,35 @@ CLogicalApply::OsPrint(IOstream &os) const
 	return os;
 }
 
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CLogicalApply::PstatsDerive
+//
+//	@doc:
+//		Derive statistics.
+//		Apply operators are normally replaced by their decorrelated Join
+//		counterpart before stats are used for costing.  When stats ARE needed
+//		(e.g. as the outer side of a later subquery unnesting step), use the
+//		outer child's row count as an upper bound rather than the fixed 1000-row
+//		dummy.  This prevents downstream scalar-subquery decorrelation from
+//		underestimating the cost of iterating over all outer rows.
+//
+//---------------------------------------------------------------------------
+IStatistics *
+CLogicalApply::PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							IStatisticsArray *	// stats_ctxt
+) const
+{
+	CDouble rows = CStatistics::DefaultRelationRows;
+	if (exprhdl.Arity() >= 1)
+	{
+		IStatistics *pstatsOuter = exprhdl.Pstats(0);
+		if (nullptr != pstatsOuter)
+			rows = pstatsOuter->Rows();
+	}
+	return PstatsDeriveDummy(mp, exprhdl, rows);
+}
 
 // EOF
