@@ -92,6 +92,13 @@ CGroupByStatsProcessor::CalcGroupByStats(CMemoryPool *mp,
 						input_stats->IsEmpty());
 	}
 
+	// Propagate NumRebinds from input: if the child scan was evaluated under
+	// correlated parameters (outer refs), its stats carry the per-rebind row
+	// count. The GroupBy output must carry the same rebind count so that the
+	// cost model correctly prices repeated execution when this agg is the inner
+	// side of an apply/NLJ.
+	agg_stats->SetRebinds(input_stats->NumRebinds());
+
 	// In the output statistics object, the upper bound source cardinality of the grouping column
 	// cannot be greater than the upper bound source cardinality information maintained in the input
 	// statistics object. Therefore we choose CStatistics::EcbmMin the bounding method which takes
