@@ -277,6 +277,18 @@ CTranslatorDXLToPlStmt::GetPlannedStmtFromDXL(const CDXLNode *dxlnode,
 	planned_stmt->subplans = m_dxl_to_plstmt_context->GetSubplanEntriesList();
 	planned_stmt->planTree = plan;
 
+	/* Attach promoted InitPlans to the root plan node.  Any SubPlan with
+	 * setParam != NIL and parParam == NIL is an uncorrelated scalar subquery
+	 * that only needs to execute once.  The executor detects this via setParam
+	 * in ExecInitSubPlan and caches the result; but it only runs the subplan
+	 * if the SubPlan node appears in some plan node's initPlan list.  Attach
+	 * them all to the root so they run before the main plan tree. */
+	{
+		List *init_plans = m_dxl_to_plstmt_context->GetInitPlans();
+		if (init_plans != NIL)
+			plan->initPlan = list_concat(plan->initPlan, init_plans);
+	}
+
 	/* Wire up partition pruning information collected during translation. */
 	planned_stmt->partPruneInfos =
 		m_dxl_to_plstmt_context->GetPartPruneInfos();

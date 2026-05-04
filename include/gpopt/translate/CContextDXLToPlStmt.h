@@ -139,6 +139,10 @@ private:
 	// transferred to PlannedStmt.partPruneInfos at the end
 	List *m_part_prune_infos;
 
+	// SubPlan nodes promoted to InitPlans (setParam set, parParam NIL);
+	// attached to the root plan node's initPlan list after translation.
+	List *m_init_plans;
+
 public:
 	// ctor/dtor
 	CContextDXLToPlStmt(CMemoryPool *mp, CIdGenerator *plan_id_counter,
@@ -212,6 +216,12 @@ public:
 							  Index index);
 
 	void AddSubplan(Plan *);
+
+	// Record a SubPlan promoted to InitPlan (setParam set, parParam NIL).
+	void AddInitPlan(SubPlan *subplan);
+
+	// Return list of promoted InitPlan SubPlan nodes.
+	List *GetInitPlans() const { return m_init_plans; }
 
 	// add a slice table entry
 	int AddSlice(PlanSlice *);

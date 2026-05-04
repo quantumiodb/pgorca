@@ -61,7 +61,8 @@ CContextDXLToPlStmt::CContextDXLToPlStmt(
 	  m_scan_id_to_param_map(nullptr),
 	  m_agg_infos(nullptr),
 	  m_agg_trans_infos(nullptr),
-	  m_part_prune_infos(nullptr)
+	  m_part_prune_infos(nullptr),
+	  m_init_plans(nullptr)
 {
 	m_cte_plan_info = GPOS_NEW(m_mp) HMUlCTEPlanInfo(m_mp);
 	m_part_selector_to_param_map = GPOS_NEW(m_mp) UlongToUlongMap(m_mp);
@@ -327,6 +328,12 @@ CContextDXLToPlStmt::AddSubplan(Plan *plan)
 	m_subplan_entries_list = gpdb::LAppend(m_subplan_entries_list, plan);
 	m_subplan_sliceids_list =
 		gpdb::LAppendInt(m_subplan_sliceids_list, m_current_slice->sliceIndex);
+}
+
+void
+CContextDXLToPlStmt::AddInitPlan(SubPlan *subplan)
+{
+	m_init_plans = gpdb::LAppend(m_init_plans, subplan);
 }
 
 //---------------------------------------------------------------------------
