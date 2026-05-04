@@ -173,32 +173,32 @@ insert into C select i%1000, i%2000 from generate_series(0, 9999)i;
 analyze A,B,C;
 
 \echo '-- force_explain'
-explain select A.i, B.i, C.j from A, B, C where A.j = C.j;
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = C.j;
 --select A.i, B.i, C.j from A, B, C where A.j = C.j order by A.i, B.i, C.j limit 10;
 \echo '-- force_explain'
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
 --select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j) order by A.i, B.i, C.j limit 10;
 \echo '-- force_explain'
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i);
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i);
 \echo '-- force_explain'
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i and A.j = B.j);
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i and A.j = B.j);
 --select distinct(C.j) as C_j ,A.i as A_i, B.i as B_i from A, B, C where A.j = (select sum(C.j) from C where C.j = A.j and C.i = B.i) and C.j > 600 limit 10;
 \echo '-- force_explain'
-explain select A.i, B.i, C.j from A, B, C where A.j = C.j;
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = C.j;
 \echo '-- force_explain'
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
 \echo '-- force_explain'
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i));
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i));
 --explain select A.i, B.i, C.j from A, B, C where A.j = (select max(C.j) from C where C.j = A.j and C.i = (select min(A.i) from A where A.i = (select min(B.i) from B where B.i = C.i)));
 --explain select A.i, B.i, C.j from A, B, C where A.j = (select min(C.j) from C where C.j = A.j and C.i = (select max(A.i) from A where A.i = (select min(B.i) from B where B.i = C.i and A.j = C.j)));
 \echo '-- force_explain'
 explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A)) from A;
 \echo '-- force_explain'
-explain select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i)) from A;
+explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i)) from A;
 
 --MPP-13603
 \echo '-- force_explain'
-explain select * from t1 where t1.x >ALL (select t2.x from t2 where abs(t2.y+t1.y) > 2 and t2.y > 20 and abs(t2.y::float) - 10 > 100.0);
+explain (costs off) select * from t1 where t1.x >ALL (select t2.x from t2 where abs(t2.y+t1.y) > 2 and t2.y > 20 and abs(t2.y::float) - 10 > 100.0);
 
 
 -- csq_heap_all.sql
@@ -1125,13 +1125,13 @@ CREATE OR REPLACE FUNCTION f(a int) RETURNS int AS $$ select $1 $$ LANGUAGE SQL;
 CREATE TABLE t1(a int);
 INSERT INTO t1 VALUES (1);
 \echo '-- force_explain'
-EXPLAIN SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
+explain (costs off) SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
 SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
 \echo '-- force_explain'
-EXPLAIN SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
+explain (costs off) SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
 SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
 \echo '-- force_explain'
-EXPLAIN SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
+explain (costs off) SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
 SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
 
 
@@ -1205,7 +1205,7 @@ CREATE TABLE x (a int);
 
 -- csq_mpp24370.sql
 
-explain select * from x where a=  (select sum(t1.a)  from t1 inner join (select x.a as outer_ref, * from t2) as foo on (foo.a=t1.a+ outer_ref)  group by foo.a);
+explain (costs off) select * from x where a=  (select sum(t1.a)  from t1 inner join (select x.a as outer_ref, * from t2) as foo on (foo.a=t1.a+ outer_ref)  group by foo.a);
 
 
 

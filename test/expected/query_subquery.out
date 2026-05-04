@@ -129,14 +129,14 @@ SELECT current_database();
 (1 row)
 
 -- @description MPP-21239: CTranslatorExprToDXL crash for subquery in Select List
-explain select mpp21239_t1.i, (select mpp21239_t1.i from mpp21239_t2) from mpp21239_t1;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Result  (cost=0.00..1304.41 rows=2260 width=8)
-   ->  Seq Scan on mpp21239_t1  (cost=0.00..1304.39 rows=1000 width=8)
+explain (costs off) select mpp21239_t1.i, (select mpp21239_t1.i from mpp21239_t2) from mpp21239_t1;
+              QUERY PLAN               
+---------------------------------------
+ Result
+   ->  Seq Scan on mpp21239_t1
    SubPlan 1
-     ->  Result  (cost=0.00..431.06 rows=2260 width=4)
-           ->  Seq Scan on mpp21239_t2  (cost=0.00..431.04 rows=2260 width=1)
+     ->  Result
+           ->  Seq Scan on mpp21239_t2
  Optimizer: pg_orca
 (6 rows)
 
@@ -366,21 +366,21 @@ SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM a a2
 ---+---
 (0 rows)
 
-EXPLAIN SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = b.j) and a.i = 1;
-                                 QUERY PLAN                                  
------------------------------------------------------------------------------
- Result  (cost=0.00..1859.54 rows=904 width=8)
-   ->  Result  (cost=0.00..1859.54 rows=904 width=8)
+explain (costs off) SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = b.j) and a.i = 1;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Result
+   ->  Result
          Filter: (ALL (a.j <> (SubPlan 1).col1))
-         ->  Hash Join  (cost=0.00..862.71 rows=904 width=12)
+         ->  Hash Join
                Hash Cond: (a.i = b.i)
-               ->  Seq Scan on a  (cost=0.00..431.13 rows=904 width=8)
+               ->  Seq Scan on a
                      Filter: (i = 1)
-               ->  Hash  (cost=431.13..431.13 rows=904 width=8)
-                     ->  Seq Scan on b  (cost=0.00..431.13 rows=904 width=8)
+               ->  Hash
+                     ->  Seq Scan on b
                            Filter: (i = 1)
          SubPlan 1
-           ->  Seq Scan on a a2  (cost=0.00..565.47 rows=3 width=4)
+           ->  Seq Scan on a a2
                  Filter: (j = b.j)
  Optimizer: pg_orca
 (14 rows)
@@ -401,19 +401,19 @@ SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.
 ---+---
 (0 rows)
 
-EXPLAIN SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.i = 1;
+explain (costs off) SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.i = 1;
                                                                                                                                                                       QUERY PLAN                                                                                                                                                                      
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Seq Scan on a  (cost=0.00..1427.71 rows=2260 width=8)
+ Seq Scan on a
    Filter: ((i = 1) AND (SubPlan 1))
    SubPlan 1
-     ->  Result  (cost=0.00..565.50 rows=1 width=1)
-           ->  Result  (cost=0.00..565.50 rows=1 width=1)
+     ->  Result
+           ->  Result
                  Filter: ((CASE WHEN ((sum((CASE WHEN (a.j = a2.j) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (a2.j IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (a.j IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (a.j = a2.j) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
-                 ->  Result  (cost=0.00..565.47 rows=1 width=1)
-                       ->  Aggregate  (cost=0.00..565.47 rows=1 width=16)
-                             ->  Result  (cost=0.00..565.47 rows=3 width=8)
-                                   ->  Seq Scan on a a2  (cost=0.00..565.47 rows=3 width=4)
+                 ->  Result
+                       ->  Aggregate
+                             ->  Result
+                                   ->  Seq Scan on a a2
                                          Filter: (j = a.j)
  Optimizer: pg_orca
 (12 rows)

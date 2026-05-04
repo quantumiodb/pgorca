@@ -260,79 +260,79 @@ insert into C select i%1000, i%2000 from generate_series(0, 9999)i;
 analyze A,B,C;
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, B.i, C.j from A, B, C where A.j = C.j;
-                              QUERY PLAN                               
------------------------------------------------------------------------
- Nested Loop  (cost=0.00..1750.68 rows=475964 width=12)
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = C.j;
+           QUERY PLAN            
+---------------------------------
+ Nested Loop
    Join Filter: true
-   ->  Hash Join  (cost=0.00..864.07 rows=476 width=8)
+   ->  Hash Join
          Hash Cond: (c.j = a.j)
-         ->  Seq Scan on c  (cost=0.00..431.19 rows=10000 width=4)
-         ->  Hash  (cost=431.00..431.00 rows=100 width=8)
-               ->  Seq Scan on a  (cost=0.00..431.00 rows=100 width=8)
-   ->  Seq Scan on b  (cost=0.00..431.02 rows=1000 width=4)
+         ->  Seq Scan on c
+         ->  Hash
+               ->  Seq Scan on a
+   ->  Seq Scan on b
  Optimizer: pg_orca
 (9 rows)
 
 --select A.i, B.i, C.j from A, B, C where A.j = C.j order by A.i, B.i, C.j limit 10;
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
-                                QUERY PLAN                                 
----------------------------------------------------------------------------
- Nested Loop  (cost=0.00..218910.33 rows=1000000000 width=12)
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
+               QUERY PLAN                
+-----------------------------------------
+ Nested Loop
    Join Filter: true
-   ->  Nested Loop  (cost=0.00..2224.83 rows=100000 width=8)
+   ->  Nested Loop
          Join Filter: true
-         ->  Seq Scan on a  (cost=0.00..1359.04 rows=100 width=4)
+         ->  Seq Scan on a
                Filter: (j = (SubPlan 1))
                SubPlan 1
-                 ->  Seq Scan on c c_1  (cost=0.00..496.99 rows=5 width=4)
+                 ->  Seq Scan on c c_1
                        Filter: (j = a.j)
-         ->  Seq Scan on b  (cost=0.00..431.02 rows=1000 width=4)
-   ->  Seq Scan on c  (cost=0.00..431.19 rows=10000 width=4)
+         ->  Seq Scan on b
+   ->  Seq Scan on c
  Optimizer: pg_orca
 (12 rows)
 
 --select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j) order by A.i, B.i, C.j limit 10;
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i);
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Result  (cost=0.00..1316281630.79 rows=4000 width=12)
-   ->  Result  (cost=0.00..1316281630.79 rows=4000 width=12)
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i);
+                    QUERY PLAN                     
+---------------------------------------------------
+ Result
+   ->  Result
          Filter: (a.j = (SubPlan 1))
-         ->  Nested Loop  (cost=0.00..67801.19 rows=1000000000 width=16)
+         ->  Nested Loop
                Join Filter: true
-               ->  Nested Loop  (cost=0.00..1298.19 rows=100000 width=12)
+               ->  Nested Loop
                      Join Filter: true
-                     ->  Seq Scan on a  (cost=0.00..431.00 rows=100 width=8)
-                     ->  Seq Scan on b  (cost=0.00..431.02 rows=1000 width=4)
-               ->  Seq Scan on c  (cost=0.00..431.19 rows=10000 width=4)
+                     ->  Seq Scan on a
+                     ->  Seq Scan on b
+               ->  Seq Scan on c
          SubPlan 1
-           ->  Seq Scan on c c_1  (cost=0.00..1316000431.19 rows=1 width=4)
+           ->  Seq Scan on c c_1
                  Filter: ((j = a.j) AND (i = b.i))
  Optimizer: pg_orca
 (14 rows)
 
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i and A.j = B.j);
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Result  (cost=0.00..1645280415.47 rows=4000 width=12)
-   ->  Result  (cost=0.00..1645280415.47 rows=4000 width=12)
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i and A.j = B.j);
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Result
+   ->  Result
          Filter: (a.j = (SubPlan 1))
-         ->  Nested Loop  (cost=0.00..81803.80 rows=1000000000 width=20)
+         ->  Nested Loop
                Join Filter: true
-               ->  Nested Loop  (cost=0.00..1300.57 rows=100000 width=16)
+               ->  Nested Loop
                      Join Filter: true
-                     ->  Seq Scan on a  (cost=0.00..431.00 rows=100 width=8)
-                     ->  Seq Scan on b  (cost=0.00..431.02 rows=1000 width=8)
-               ->  Seq Scan on c  (cost=0.00..431.19 rows=10000 width=4)
+                     ->  Seq Scan on a
+                     ->  Seq Scan on b
+               ->  Seq Scan on c
          SubPlan 1
-           ->  Seq Scan on c c_1  (cost=0.00..1645000431.19 rows=1 width=4)
+           ->  Seq Scan on c c_1
                  Filter: ((j = a.j) AND (i = b.i) AND (a.j = b.j))
  Optimizer: pg_orca
 (14 rows)
@@ -340,60 +340,60 @@ explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C
 --select distinct(C.j) as C_j ,A.i as A_i, B.i as B_i from A, B, C where A.j = (select sum(C.j) from C where C.j = A.j and C.i = B.i) and C.j > 600 limit 10;
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, B.i, C.j from A, B, C where A.j = C.j;
-                              QUERY PLAN                               
------------------------------------------------------------------------
- Nested Loop  (cost=0.00..1750.68 rows=475964 width=12)
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = C.j;
+           QUERY PLAN            
+---------------------------------
+ Nested Loop
    Join Filter: true
-   ->  Hash Join  (cost=0.00..864.07 rows=476 width=8)
+   ->  Hash Join
          Hash Cond: (c.j = a.j)
-         ->  Seq Scan on c  (cost=0.00..431.19 rows=10000 width=4)
-         ->  Hash  (cost=431.00..431.00 rows=100 width=8)
-               ->  Seq Scan on a  (cost=0.00..431.00 rows=100 width=8)
-   ->  Seq Scan on b  (cost=0.00..431.02 rows=1000 width=4)
+         ->  Seq Scan on c
+         ->  Hash
+               ->  Seq Scan on a
+   ->  Seq Scan on b
  Optimizer: pg_orca
 (9 rows)
 
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
-                                QUERY PLAN                                 
----------------------------------------------------------------------------
- Nested Loop  (cost=0.00..218910.33 rows=1000000000 width=12)
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
+               QUERY PLAN                
+-----------------------------------------
+ Nested Loop
    Join Filter: true
-   ->  Nested Loop  (cost=0.00..2224.83 rows=100000 width=8)
+   ->  Nested Loop
          Join Filter: true
-         ->  Seq Scan on a  (cost=0.00..1359.04 rows=100 width=4)
+         ->  Seq Scan on a
                Filter: (j = (SubPlan 1))
                SubPlan 1
-                 ->  Seq Scan on c c_1  (cost=0.00..496.99 rows=5 width=4)
+                 ->  Seq Scan on c c_1
                        Filter: (j = a.j)
-         ->  Seq Scan on b  (cost=0.00..431.02 rows=1000 width=4)
-   ->  Seq Scan on c  (cost=0.00..431.19 rows=10000 width=4)
+         ->  Seq Scan on b
+   ->  Seq Scan on c
  Optimizer: pg_orca
 (12 rows)
 
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i));
-                                       QUERY PLAN                                        
------------------------------------------------------------------------------------------
- Nested Loop  (cost=0.00..222630.38 rows=1000000000 width=12)
+explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i));
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Nested Loop
    Join Filter: true
-   ->  Nested Loop  (cost=0.00..3154.85 rows=100000 width=8)
+   ->  Nested Loop
          Join Filter: true
-         ->  Seq Scan on a  (cost=0.00..2289.06 rows=100 width=4)
+         ->  Seq Scan on a
                Filter: (j = (SubPlan 2))
                SubPlan 2
-                 ->  Result  (cost=0.00..1427.00 rows=5 width=4)
+                 ->  Result
                        Filter: (c_1.j = a.j)
-                       ->  Seq Scan on c c_1  (cost=0.00..1361.20 rows=10000 width=4)
+                       ->  Seq Scan on c c_1
                              Filter: (i = (SubPlan 1))
                              SubPlan 1
-                               ->  Seq Scan on a a_1  (cost=0.00..496.80 rows=1 width=4)
+                               ->  Seq Scan on a a_1
                                      Filter: (i = c_1.i)
-         ->  Seq Scan on b  (cost=0.00..431.02 rows=1000 width=4)
-   ->  Seq Scan on c  (cost=0.00..431.19 rows=10000 width=4)
+         ->  Seq Scan on b
+   ->  Seq Scan on c
  Optimizer: pg_orca
 (17 rows)
 
@@ -420,42 +420,42 @@ explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and
 
 \echo '-- force_explain'
 -- force_explain
-explain select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i)) from A;
-                                 QUERY PLAN                                  
------------------------------------------------------------------------------
- Result  (cost=0.00..1793.85 rows=100 width=16)
-   ->  Hash Right Join  (cost=0.00..1793.85 rows=100 width=16)
+explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i)) from A;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Result
+   ->  Hash Right Join
          Hash Cond: (c.j = a_1.j)
-         ->  HashAggregate  (cost=0.00..1362.43 rows=2101 width=12)
+         ->  HashAggregate
                Group Key: c.j
-               ->  Seq Scan on c  (cost=0.00..1361.20 rows=10000 width=4)
+               ->  Seq Scan on c
                      Filter: (i = (SubPlan 1))
                      SubPlan 1
-                       ->  Seq Scan on a  (cost=0.00..496.80 rows=1 width=4)
+                       ->  Seq Scan on a
                              Filter: (i = c.i)
-         ->  Hash  (cost=431.00..431.00 rows=100 width=8)
-               ->  Seq Scan on a a_1  (cost=0.00..431.00 rows=100 width=8)
+         ->  Hash
+               ->  Seq Scan on a a_1
  Optimizer: pg_orca
 (13 rows)
 
 --MPP-13603
 \echo '-- force_explain'
 -- force_explain
-explain select * from t1 where t1.x >ALL (select t2.x from t2 where abs(t2.y+t1.y) > 2 and t2.y > 20 and abs(t2.y::float) - 10 > 100.0);
+explain (costs off) select * from t1 where t1.x >ALL (select t2.x from t2 where abs(t2.y+t1.y) > 2 and t2.y > 20 and abs(t2.y::float) - 10 > 100.0);
                                                                                                                                                                         QUERY PLAN                                                                                                                                                                         
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Seq Scan on t1  (cost=0.00..1427.80 rows=2260 width=8)
+ Seq Scan on t1
    Filter: (SubPlan 1)
    SubPlan 1
-     ->  Result  (cost=0.00..565.64 rows=1 width=1)
-           ->  Result  (cost=0.00..565.64 rows=1 width=1)
+     ->  Result
+           ->  Result
                  Filter: ((CASE WHEN ((sum((CASE WHEN (t1.x <= t2.x) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (t2.x IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (t1.x IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (t1.x <= t2.x) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
-                 ->  Result  (cost=0.00..565.57 rows=1 width=1)
-                       ->  Aggregate  (cost=0.00..565.57 rows=1 width=16)
-                             ->  Result  (cost=0.00..565.56 rows=362 width=8)
-                                   ->  Result  (cost=0.00..565.56 rows=362 width=4)
+                 ->  Result
+                       ->  Aggregate
+                             ->  Result
+                                   ->  Result
                                          Filter: (abs((t2.y + t1.y)) > 2)
-                                         ->  Seq Scan on t2  (cost=0.00..431.13 rows=904 width=8)
+                                         ->  Seq Scan on t2
                                                Filter: ((y > 20) AND ((abs((y)::double precision) - (10)::double precision) > (100.0)::double precision))
  Optimizer: pg_orca
 (14 rows)
@@ -2262,12 +2262,12 @@ CREATE TABLE t1(a int);
 INSERT INTO t1 VALUES (1);
 \echo '-- force_explain'
 -- force_explain
-EXPLAIN SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
-                         QUERY PLAN                         
-------------------------------------------------------------
- Nested Loop Semi Join  (cost=0.00..92.88 rows=13 width=4)
-   ->  Seq Scan on t1  (cost=0.00..35.50 rows=2550 width=4)
-   ->  Function Scan on f  (cost=0.00..0.01 rows=1 width=4)
+explain (costs off) SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
+         QUERY PLAN         
+----------------------------
+ Nested Loop Semi Join
+   ->  Seq Scan on t1
+   ->  Function Scan on f
          Filter: (t1.a = f)
 (4 rows)
 
@@ -2279,13 +2279,13 @@ SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
 
 \echo '-- force_explain'
 -- force_explain
-EXPLAIN SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
-                          QUERY PLAN                          
---------------------------------------------------------------
- Seq Scan on t1  (cost=0.00..61.00 rows=1275 width=4)
+explain (costs off) SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
+         QUERY PLAN          
+-----------------------------
+ Seq Scan on t1
    Filter: EXISTS(SubPlan 1)
    SubPlan 1
-     ->  Function Scan on f  (cost=0.00..0.01 rows=1 width=0)
+     ->  Function Scan on f
 (4 rows)
 
 SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
@@ -2296,13 +2296,13 @@ SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
 
 \echo '-- force_explain'
 -- force_explain
-EXPLAIN SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
-                          QUERY PLAN                          
---------------------------------------------------------------
- Seq Scan on t1  (cost=0.00..57.81 rows=1275 width=4)
+explain (costs off) SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
+                  QUERY PLAN                  
+----------------------------------------------
+ Seq Scan on t1
    Filter: (NOT (ANY (a = (SubPlan 1).col1)))
    SubPlan 1
-     ->  Function Scan on f  (cost=0.00..0.01 rows=1 width=4)
+     ->  Function Scan on f
 (4 rows)
 
 SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
@@ -3412,22 +3412,22 @@ CREATE TABLE t1 (a int, b int);
 CREATE TABLE t2 (a int, b int);
 CREATE TABLE x (a int);
 -- csq_mpp24370.sql
-explain select * from x where a=  (select sum(t1.a)  from t1 inner join (select x.a as outer_ref, * from t2) as foo on (foo.a=t1.a+ outer_ref)  group by foo.a);
-                                         QUERY PLAN                                          
----------------------------------------------------------------------------------------------
- Seq Scan on x  (cost=0.00..2601294.69 rows=2550 width=4)
+explain (costs off) select * from x where a=  (select sum(t1.a)  from t1 inner join (select x.a as outer_ref, * from t2) as foo on (foo.a=t1.a+ outer_ref)  group by foo.a);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Seq Scan on x
    Filter: (a = (SubPlan 1))
    SubPlan 1
-     ->  Result  (cost=0.00..2600253.10 rows=1000 width=8)
-           ->  GroupAggregate  (cost=0.00..2600253.10 rows=1000 width=8)
+     ->  Result
+           ->  GroupAggregate
                  Group Key: t2.a
-                 ->  Nested Loop  (cost=0.00..2600236.75 rows=2043040 width=8)
+                 ->  Nested Loop
                        Join Filter: (t2.a = (t1.a + (x.a)))
-                       ->  Result  (cost=0.00..431.65 rows=2260 width=8)
-                             ->  Sort  (cost=0.00..431.63 rows=2260 width=4)
+                       ->  Result
+                             ->  Sort
                                    Sort Key: t2.a
-                                   ->  Seq Scan on t2  (cost=0.00..431.04 rows=2260 width=4)
-                       ->  Seq Scan on t1  (cost=0.00..431.04 rows=2260 width=4)
+                                   ->  Seq Scan on t2
+                       ->  Seq Scan on t1
  Optimizer: pg_orca
 (14 rows)
 

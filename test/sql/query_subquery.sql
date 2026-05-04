@@ -101,7 +101,7 @@ insert into mpp21239_t2 values (1, 10);
 SELECT current_database();
 
 -- @description MPP-21239: CTranslatorExprToDXL crash for subquery in Select List
-explain select mpp21239_t1.i, (select mpp21239_t1.i from mpp21239_t2) from mpp21239_t1;
+explain (costs off) select mpp21239_t1.i, (select mpp21239_t1.i from mpp21239_t2) from mpp21239_t1;
 select mpp21239_t1.i, (select mpp21239_t1.i from mpp21239_t2) from mpp21239_t1 order by 1, 2;
 
 -- ===================================================================
@@ -302,7 +302,7 @@ INSERT INTO b(SELECT i, i * i FROM generate_series(1, 10) AS i);
 
 -- @description MPP-22019 Direct Dispatch caused reader gang process hanging (1)
 SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = b.j) and a.i = 1;
-EXPLAIN SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = b.j) and a.i = 1;
+explain (costs off) SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = b.j) and a.i = 1;
 
 -- ===================================================================
 -- mpp22019_2.sql
@@ -318,7 +318,7 @@ INSERT INTO b(SELECT i, i * i FROM generate_series(1, 10) AS i);
 
 -- @description MPP-22019 Direct Dispatch caused reader gang process hanging (2)
 SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.i = 1;
-EXPLAIN SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.i = 1;
+explain (costs off) SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.i = 1;
 
 -- ===================================================================
 -- mpp22601.sql
