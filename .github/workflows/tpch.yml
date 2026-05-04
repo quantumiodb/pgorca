@@ -1,0 +1,133 @@
+name: tpch
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tpch:
+    name: TPC-H SF=0.1 / ubuntu-24.04 / ORCA
+    runs-on: ubuntu-24.04
+
+    env:
+      PG_BIN: /usr/lib/postgresql/18/bin
+      PGDATA: /tmp/pgdata
+      PGHOST: /tmp/pgdata
+      PGDATABASE: tpch
+      TPCH_KIT: /tmp/tpch-kit
+      SF: "0.1"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Add PostgreSQL apt repository (pgdg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates lsb-release
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y \
+            postgresql-server-dev-18 \
+            libxerces-c-dev \
+            cmake ninja-build gcc g++ \
+            make git
+
+      - name: Build and install pg_orca
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPG_CONFIG=${{ env.PG_BIN }}/pg_config
+          cmake --build build -j "$(nproc)"
+          sudo cmake --install build
+
+      - name: Clone and build tpch-kit
+        run: |
+          git clone --depth=1 https://github.com/gregrahn/tpch-kit.git $TPCH_KIT
+          make -C $TPCH_KIT/dbgen DATABASE=POSTGRESQL MACHINE=LINUX -j "$(nproc)"
+
+      - name: Generate TPC-H data (SF=${{ env.SF }})
+        run: |
+          cd $TPCH_KIT/dbgen
+          ./dbgen -s $SF -f
+
+      - name: Initialize PostgreSQL cluster
+        run: |
+          $PG_BIN/initdb -D $PGDATA --no-locale -E UTF8
+          cat >> $PGDATA/postgresql.conf <<'EOF'
+          shared_preload_libraries = 'pg_orca'
+          max_parallel_workers_per_gather = 0
+          jit = off
+          EOF
+          $PG_BIN/pg_ctl -D $PGDATA -l $PGDATA/pg.log start -w
+
+      - name: Create database, load schema and data
+        run: |
+          PSQL="$PG_BIN/psql -v ON_ERROR_STOP=1"
+
+          $PSQL -d postgres -c "CREATE DATABASE tpch;"
+          $PSQL -f results/tpch/schema.sql
+          $PSQL -c "CREATE EXTENSION pg_orca;"
+
+          for tbl in region nation part supplier partsupp customer orders lineitem; do
+            $PSQL -c "\COPY ${tbl} FROM '$TPCH_KIT/dbgen/${tbl}.tbl' DELIMITER '|';"
+          done
+
+          $PSQL -c "ANALYZE;"
+
+      - name: Run TPC-H queries with ORCA
+        run: |
+          set -euo pipefail
+          PSQL="$PG_BIN/psql -v ON_ERROR_STOP=1"
+          TIMEOUT=60
+          FAILED=0
+
+          printf "%-4s %-8s %s\n" "Q" "status" "rows"
+          printf "%-4s %-8s %s\n" "---" "------" "----"
+
+          for i in $(seq 1 22); do
+            sql_file="results/tpch/q${i}.sql"
+            [[ -f "$sql_file" ]] || continue
+
+            if timeout "$TIMEOUT" $PSQL \
+                -c "SET pg_orca.enable_orca = on;" \
+                -c "\pset footer off" \
+                -c "$(cat "$sql_file")" \
+                > /tmp/q${i}.out 2>&1; then
+              rows=$(( $(wc -l < /tmp/q${i}.out) - 2 ))
+              rows=$(( rows < 0 ? 0 : rows ))
+              printf "Q%-3s %-8s %d\n" "$i" "OK" "$rows"
+            else
+              printf "Q%-3s FAIL\n" "$i"
+              cat /tmp/q${i}.out
+              FAILED=$(( FAILED + 1 ))
+            fi
+          done
+
+          if [[ $FAILED -gt 0 ]]; then
+            echo "ERROR: $FAILED TPC-H quer(ies) failed with ORCA"
+            exit 1
+          fi
+          echo "All 22 TPC-H queries completed successfully with ORCA."
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpch-failure-artifacts
+          path: |
+            /tmp/q*.out
+            ${{ env.PGDATA }}/pg.log
