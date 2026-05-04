@@ -245,7 +245,15 @@ pg_orca_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
     /* Only patch Result nodes in ORCA-generated plans */
     if (is_orca_plan && queryDesc->planstate)
+    {
         pg_orca_patch_result_nodes(queryDesc->planstate);
+
+        /* Also patch CTE subplans stored in es_subplanstates */
+        EState *estate = queryDesc->planstate->state;
+        ListCell *lc;
+        foreach(lc, estate->es_subplanstates)
+            pg_orca_patch_result_nodes((PlanState *) lfirst(lc));
+    }
 }
 
 /* ----------------------------------------------------------------
