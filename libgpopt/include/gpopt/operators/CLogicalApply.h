@@ -106,8 +106,14 @@ public:
 	//-------------------------------------------------------------------------------------
 
 	// derive statistics
-	IStatistics *PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
-							  IStatisticsArray *stats_ctxt) const override;
+	IStatistics *
+	PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
+				 IStatisticsArray *	 // stats_ctxt
+	) const override
+	{
+		// we should use stats from the corresponding Join tree if decorrelation succeeds
+		return PstatsDeriveDummy(mp, exprhdl, CStatistics::DefaultRelationRows);
+	}
 
 	// promise level for stat derivation
 	EStatPromise

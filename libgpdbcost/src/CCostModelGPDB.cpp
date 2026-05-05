@@ -1298,21 +1298,6 @@ CCostModelGPDB::CostIndexNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	CCost costChild =
 		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
 
-	// When the inner child has outer references its stats won't carry the
-	// correct NumRebinds (CLogicalGbAgg ignores stats_ctxt, so the aggregate
-	// over the correlated scan is priced as a one-time cost). Compensate: if
-	// the inner child has outer refs but its rebind count is still the default
-	// (1), multiply the inner cost by the outer row count so that a correlated
-	// index-apply is correctly priced against a decorrelated hash join.
-	if (pci->ChildCount() >= 2 &&
-		GPOPT_DEFAULT_REBINDS == (ULONG)(pci->PdRebinds()[1]) &&
-		exprhdl.HasOuterRefs(1))
-	{
-		DOUBLE dInnerCost = pci->PdCost()[1];
-		costChild =
-			CCost(costChild.Get() + dInnerCost * (num_rows_outer - 1.0));
-	}
-
 	ULONG risk = pci->Pcstats()->StatsEstimationRisk();
 	ULONG ulPenalizationFactor = 1;
 	const CDouble dIndexJoinAllowedRiskThreshold =
