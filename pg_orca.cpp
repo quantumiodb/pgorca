@@ -64,7 +64,7 @@ bool  optimizer_enable_multiple_distinct_aggs   = true;
 bool  optimizer_enable_motions                  = false;
 bool  optimizer_enable_motions_masteronly_queries = true;
 bool  optimizer_metadata_caching                = true;
-bool  optimizer_use_streaming_hashagg           = true;
+bool  optimizer_use_streaming_hashagg           = false;
 
 int   optimizer_mdcache_size                    = 16384;  /* KB */
 int   optimizer_segments                        = 1;
@@ -689,7 +689,7 @@ void _PG_init(void)
     DefineCustomBoolVariable(
         "optimizer_use_streaming_hashagg",
         "Use streaming hash agg in ORCA-generated local partial hash aggregations.",
-        NULL, &optimizer_use_streaming_hashagg, true,
+        NULL, &optimizer_use_streaming_hashagg, false,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     MarkGUCPrefixReserved("optimizer");
