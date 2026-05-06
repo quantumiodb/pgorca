@@ -1592,16 +1592,17 @@ CSubqueryHandler::FRemoveAnySubquery(CExpression *pexprOuter,
 	CExpression *pexprPredicate =
 		PexprSubqueryPred(pexprInner, pexprSubquery, &pexprResult, esqctxt);
 
-	// generate a select for the quantified predicate
-	pexprInner->AddRef();
-	CExpression *pexprSelect =
-		CUtils::PexprLogicalSelect(mp, pexprResult, pexprPredicate);
 	BOOL fSuccess = true;
 	BOOL fUseCorrelated = false;
 	BOOL fUseNotNullableInnerOpt = false;
 
 	if (EsqctxtValue == esqctxt)
 	{
+		// generate a select for the quantified predicate (EsqctxtValue only)
+		pexprInner->AddRef();
+		CExpression *pexprSelect =
+			CUtils::PexprLogicalSelect(mp, pexprResult, pexprPredicate);
+
 		CExpression *pexprNewSelect = PexprInnerSelect(
 			mp, colref, pexprResult, pexprPredicate, &fUseNotNullableInnerOpt);
 		CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
@@ -1646,8 +1647,32 @@ CSubqueryHandler::FRemoveAnySubquery(CExpression *pexprOuter,
 	{
 		GPOS_ASSERT(EsqctxtFilter == esqctxt);
 
-		*ppexprNewOuter = CUtils::PexprLogicalApply<CLogicalLeftSemiApplyIn>(
-			mp, pexprOuter, pexprSelect, colref, eopidSubq);
+		// pexprResult may be pexprInner itself (a borrowed ref from
+		// pexprSubquery->child[0]); any owning container below takes ownership
+		// via Append-without-AddRef, so we must AddRef to balance the second owner.
+		pexprInner->AddRef();
+		if (!fOuterRefsUnderInner)
+		{
+			// Normal case: inner has no outer refs.  Place the join predicate
+			// directly on the Apply's scalar child so that
+			// CXformLeftSemiApplyIn2LeftSemiJoinNoCorrelations can see it and
+			// statistics derivation / CNormalizer both get the semi-join
+			// condition without having to look inside the inner filter.
+			*ppexprNewOuter = CUtils::PexprLogicalApply<CLogicalLeftSemiApplyIn>(
+				mp, pexprOuter, pexprResult, colref, eopidSubq, pexprPredicate);
+		}
+		else
+		{
+			// Inner already has outer refs (degenerate correlated subquery).
+			// CXformLeftSemiApplyIn2LeftSemiJoinNoCorrelations will not fire
+			// regardless, so keep pexprPredicate buried inside a Select on the
+			// inner side — the same structure the original code produced —
+			// which lets ORCA generate a correct SubPlan for this case.
+			CExpression *pexprSelect =
+				CUtils::PexprLogicalSelect(mp, pexprResult, pexprPredicate);
+			*ppexprNewOuter = CUtils::PexprLogicalApply<CLogicalLeftSemiApplyIn>(
+				mp, pexprOuter, pexprSelect, colref, eopidSubq);
+		}
 		*ppexprResidualScalar =
 			CUtils::PexprScalarConstBool(mp, true /*value*/);
 	}

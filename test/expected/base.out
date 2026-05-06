@@ -741,17 +741,28 @@ EXPLAIN VERBOSE SELECT * FROM customer WHERE EXISTS (SELECT * FROM nation WHERE 
 (11 rows)
 
 EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (SELECT DISTINCT c_custkey FROM nation);
-                                                                                QUERY PLAN                                                                                
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Seq Scan on public.customer  (cost=0.00..1315.28 rows=400 width=56)
+                                                                                              QUERY PLAN                                                                                               
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result  (cost=0.00..5258.68 rows=400 width=56)
    Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
-   Filter: (ANY (customer.c_custkey = (SubPlan 1).col1))
+   Filter: ((SubPlan 1) > '0'::bigint)
+   ->  Seq Scan on public.customer  (cost=0.00..5258.65 rows=1000 width=64)
+         Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
    SubPlan 1
-     ->  Result  (cost=0.00..431.03 rows=810 width=4)
-           Output: customer.c_custkey
-           ->  Seq Scan on public.nation  (cost=0.00..431.02 rows=810 width=1)
+     ->  Result  (cost=0.00..452.35 rows=1 width=8)
+           Output: CASE WHEN ((count(*)) = '0'::bigint) THEN '0'::bigint WHEN ((count(*)) = (sum((CASE WHEN ((customer.c_custkey) IS NULL) THEN 1 ELSE 0 END)))) THEN '-1'::bigint ELSE (count(*)) END
+           ->  Aggregate  (cost=0.00..452.35 rows=1 width=16)
+                 Output: count(*), sum((CASE WHEN ((customer.c_custkey) IS NULL) THEN 1 ELSE 0 END))
+                 ->  Result  (cost=0.00..452.35 rows=328 width=4)
+                       Output: CASE WHEN ((customer.c_custkey) IS NULL) THEN 1 ELSE 0 END
+                       ->  Result  (cost=0.00..452.35 rows=328 width=4)
+                             Output: (customer.c_custkey)
+                             Filter: ((customer.c_custkey = (customer.c_custkey)) OR ((customer.c_custkey) IS NULL))
+                             ->  Result  (cost=0.00..431.03 rows=810 width=4)
+                                   Output: customer.c_custkey
+                                   ->  Seq Scan on public.nation  (cost=0.00..431.02 rows=810 width=1)
  Optimizer: pg_orca
-(8 rows)
+(19 rows)
 
 EXPLAIN VERBOSE SELECT * FROM customer WHERE c_custkey IN (SELECT DISTINCT n_regionkey FROM nation);
                                                                                    QUERY PLAN                                                                                   
@@ -867,7 +878,7 @@ EXPLAIN VERBOSE SELECT * FROM customer WHERE EXISTS(SELECT n_nationkey FROM nati
 EXPLAIN VERBOSE SELECT pn, cn, vn FROM sale s WHERE EXISTS (SELECT * FROM customer WHERE EXISTS (SELECT * FROM product WHERE pn = s.pn));
                                     QUERY PLAN                                    
 ----------------------------------------------------------------------------------
- Seq Scan on public.sale s  (cost=0.00..34596.53 rows=1450 width=12)
+ Seq Scan on public.sale s  (cost=0.00..138386.14 rows=1450 width=12)
    Output: s.pn, s.cn, s.vn
    Filter: EXISTS(SubPlan 2)
    SubPlan 2
@@ -884,8 +895,8 @@ EXPLAIN VERBOSE SELECT pn, cn, vn FROM sale s WHERE EXISTS (SELECT * FROM custom
 EXPLAIN SELECT pn, cn, vn FROM sale s WHERE cn IN (SELECT s.pn FROM customer WHERE cn NOT IN (SELECT pn FROM product WHERE pn = s.pn));
                                                                                                                                                                                        QUERY PLAN                                                                                                                                                                                        
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Result  (cost=0.00..1320021.58 rows=1450 width=12)
-   ->  Seq Scan on sale s  (cost=0.00..1320021.58 rows=1450 width=12)
+ Result  (cost=0.00..7920129.18 rows=580 width=12)
+   ->  Seq Scan on sale s  (cost=0.00..7920129.18 rows=580 width=12)
          Filter: ((cn = pn) AND EXISTS(SubPlan 2))
          SubPlan 2
            ->  Seq Scan on customer  (cost=0.00..1319158.58 rows=400 width=6)
