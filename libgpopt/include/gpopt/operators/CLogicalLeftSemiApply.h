@@ -14,6 +14,7 @@
 #include "gpos/base.h"
 
 #include "gpopt/operators/CLogicalApply.h"
+#include "naucrates/statistics/IStatistics.h"
 
 namespace gpopt
 {
@@ -95,6 +96,18 @@ public:
 	// derive max card
 	CMaxCard DeriveMaxCard(CMemoryPool *mp,
 						   CExpressionHandle &exprhdl) const override;
+
+	// derive statistics
+	IStatistics *PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							  IStatisticsArray *stats_ctxt) const override;
+
+	// promise level for stat derivation: use medium so semi-join selectivity
+	// is reflected before this Apply is converted to a LeftSemiJoin
+	EStatPromise
+	Esp(CExpressionHandle &) const override
+	{
+		return EspMedium;
+	}
 
 	// derive constraint property
 	CPropConstraint *
