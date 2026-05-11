@@ -1437,6 +1437,20 @@ CCostModelGPDB::CostNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	CCost costChild =
 		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
 
+	// Every NL join re-executes the inner subplan once per outer row.
+	// CostChildren() prices the inner child with NumRebinds=1 for regular NLJ
+	// (no outer refs in the inner group), so multiply by outer_rows to get the
+	// true repeated-execution cost.  For correlated NLJ operators the inner
+	// child already has NumRebinds=outer_rows; the extra factor further
+	// penalizes failed-decorrelation plans to strongly prefer decorrelated ones.
+	{
+		DOUBLE dCostInnerChild = pci->PdCost()[1];
+		CDouble dExtraRebinds =
+			std::max(CDouble(0.0), CDouble(num_rows_outer - 1.0));
+		CCost costInnerExtra = CCost(dCostInnerChild * dExtraRebinds);
+		costChild = CCost(costChild + costInnerExtra);
+	}
+
 	CCost costTotal = CCost(costLocal + costChild);
 
 	// amplify NLJ cost based on NLJ factor and stats estimation risk
