@@ -1847,9 +1847,22 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 		pcmgpdb->GetCostModelParams()
 			->PcpLookup(CCostModelParamsGPDB::EcpIndexScanTupRandomFactor)
 			->Get();
+	const CDouble dTableScanCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpTableScanCostUnit)
+			->Get();
+	const CDouble dSeqIOBandwidth =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpSeqIOBandwidth)
+			->Get();
+	const CDouble dRandomIOBandwidth =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpRandomIOBandwidth)
+			->Get();
 	GPOS_ASSERT(0 < dIndexFilterCostUnit);
 	GPOS_ASSERT(0 < dIndexScanTupCostUnit);
 	GPOS_ASSERT(0 < dIndexScanTupRandomFactor);
+	GPOS_ASSERT(0 < dRandomIOBandwidth);
 
 	CDouble dRowsIndex = pci->Rows();
 
@@ -1952,9 +1965,52 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 	CDouble dCostPerIndexRow = ulIndexKeys * dIndexFilterCostUnit +
 							   dTableWidth * dEffectiveScanTupCostUnit +
 							   ulIncludedColWidth * dIndexOnlyScanTupCostUnit;
+
+	// Heap-page random I/O cost for non-NL-join index scans.
+	//
+	// Each matched row requires a random heap-page fetch.  For selective
+	// predicates this is cheap; for high-selectivity range scans the heap
+	// fetch cost dominates and Bitmap Heap Scan (which batches random I/Os)
+	// or Seq Scan would be cheaper.  Pricing this correctly lets ORCA choose
+	// among Index Scan, Bitmap Scan, and Seq Scan accurately.
+	//
+	// Expected distinct heap pages is estimated via Mackert-Lohman:
+	//   expected_pages = rel_pages * (1 - exp(-rows / rel_pages))
+	// This saturates at rel_pages as selectivity → 1.
+	// Cost per page = seq-scan page cost * (seq_bw / rnd_bw).
+	CDouble dHeapFetchCost(0.0);
+	if (pci->NumRebinds() <= 1 && nullptr != stats)
+	{
+		ULONG rel_pages = CStatistics::CastStats(stats)->RelPages();
+		CDouble dRelRows = CStatistics::CastStats(stats)->Rows();
+		if (rel_pages > 0 && dRelRows > CDouble(0) &&
+			dRandomIOBandwidth > CDouble(0))
+		{
+			CDouble dPages(rel_pages);
+			// Mackert-Lohman: expected distinct pages touched
+			CDouble dExponent = dRowsIndex / dPages;
+			// cap exponent to avoid exp() overflow; exp(-20) ≈ 0
+			CDouble dExpected =
+				dPages *
+				(CDouble(1.0) -
+				 CDouble(exp(-std::min(dExponent.Get(), 20.0))));
+
+			// seq cost per page = rows_per_page × tableWidth × dTableScanCostUnit
+			CDouble dRowsPerPage = dRelRows / dPages;
+			CDouble dSeqCostPerPage =
+				dRowsPerPage * dTableWidth * dTableScanCostUnit;
+
+			// random I/O is (seq_bw / rnd_bw) times more expensive than seq
+			CDouble dRandomPenalty = dSeqIOBandwidth / dRandomIOBandwidth;
+
+			dHeapFetchCost = dExpected * dSeqCostPerPage * dRandomPenalty;
+		}
+	}
+
 	return CCost(pci->NumRebinds() *
 				 (dRowsIndex * dCostPerIndexRow + dEffectiveRandomFactor +
-				  dUnindexedPredCost + dUnusedIndexCost));
+				  dUnindexedPredCost + dUnusedIndexCost) +
+				 dHeapFetchCost);
 }
 
 
@@ -2262,65 +2318,86 @@ CCostModelGPDB::CostBitmapTableScan(CMemoryPool *mp, CExpressionHandle &exprhdl,
 		else
 		{
 			// optimizer_cost_model = 'calibrated'|'experimental'
-			CDouble dBitmapIO =
+			//
+			// Physically-derived two-phase model:
+			//
+			// Phase 1 — Bitmap Index Scan (BIS):
+			//   Read index leaf pages sequentially, evaluate index condition.
+			//   Cost per index entry = entry_width * IndexBlockCostUnit
+			//   where entry_width ≈ 14 bytes (key + TID).
+			//   IndexBlockCostUnit already covers sequential I/O + basic comparison.
+			//
+			// Phase 2 — Bitmap Heap Scan (BHS):
+			//   Fetch heap pages indicated by the TID bitmap.  After sorting by
+			//   block number, heap access is roughly sequential.
+			//   Expected distinct heap pages = Mackert-Lohman formula.
+			//   Cost per page = same as seq scan (rows_per_page × tableWidth ×
+			//   TableScanCostUnit).
+			//
+			// init: same dInitScanFactor as seq scan — no artificial discount.
+			//   Crossover is driven purely by BIS growth + Mackert-Lohman
+			//   saturation, giving bitmap the win below ~8-10% selectivity.
+			//
+			// GiST/GIN bitmap-union cost preserved for bitmap index type.
+
+			const CDouble dTableScanCostUnit =
 				pcmgpdb->GetCostModelParams()
-					->PcpLookup(CCostModelParamsGPDB::EcpBitmapIOCostSmallNDV)
+					->PcpLookup(CCostModelParamsGPDB::EcpTableScanCostUnit)
 					->Get();
-			CDouble c5_dInitScan =
+			const CDouble dIndexBlockCostUnit =
+				pcmgpdb->GetCostModelParams()
+					->PcpLookup(CCostModelParamsGPDB::EcpIndexBlockCostUnit)
+					->Get();
+			const CDouble dInitScanFactor =
 				pcmgpdb->GetCostModelParams()
 					->PcpLookup(CCostModelParamsGPDB::EcpInitScanFactor)
 					->Get();
-			CDouble c3_dBitmapPageCost =
-				pcmgpdb->GetCostModelParams()
-					->PcpLookup(CCostModelParamsGPDB::EcpBitmapPageCost)
-					->Get();
-			BOOL isNonBlockTable = CPhysicalScan::PopConvert(exprhdl.Pop())
-								 ->Ptabdesc()
-								 ->IsNonBlockTable();
 
-			// some cost constants determined with the cal_bitmap_test.py script
-			CDouble c1_cost_per_row(0.03);
-			CDouble c2_cost_per_byte(0.0001);
-			CDouble bitmap_union_cost_per_distinct_value(0.000027);
-			CDouble init_cost_advantage_for_bitmap_scan(0.9);
+			IStatistics *baseStats =
+				CPhysicalScan::PopConvert(exprhdl.Pop())->PstatsBaseTable();
+			const CDouble dTableWidth = baseStats->Width();
+			const CDouble dBaseRows = baseStats->Rows();
+			const ULONG ulRelPages = CStatistics::CastStats(baseStats)->RelPages();
 
-			if (IMDIndex::EmdindBtree == indexType)
+			// Phase 1: Bitmap Index Scan — sequential traversal of index leaf pages.
+			// Index entry width = sum of actual key column widths + 6-byte heap TID.
+			// For variable-length types, CColumnDescriptor::Width() returns the
+			// average/declared width; fixed-length types return exact size.
+			const CIndexDescriptor *pindexdesc =
+				CScalarBitmapIndexProbe::PopConvert(pexprIndexCond->Pop())
+					->Pindexdesc();
+			ULONG ulKeyWidth = 0;
+			CColumnDescriptorArray *pdrgpcoldescKey =
+				pindexdesc->PdrgpcoldescKey();
+			for (ULONG ul = 0; ul < pdrgpcoldescKey->Size(); ul++)
 			{
-				// btree indexes are not sensitive to the NDV, since they don't have any bitmaps
-				c3_dBitmapPageCost = 0.0;
+				ulKeyWidth += (*pdrgpcoldescKey)[ul]->Width();
 			}
+			// 6-byte TID (ItemPointerData: 4-byte block + 2-byte offset)
+			const ULONG ulTIDWidth = 6;
+			const CDouble dIndexEntryWidth(ulKeyWidth + ulTIDWidth);
+			CDouble dBISCost = CDouble(rows) * dIndexEntryWidth * dIndexBlockCostUnit;
 
-			// Give the index scan a small initial advantage over the table scan, so we use indexes
-			// for small tables - this should avoid having table scan and index scan costs being
-			// very close together for many small queries.
-			c5_dInitScan = c5_dInitScan * init_cost_advantage_for_bitmap_scan;
-
-			// The numbers below were experimentally determined using regression analysis in the cal_bitmap_test.py script
-			// The following dSizeCost is in the form C1 * rows + C2 * rows * width. This is because the width should have
-			// significantly less weight than rows as the execution time does not grow as fast in regards to width
-			CDouble dSizeCost = dBitmapIO * (rows * c1_cost_per_row +
-											 rows * width * c2_cost_per_byte);
-
-			CDouble bitmapUnionCost = 0;
-
-			if (!isNonBlockTable && indexType == IMDIndex::EmdindBitmap && dNDV > 1.0)
+			// Phase 2: Bitmap Heap Scan — heap pages fetched in block order.
+			// Mackert-Lohman gives expected distinct pages; each priced at seq rate.
+			CDouble dBHSCost(0.0);
+			if (ulRelPages > 0 && dBaseRows > CDouble(0))
 			{
-				CDouble baseTableRows = CPhysicalScan::PopConvert(exprhdl.Pop())
-											->PstatsBaseTable()
-											->Rows();
-
-				// for bitmap index scans on heap tables, we found that there is an additional cost
-				// associated with unioning them that is proportional to the number of bitmaps involved
-				// (dNDV-1) times the width of the bitmap (proportional to the number of rows in the table)
-				bitmapUnionCost = std::max(0.0, dNDV.Get() - 1.0) *
-								  baseTableRows *
-								  bitmap_union_cost_per_distinct_value;
+				CDouble dRelPages(ulRelPages);
+				CDouble dExponent = CDouble(rows) / dRelPages;
+				CDouble dExpectedPages =
+					dRelPages *
+					(CDouble(1.0) -
+					 CDouble(exp(-std::min(dExponent.Get(), 20.0))));
+				CDouble dRowsPerPage = dBaseRows / dRelPages;
+				CDouble dCostPerPage =
+					dRowsPerPage * dTableWidth * dTableScanCostUnit;
+				dBHSCost = dExpectedPages * dCostPerPage;
 			}
 
 			result = CCost(pci->NumRebinds() *
-							   (dSizeCost + dNDV * c3_dBitmapPageCost +
-								dInitRebind + bitmapUnionCost) +
-						   c5_dInitScan);
+							   (dBISCost + dBHSCost + dInitRebind) +
+						   dInitScanFactor);
 		}
 	}
 
