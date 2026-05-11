@@ -1300,6 +1300,23 @@ CCostModelGPDB::CostIndexNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	CCost costChild =
 		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
 
+	// For InnerIndexNLJ only: when the inner child was priced with
+	// innerRebinds=1 (decorrelated, no outer refs in its group), add the cost
+	// of the remaining (outer_rows - 1) re-executions.  LeftOuter/Semi/Anti
+	// variants have correct rebind accounting already and must not be touched.
+	if (COperator::EopPhysicalInnerIndexNLJoin == exprhdl.Pop()->Eopid())
+	{
+		DOUBLE dInnerRebinds = pci->PdRebinds()[1];
+		if (dInnerRebinds < num_rows_outer)
+		{
+			DOUBLE dCostInnerChild = pci->PdCost()[1];
+			CDouble dExtraRebinds =
+				std::max(CDouble(0.0),
+						 CDouble(num_rows_outer - dInnerRebinds));
+			costChild = CCost(costChild + CCost(dCostInnerChild * dExtraRebinds));
+		}
+	}
+
 	ULONG risk = pci->Pcstats()->StatsEstimationRisk();
 	ULONG ulPenalizationFactor = 1;
 	const CDouble dIndexJoinAllowedRiskThreshold =
