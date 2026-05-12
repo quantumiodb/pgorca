@@ -575,27 +575,23 @@ CHistogram::IsValid() const
 		return false;
 	}
 
-	if (IsHistogramForTextRelatedTypes())
+	// Text-related types used to require singleton-only buckets because the
+	// hash-based LINT mapping destroyed sort order. With the locale-sort-key
+	// LINT (CTranslatorScalarToDXL::ExtractLintValueFromDatum), the standard
+	// monotonic bucket-bound check applies to all types.
+	for (ULONG bucket_index = 1; bucket_index < m_histogram_buckets->Size();
+		 bucket_index++)
 	{
-		return m_histogram_buckets->Size() == 0 ||
-			   this->ContainsOnlySingletonBuckets();
-	}
-	else
-	{
-		for (ULONG bucket_index = 1; bucket_index < m_histogram_buckets->Size();
-			 bucket_index++)
-		{
-			CBucket *bucket = (*m_histogram_buckets)[bucket_index];
-			CBucket *previous_bucket = (*m_histogram_buckets)[bucket_index - 1];
+		CBucket *bucket = (*m_histogram_buckets)[bucket_index];
+		CBucket *previous_bucket = (*m_histogram_buckets)[bucket_index - 1];
 
-			// the later bucket's lower point must be greater than or equal to
-			// earlier bucket's upper point. Even if the underlying datum does not
-			// support ordering, the check is safe.
-			if (bucket->GetLowerBound()->IsLessThan(
-					previous_bucket->GetUpperBound()))
-			{
-				return false;
-			}
+		// the later bucket's lower point must be greater than or equal to
+		// earlier bucket's upper point. Even if the underlying datum does not
+		// support ordering, the check is safe.
+		if (bucket->GetLowerBound()->IsLessThan(
+				previous_bucket->GetUpperBound()))
+		{
+			return false;
 		}
 	}
 	return true;
@@ -1028,22 +1024,6 @@ CHistogram::CopyHistogram() const
 
 	return histogram_copy;
 }
-
-BOOL
-CHistogram::IsOpSupportedForTextFilter(CStatsPred::EStatsCmpType stats_cmp_type)
-{
-	// is the scalar comparison type one of =, <>
-	switch (stats_cmp_type)
-	{
-		case CStatsPred::EstatscmptEq:
-		case CStatsPred::EstatscmptNEq:
-			return true;
-		default:
-			return false;
-	}
-}
-
-
 
 // is statistics comparison type supported for filter?
 BOOL

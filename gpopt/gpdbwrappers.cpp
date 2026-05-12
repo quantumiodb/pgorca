@@ -55,6 +55,7 @@ extern "C" {
 #include "catalog/partition.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
+#include "mb/pg_wchar.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
@@ -69,6 +70,7 @@ extern "C" {
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/partcache.h"
+#include "utils/pg_locale.h"
 #include "utils/datum.h"
 #include "compat/utils/misc.h"
 }
@@ -2939,6 +2941,90 @@ gpdb::MakeGpPolicy(GpPolicyType ptype, int nattrs, int numsegments)
 		return makeGpPolicy(ptype, nattrs, numsegments);
 	}
 	GP_WRAP_END;
+}
+
+// Produce an order-preserving prefix for `src` under `collation` into `dest`.
+// Returns the number of bytes written; 0 means "fall back to raw bytes".
+//
+// For C/POSIX collation or InvalidOid, the input bytes are already in sort
+// order, so we just copy.  Otherwise we ask the PG locale machinery for the
+// strxfrm prefix (libc) or the ICU sort-key prefix (ICU provider).  Both
+// providers in PG18 are wrapped behind pg_strnxfrm_prefix, which falls back
+// gracefully when the provider can't produce a usable prefix.
+size_t
+gpdb::ComputeLocaleSortKey(char *dest, size_t destsize, const char *src,
+						   size_t srclen, Oid collation)
+{
+	GP_WRAP_START;
+	{
+		if (destsize == 0)
+		{
+			return 0;
+		}
+
+		// No collation info: assume byte order matches sort order.
+		if (!OidIsValid(collation))
+		{
+			size_t n = (srclen < destsize) ? srclen : destsize;
+			memcpy(dest, src, n);
+			return n;
+		}
+
+		pg_locale_t locale = pg_newlocale_from_collation(collation);
+
+		// C/POSIX collation: byte order already matches sort order.
+		if (locale == NULL || locale->collate_is_c)
+		{
+			size_t n = (srclen < destsize) ? srclen : destsize;
+			memcpy(dest, src, n);
+			return n;
+		}
+
+		// Non-deterministic collation (case/accent-insensitive ICU) doesn't
+		// produce a totally-ordered prefix; bail and let the caller use the
+		// raw bytes.
+		if (!locale->deterministic)
+		{
+			return 0;
+		}
+
+		// Provider doesn't support strxfrm-style prefixes (e.g. some
+		// builtin locales): bail.
+		if (!pg_strxfrm_prefix_enabled(locale))
+		{
+			return 0;
+		}
+
+		// pg_strnxfrm_prefix takes (dest, destsize, src, srclen, locale)
+		// and returns the number of bytes the locale needed.  Per the PG
+		// strxfrm contract the bytes written to `dest` may be undefined
+		// when the result didn't fit, so first try with the caller's
+		// buffer; if the locale needs more room, repeat into a larger
+		// scratch buffer and copy the prefix back.
+		size_t need = pg_strnxfrm_prefix(dest, destsize, src,
+										 (ssize_t) srclen, locale);
+		if (need <= destsize)
+		{
+			return need;
+		}
+
+		// Need a bigger buffer.  Cap to avoid runaway palloc.
+		const size_t kMaxScratch = 64 * 1024;
+		size_t scratch_size = need + 1;
+		if (scratch_size > kMaxScratch)
+		{
+			return 0;
+		}
+		char *scratch = (char *) palloc(scratch_size);
+		size_t got = pg_strnxfrm_prefix(scratch, scratch_size, src,
+										(ssize_t) srclen, locale);
+		size_t copy = (got < destsize) ? got : destsize;
+		memcpy(dest, scratch, copy);
+		pfree(scratch);
+		return copy;
+	}
+	GP_WRAP_END;
+	return 0;
 }
 
 uint32

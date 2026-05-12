@@ -60,6 +60,10 @@ message(STATUS "  pkglibdir:      ${PG_PKGLIBDIR}")
 find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND)
     pkg_check_modules(XERCES xerces-c)
+    # PG18's pg_locale.h #includes <unicode/ucol.h> unconditionally when
+    # built with ICU support, so we must thread the ICU include path through
+    # the pg_orca compile flags even though pg_orca itself doesn't call ICU.
+    pkg_check_modules(ICU_UC icu-uc)
 endif()
 
 if(XERCES_FOUND)
@@ -220,6 +224,7 @@ target_include_directories(pg_orca PRIVATE
     ${PG_SERVER_INCLUDEDIR}
     ${PG_INCLUDEDIR}
     ${XERCES_INCLUDE}
+    ${ICU_UC_INCLUDE_DIRS}
     ${EXTRA_SYSTEM_INCLUDES}
 )
 
