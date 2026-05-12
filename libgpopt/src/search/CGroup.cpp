@@ -1362,11 +1362,45 @@ CGroup::FBetterPromise(CMemoryPool *mp, CLogical::EStatPromise espFst,
 					   CLogical::EStatPromise espSnd,
 					   CGroupExpression *pgexprSnd)
 {
+	if (espFst > espSnd)
+	{
+		return true;
+	}
+	if (espFst < espSnd)
+	{
+		return false;
+	}
+
+	// Tie-break: in a SemiJoin/AntiSemiJoin group, prefer the SemiJoin
+	// alternative for stat derivation. SemiJoin stats are clamped to outer
+	// rows in CJoinStatsProcessor::CalcJoinCardinality, while sibling
+	// logical alternatives produced by SemiJoin <-> InnerJoin swap xforms
+	// (e.g. CXformSemiJoinInnerJoinSwap) derive stats as raw
+	// cartesian/scale_factor and can exceed the outer when a non-equality
+	// residual leaves scale_factor near 1.  Without this preference the
+	// group's stats reflect the InnerJoin variant's overestimate, even
+	// though the group's logical semantics are SemiJoin.
+	COperator::EOperatorId eopidFst = pgexprFst->Pop()->Eopid();
+	COperator::EOperatorId eopidSnd =
+		(nullptr != pgexprSnd) ? pgexprSnd->Pop()->Eopid() : eopidFst;
+	BOOL fFstIsSemi = (COperator::EopLogicalLeftSemiJoin == eopidFst ||
+					   COperator::EopLogicalLeftAntiSemiJoin == eopidFst ||
+					   COperator::EopLogicalLeftAntiSemiJoinNotIn == eopidFst);
+	BOOL fSndIsSemi = (COperator::EopLogicalLeftSemiJoin == eopidSnd ||
+					   COperator::EopLogicalLeftAntiSemiJoin == eopidSnd ||
+					   COperator::EopLogicalLeftAntiSemiJoinNotIn == eopidSnd);
+	if (fFstIsSemi && !fSndIsSemi)
+	{
+		return true;
+	}
+	if (!fFstIsSemi && fSndIsSemi)
+	{
+		return false;
+	}
+
 	// if there is a tie and both group expressions are inner join, we prioritize
 	// the inner join having less predicates
-	return espFst > espSnd ||
-		   (espFst == espSnd &&
-			CLogicalInnerJoin::FFewerConj(mp, pgexprFst, pgexprSnd));
+	return CLogicalInnerJoin::FFewerConj(mp, pgexprFst, pgexprSnd);
 }
 
 
@@ -1498,6 +1532,51 @@ CGroup::PstatsRecursiveDerive(CMemoryPool *pmpLocal, CMemoryPool *pmpGlobal,
 	// derive stats on group expression and copy them to group
 	stats = pgexprBest->PstatsRecursiveDerive(pmpLocal, pmpGlobal, prprelInput,
 											  stats_ctxt);
+
+	// If the group is semantically a SemiJoin/AntiSemiJoin (i.e. any logical
+	// expression in the group is one of those operators), clamp the derived
+	// row count to the outer child's row count.  Logically-equivalent sibling
+	// expressions produced by SemiJoin <-> InnerJoin swap xforms can derive
+	// stats as raw cartesian/scale_factor and exceed the outer when a
+	// non-equality residual leaves scale_factor near 1.  The SemiJoin's own
+	// stats derivation (CJoinStatsProcessor::CalcJoinCardinality) already
+	// applies this clamp, but ORCA may pick a non-SemiJoin sibling as the
+	// best-promise expression for stat derivation.
+	if (nullptr != stats)
+	{
+		CGroupExpression *pgexprSemi = nullptr;
+		CGroupExpression *pgexprCur = nullptr;
+		{
+			CGroupProxy gp(this);
+			pgexprCur = gp.PgexprNextLogical(nullptr);
+		}
+		while (nullptr != pgexprCur)
+		{
+			COperator::EOperatorId eopid = pgexprCur->Pop()->Eopid();
+			if (COperator::EopLogicalLeftSemiJoin == eopid ||
+				COperator::EopLogicalLeftAntiSemiJoin == eopid ||
+				COperator::EopLogicalLeftAntiSemiJoinNotIn == eopid)
+			{
+				pgexprSemi = pgexprCur;
+				break;
+			}
+			CGroupProxy gp(this);
+			pgexprCur = gp.PgexprNextLogical(pgexprCur);
+		}
+		if (nullptr != pgexprSemi && 3 <= pgexprSemi->Arity())
+		{
+			CGroup *pgroupOuter = (*pgexprSemi)[0];
+			if (!pgroupOuter->FScalar() && nullptr != pgroupOuter->Pstats())
+			{
+				CDouble outer_rows = pgroupOuter->Pstats()->Rows();
+				if (stats->Rows() > outer_rows)
+				{
+					stats->SetRows(outer_rows);
+				}
+			}
+		}
+	}
+
 	if (!FInitStats(stats))
 	{
 		// a group stat object already exists, we append derived stats to that object
