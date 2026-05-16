@@ -880,42 +880,44 @@ EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM customer WHERE EXISTS(SELECT n_nation
 
 -- Nested EXISTS
 EXPLAIN (COSTS OFF, VERBOSE) SELECT pn, cn, vn FROM sale s WHERE EXISTS (SELECT * FROM customer WHERE EXISTS (SELECT * FROM product WHERE pn = s.pn));
-                  QUERY PLAN                   
------------------------------------------------
+                    QUERY PLAN                     
+---------------------------------------------------
  Seq Scan on public.sale s
    Output: s.pn, s.cn, s.vn
-   Filter: EXISTS(SubPlan 2)
-   SubPlan 2
-     ->  Seq Scan on public.customer
+   Filter: EXISTS(SubPlan 1)
+   SubPlan 1
+     ->  HashAggregate
            Output: customer.ctid
-           Filter: EXISTS(SubPlan 1)
-           SubPlan 1
-             ->  Seq Scan on public.product
-                   Output: product.pn
-                   Filter: (product.pn = s.pn)
+           Group Key: customer.ctid
+           ->  Nested Loop
+                 Output: customer.ctid
+                 Join Filter: true
+                 ->  Seq Scan on public.product
+                       Filter: (product.pn = s.pn)
+                 ->  Seq Scan on public.customer
+                       Output: customer.ctid
  Optimizer: pg_orca
-(12 rows)
+(15 rows)
 
 EXPLAIN (COSTS OFF) SELECT pn, cn, vn FROM sale s WHERE cn IN (SELECT s.pn FROM customer WHERE cn NOT IN (SELECT pn FROM product WHERE pn = s.pn));
-                                                                                                                                                                                       QUERY PLAN                                                                                                                                                                                        
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                                                                                                                                   QUERY PLAN                                                                                                                                                                                    
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Result
    ->  Seq Scan on sale s
-         Filter: ((cn = pn) AND EXISTS(SubPlan 2))
-         SubPlan 2
-           ->  Seq Scan on customer
-                 Filter: (SubPlan 1)
-                 SubPlan 1
-                   ->  Result
-                         ->  Result
-                               Filter: ((CASE WHEN ((sum((CASE WHEN (s.cn = product.pn) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (product.pn IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (s.cn IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (s.cn = product.pn) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
-                               ->  Result
-                                     ->  Aggregate
-                                           ->  Result
-                                                 ->  Seq Scan on product
-                                                       Filter: (pn = s.pn)
+         Filter: ((cn = pn) AND EXISTS(SubPlan 1))
+         SubPlan 1
+           ->  Nested Loop
+                 Join Filter: true
+                 ->  Result
+                       Filter: ((CASE WHEN ((sum((CASE WHEN (s.cn = product.pn) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (product.pn IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (s.cn IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (s.cn = product.pn) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
+                       ->  Result
+                             ->  Aggregate
+                                   ->  Result
+                                         ->  Seq Scan on product
+                                               Filter: (pn = s.pn)
+                 ->  Seq Scan on customer
  Optimizer: pg_orca
-(16 rows)
+(15 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM customer WHERE EXISTS (SELECT 1 FROM nation WHERE nation.n_nationkey = customer.c_custkey AND customer.c_custkey > 1);
                        QUERY PLAN                       

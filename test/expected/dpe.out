@@ -108,8 +108,8 @@ FROM   p p1 JOIN p p2 ON p1.a = p2.a
 WHERE  p1.a BETWEEN 1001 AND 1500
 ORDER BY p1.a
 LIMIT  5;
-                           QUERY PLAN                            
------------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Limit
    ->  Sort
          Sort Key: p1.a
@@ -120,12 +120,14 @@ LIMIT  5;
                      Root Table: p
                      Partitions Selected: 1
                ->  Hash
-                     ->  Custom Scan (DynamicTableScan)
-                           Filter: ((a >= 1001) AND (a <= 1500))
+                     ->  Custom Scan (PartitionSelector)
                            Root Table: p
-                           Partitions Selected: 1
+                           ->  Custom Scan (DynamicTableScan)
+                                 Filter: ((a >= 1001) AND (a <= 1500))
+                                 Root Table: p
+                                 Partitions Selected: 1
  Optimizer: pg_orca
-(15 rows)
+(17 rows)
 
 SELECT p1.a, p1.b
 FROM   p p1 JOIN p p2 ON p1.a = p2.a
