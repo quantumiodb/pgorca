@@ -11,6 +11,7 @@
 
 #include "gpdbcost/CCostModelGPDB.h"
 
+#include <cmath>
 #include <limits>
 
 #include "gpopt/base/CColRefSetIter.h"
@@ -897,6 +898,43 @@ CCostModelGPDB::CostHashAgg(CMemoryPool *mp, CExpressionHandle &exprhdl,
 		 num_input_rows * ulGrpCols * pci->Width() *
 			 dHashAggInputTupWidthCostUnit +
 		 num_output_rows * pci->Width() * dHashAggOutputTupWidthCostUnit));
+
+	// Grace-hash spill penalty (Graefe 1993, "Query Evaluation Techniques",
+	// Computing Surveys §6).  When the in-memory hash table of distinct
+	// groups exceeds work_mem-sized capacity, the executor partitions input
+	// to disk and reads each partition back, repeating recursively until
+	// each partition fits.  Approximate I/O cost as
+	//   2 * depth * input_bytes * io_unit
+	// where depth = ceil(log2(hash_table_bytes / threshold)) is the
+	// partitioning level count, and the factor 2 covers one write + one
+	// read per partitioning pass.  Without this term ORCA judges large
+	// pre-aggregations (e.g. decorrelated EXISTS / scalar subqueries on
+	// lineitem, TPC-H Q20) as effectively free, which lets HashJoin-with-
+	// dedup-inner outprice NL+index that doesn't spill.
+	const CDouble dSpillMemThreshold =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpHJSpillingMemThreshold)
+			->Get();
+	const CDouble dSpillIoUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpHJHashingTupWidthSpillingCostUnit)
+			->Get();
+	DOUBLE hash_table_bytes = num_output_rows * pci->Width();
+	if (hash_table_bytes > dSpillMemThreshold.Get())
+	{
+		DOUBLE ratio = hash_table_bytes / dSpillMemThreshold.Get();
+		// ceil(log2(ratio)) -- at least 1 spill pass once we exceed the limit
+		DOUBLE depth = std::ceil(std::log(ratio) / std::log(2.0));
+		if (depth < 1.0)
+		{
+			depth = 1.0;
+		}
+		CCost spillPenalty =
+			CCost(pci->NumRebinds() * 2.0 * depth * num_input_rows *
+				  pci->Width() * dSpillIoUnit.Get());
+		costLocal = CCost(costLocal + spillPenalty);
+	}
+
 	CCost costChild =
 		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
 
@@ -1048,6 +1086,26 @@ CCostModelGPDB::CostHashJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 			 dWidthOuter * num_rows_outer * dHJFeedingTupWidthSpillingCostUnit +
 			 dWidthInner * dRowsInner * dHJHashingTupWidthSpillingCostUnit +
 			 pci->Rows() * pci->Width() * dJoinOutputTupCostUnit));
+
+		// Grace-hash recursive-partitioning I/O penalty (Graefe 1993 §6).
+		// The branch above only swaps unit constants (~4-10x of in-memory
+		// units), which is insufficient when the hash table is many times
+		// larger than memory and needs multiple partitioning passes.  Add
+		// 2 * depth * (inner_bytes + outer_bytes) * io_unit where
+		// depth = ceil(log2(inner_bytes / threshold)) -- one read+write per
+		// partitioning level.
+		DOUBLE inner_bytes = dRowsInner * dWidthInner;
+		DOUBLE outer_bytes = num_rows_outer * dWidthOuter;
+		DOUBLE ratio = inner_bytes / dHJSpillingMemThreshold.Get();
+		DOUBLE depth = std::ceil(std::log(ratio) / std::log(2.0));
+		if (depth < 1.0)
+		{
+			depth = 1.0;
+		}
+		CCost spillPenalty = CCost(pci->NumRebinds() * 2.0 * depth *
+								   (inner_bytes + outer_bytes) *
+								   dHJHashingTupWidthSpillingCostUnit.Get());
+		costLocal = CCost(costLocal + spillPenalty);
 	}
 	CCost costChild =
 		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
