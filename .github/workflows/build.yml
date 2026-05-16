@@ -235,7 +235,7 @@ jobs:
         run: |
           set -eux
           brew update
-          brew install postgresql@18 xerces-c cmake ninja
+          brew install postgresql@18 xerces-c cmake ninja icu4c
 
       - name: Show toolchain versions
         run: |
@@ -246,7 +246,14 @@ jobs:
           clang --version
 
       - name: Configure
+        # Homebrew's postgresql@18 server headers include <unicode/ucol.h>,
+        # which lives in keg-only icu4c.  Add icu4c's include/lib paths so
+        # clang finds the ICU headers and the linker sees libicu*.
         run: |
+          ICU_PREFIX="$(brew --prefix icu4c)"
+          export CPPFLAGS="-I${ICU_PREFIX}/include ${CPPFLAGS:-}"
+          export LDFLAGS="-L${ICU_PREFIX}/lib ${LDFLAGS:-}"
+          export PKG_CONFIG_PATH="${ICU_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DPG_CONFIG="$(brew --prefix postgresql@18)/bin/pg_config"
