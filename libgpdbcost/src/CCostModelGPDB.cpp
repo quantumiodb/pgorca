@@ -1403,6 +1403,90 @@ CCostModelGPDB::CostIndexNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 		}
 	}
 
+	// Cascade-NL random-I/O penalty.
+	//
+	// The inner CostIndexScan above uses warm-cache OLS constants
+	// (k_WarmIndexScanTupCostUnit) which assume the inner relation's
+	// hot pages mostly stay resident across probes.  That assumption
+	// holds when the immediate outer is a single relation (e.g. seq
+	// scan with a filter), but breaks when this IndexNL sits on top of
+	// *another* NL whose output cardinality is large: each outer probe
+	// of *this* NL is itself a probe of an upstream NL, so cache misses
+	// cascade non-linearly with depth and the cumulative working set
+	// blows past the buffer cache.
+	//
+	// TPC-H sf=10 Q9 is the canonical case: a (part NL lineitem_idx)
+	// feeds another IndexNL against partsupp_pkey with 3.26M probes;
+	// the lineitem heap (7.7 GB) is far too big to stay warm and ORCA
+	// undercosts this NL chain by ~200x vs the alternative all-Hash
+	// plan.  Q21 sf=10's IndexNL outer is a single seq+filter (no
+	// cascade) so it stays warm and the existing OLS calibration is
+	// fine; Hash/Merge outers don't cascade either because they
+	// produce probes in a single batch after a one-time build/sort.
+	//
+	// Trigger is data-driven: estimate worst-case working-set bytes as
+	// num_rows_outer * max(1, inner_rows_per_probe) * page_size (each
+	// fetched row on its own 8 KB heap page) and compare with the
+	// EcpHJSpillingMemThreshold parameter (also used as the
+	// in-memory-vs-spill threshold for hash join builds in
+	// CostHashJoin).  Reusing this single memory parameter keeps the
+	// warm-cache / spill assumptions consistent across operators -- if
+	// the threshold is later tied to a PG GUC (effective_cache_size /
+	// shared_buffers) both paths benefit.
+	{
+		COperator *pop_outer = exprhdl.Pop(0);
+		BOOL outer_is_nl = false;
+		if (nullptr != pop_outer)
+		{
+			COperator::EOperatorId outer_op_id = pop_outer->Eopid();
+			outer_is_nl =
+				outer_op_id == COperator::EopPhysicalInnerNLJoin ||
+				outer_op_id == COperator::EopPhysicalLeftOuterNLJoin ||
+				outer_op_id == COperator::EopPhysicalLeftSemiNLJoin ||
+				outer_op_id == COperator::EopPhysicalLeftAntiSemiNLJoin ||
+				outer_op_id == COperator::EopPhysicalInnerIndexNLJoin ||
+				outer_op_id == COperator::EopPhysicalLeftOuterIndexNLJoin ||
+				outer_op_id == COperator::EopPhysicalLeftSemiIndexNLJoin ||
+				outer_op_id == COperator::EopPhysicalLeftAntiSemiIndexNLJoin;
+		}
+		if (outer_is_nl)
+		{
+			const CDouble dCacheBytes =
+				pcmgpdb->GetCostModelParams()
+					->PcpLookup(
+						CCostModelParamsGPDB::EcpHJSpillingMemThreshold)
+					->Get();
+			// PG default page size; avoids pulling in postgres.h.
+			const DOUBLE kPageSize = 8192.0;
+			// Floor inner-rows-per-probe at 1: even a 0-match probe
+			// touches at least one index leaf + one heap page (when
+			// match exists), and for under-estimated selectivities
+			// (e.g. ORCA's composite-PK lookup occasionally estimates
+			// 0.004 row/probe) the worst-case unit is one heap page.
+			const DOUBLE dInnerRowsPerProbe =
+				std::max(1.0, pci->PdRows()[1]);
+			const DOUBLE dWorkingSetBytes =
+				num_rows_outer * dInnerRowsPerProbe * kPageSize;
+			// Effective cache budget: HJSpillingMemThreshold is sized to
+			// model in-memory hash-table capacity; for random heap
+			// access via NL we allow ~8x because filesystem/OS cache
+			// supplements the buffer pool when access pattern is
+			// re-touched.  Below this budget the warm-cache OLS path is
+			// accurate; above it, scale costChild logarithmically.
+			const DOUBLE dCacheBudget = dCacheBytes.Get() * 8.0;
+			if (dWorkingSetBytes > dCacheBudget)
+			{
+				DOUBLE ratio = dWorkingSetBytes / dCacheBudget;
+				DOUBLE scale = 1.0 + std::log2(ratio);
+				if (scale > 16.0)
+				{
+					scale = 16.0;
+				}
+				costChild = CCost(costChild.Get() * scale);
+			}
+		}
+	}
+
 	ULONG risk = pci->Pcstats()->StatsEstimationRisk();
 	ULONG ulPenalizationFactor = 1;
 	const CDouble dIndexJoinAllowedRiskThreshold =
