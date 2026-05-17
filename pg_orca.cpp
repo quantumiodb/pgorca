@@ -289,6 +289,12 @@ typedef struct
     int     natts;
     Node  **gen_exprs;      /* indexed by attno-1; NULL if not virtual */
     int     sublevels_up;   /* current subquery nesting depth */
+    bool    fallback_needed;/* set when a virtual gen col Var has non-empty
+                             * varnullingrels — the expansion would need a
+                             * PlaceHolderVar to null out the whole expression
+                             * when the outer join nulls the row, but ORCA
+                             * can't represent PHV.  Signal the caller to fall
+                             * back to the standard planner. */
 } replace_vgc_context;
 
 static Node *
@@ -304,9 +310,11 @@ replace_vgc_mutator(Node *node, void *context)
     {
         replace_vgc_context subctx = *ctx;
         subctx.sublevels_up++;
-        return (Node *) query_tree_mutator((Query *) node,
-                                           replace_vgc_mutator,
-                                           &subctx, 0);
+        Node *q = (Node *) query_tree_mutator((Query *) node,
+                                              replace_vgc_mutator,
+                                              &subctx, 0);
+        ctx->fallback_needed |= subctx.fallback_needed;
+        return q;
     }
 
     if (IsA(node, Var))
@@ -318,6 +326,15 @@ replace_vgc_mutator(Node *node, void *context)
             var->varlevelsup == (Index) ctx->sublevels_up &&
             ctx->gen_exprs[var->varattno - 1] != NULL)
         {
+            /* If the Var is nulled by any outer joins, the standard planner
+             * wraps the expansion in a PlaceHolderVar with the same
+             * phnullingrels so the outer join can null out the whole
+             * expression.  ORCA doesn't understand PHV, so signal fallback. */
+            if (!bms_is_empty(var->varnullingrels))
+            {
+                ctx->fallback_needed = true;
+                return node;
+            }
             Node *expr = copyObject(ctx->gen_exprs[var->varattno - 1]);
             /* The gen_exprs have varlevelsup=0; adjust for nesting depth. */
             if (ctx->sublevels_up > 0)
@@ -331,7 +348,7 @@ replace_vgc_mutator(Node *node, void *context)
 }
 
 static Query *
-expand_virtual_generated_columns_for_orca(Query *query)
+expand_virtual_generated_columns_for_orca(Query *query, bool *fallback_needed)
 {
     int         rt_index = 0;
     ListCell   *lc;
@@ -342,14 +359,16 @@ expand_virtual_generated_columns_for_orca(Query *query)
     {
         RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
         if (rte->rtekind == RTE_SUBQUERY && rte->subquery)
-            rte->subquery = expand_virtual_generated_columns_for_orca(rte->subquery);
+            rte->subquery = expand_virtual_generated_columns_for_orca(
+                                rte->subquery, fallback_needed);
     }
     foreach(lc, query->cteList)
     {
         CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
         if (cte->ctequery && IsA(cte->ctequery, Query))
             cte->ctequery = (Node *) expand_virtual_generated_columns_for_orca(
-                                         (Query *) cte->ctequery);
+                                         (Query *) cte->ctequery,
+                                         fallback_needed);
     }
 
     /* When GROUPING SETS are present, virtual generated columns that expand
@@ -394,10 +413,13 @@ expand_virtual_generated_columns_for_orca(Query *query)
             ctx.natts = tupdesc->natts;
             ctx.gen_exprs = gen_exprs;
             ctx.sublevels_up = 0;
+            ctx.fallback_needed = false;
 
             query = (Query *) query_tree_mutator(query,
                                                  replace_vgc_mutator,
                                                  &ctx, 0);
+            if (ctx.fallback_needed)
+                *fallback_needed = true;
             pfree(gen_exprs);
         }
 
@@ -468,9 +490,16 @@ pg_orca_planner(Query *parse, const char *query_string,
 
         /* Expand virtual generated columns before ORCA sees the query.
          * ORCA doesn't know about PG18 virtual generated columns and would
-         * read NULL from the heap instead of computing the expression. */
+         * read NULL from the heap instead of computing the expression.
+         * If any reference sits on the nullable side of an outer join (has
+         * non-empty varnullingrels), the expansion would need a PHV that
+         * ORCA can't represent — fall back to the standard planner. */
+        bool vgc_fallback_needed = false;
         Query *pqueryCopy = expand_virtual_generated_columns_for_orca(
-                                (Query *) copyObject(parse));
+                                (Query *) copyObject(parse),
+                                &vgc_fallback_needed);
+        if (vgc_fallback_needed)
+            goto fallback;
 
         /* Fold constants (e.g. similar_to_escape with literal args) before
          * handing the query tree to ORCA.  eval_const_expressions() is a no-op
@@ -511,6 +540,7 @@ pg_orca_planner(Query *parse, const char *query_string,
         }
     }
 
+fallback:
     if (prev_planner_hook)
         return prev_planner_hook(parse, query_string, cursorOptions, boundParams);
     return standard_planner(parse, query_string, cursorOptions, boundParams);
