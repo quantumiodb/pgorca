@@ -2367,6 +2367,39 @@ CTranslatorScalarToDXL::TranslateGenericDatumToDXL(CMemoryPool *mp,
 			(ULONG) gpdb::DatumSize(datum, md_type->IsPassedByValue(), len);
 	}
 
+	// PG bpchareq semantics: trailing spaces are insignificant.  Strip
+	// them from the datum bytes so that an MCV stored as
+	// 'Books                                             ' (char(50)
+	// padded) and a query constant 'Books' compare byte-equal in
+	// CDatumGenericGPDB::Matches (which is just memcmp) and hash to the
+	// same LINT in ExtractLintValueFromDatum below.  Without this strip,
+	// e.g. TPC-DS sf=5 ``i_category='Books'`` under-estimates the filter
+	// to 1 row because the constant misses every padded MCV bucket and
+	// falls back to MinRows.
+	if (!is_null && bytes != nullptr &&
+		mdid->Equals(&CMDIdGPDB::m_mdid_bpchar))
+	{
+		const char *payload = (const char *) VARDATA_ANY((const void *) bytes);
+		ULONG payload_len = (ULONG) VARSIZE_ANY_EXHDR((const void *) bytes);
+		ULONG trimmed = payload_len;
+		while (trimmed > 0 && payload[trimmed - 1] == ' ')
+			trimmed--;
+		if (trimmed < payload_len)
+		{
+			// Repack into a 4-byte-header varlena with the trimmed
+			// payload.  Always use the 4-byte header for simplicity; the
+			// downstream code reads via VAR*_ANY macros which handle both
+			// short and long headers transparently.
+			ULONG new_total = trimmed + VARHDRSZ;
+			BYTE *new_bytes = GPOS_NEW_ARRAY(mp, BYTE, new_total);
+			SET_VARSIZE(new_bytes, new_total);
+			clib::Memcpy(new_bytes + VARHDRSZ, payload, trimmed);
+			GPOS_DELETE_ARRAY(bytes);
+			bytes = new_bytes;
+			length = new_total;
+		}
+	}
+
 	CDouble double_value(0);
 	if (CMDTypeGenericGPDB::HasByte2DoubleMapping(mdid))
 	{
