@@ -126,6 +126,17 @@ static const struct config_enum_entry optimizer_join_order_options[] = {
     {NULL, 0, false}
 };
 
+/* Cost model selection (pg_orca.cost_model). */
+#define PG_ORCA_COST_MODEL_GPDB  0
+#define PG_ORCA_COST_MODEL_PG    1
+int   pg_orca_cost_model = PG_ORCA_COST_MODEL_GPDB;
+
+static const struct config_enum_entry pg_orca_cost_model_options[] = {
+    {"gpdb", PG_ORCA_COST_MODEL_GPDB, false},
+    {"pg",   PG_ORCA_COST_MODEL_PG,   false},
+    {NULL, 0, false}
+};
+
 /* xforms array: indexed by xform id, true means disabled */
 bool  optimizer_xforms[512] = {false};
 
@@ -677,6 +688,13 @@ void _PG_init(void)
         "(query | greedy | exhaustive | exhaustive2).",
         NULL, &optimizer_join_order, JOIN_ORDER_EXHAUSTIVE2_SEARCH,
         optimizer_join_order_options,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomEnumVariable(
+        "pg_orca.cost_model",
+        "Cost model used by ORCA (gpdb = GPDB calibration, pg = PG-aligned).",
+        NULL, &pg_orca_cost_model, PG_ORCA_COST_MODEL_GPDB,
+        pg_orca_cost_model_options,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     DefineCustomStringVariable(

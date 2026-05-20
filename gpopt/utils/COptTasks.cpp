@@ -45,6 +45,12 @@ extern "C" {
 #include "gpos/task/CAutoTraceFlag.h"
 
 #include "gpdbcost/CCostModelGPDB.h"
+#include "gpdbcost/CCostModelPG.h"
+#include "compat/utils/gpdbgucs.h"
+
+// Mirror the enum values from pg_orca.cpp; keep in sync.
+#define PG_ORCA_COST_MODEL_GPDB 0
+#define PG_ORCA_COST_MODEL_PG	1
 #include "gpopt/base/CAutoOptCtxt.h"
 #include "gpopt/config/CConfigParamMapping.h"
 #include "gpopt/engine/CCTEConfig.h"
@@ -438,6 +444,14 @@ COptTasks::SetCostModelParams(ICostModel *cost_model)
 {
 	GPOS_ASSERT(nullptr != cost_model);
 
+	// The tunables below address GPDB-cost-model param IDs (EcpSortTupWidthCostUnit
+	// etc.); they do not exist in CCostModelParamsPG.  Skip when running the
+	// PG-aligned model.
+	if (ICostModel::EcmtGPDBCalibrated != cost_model->Ecmt())
+	{
+		return;
+	}
+
 	{
 		/* optimizer_nestloop_factor is GPDB-only; skip NLJ factor adjustment */
 	}
@@ -490,7 +504,15 @@ COptTasks::SetCostModelParams(ICostModel *cost_model)
 ICostModel *
 COptTasks::GetCostModel(CMemoryPool *mp, ULONG num_segments)
 {
-	ICostModel *cost_model = GPOS_NEW(mp) CCostModelGPDB(mp, num_segments);
+	ICostModel *cost_model = nullptr;
+	if (PG_ORCA_COST_MODEL_PG == pg_orca_cost_model)
+	{
+		cost_model = GPOS_NEW(mp) CCostModelPG(mp, num_segments);
+	}
+	else
+	{
+		cost_model = GPOS_NEW(mp) CCostModelGPDB(mp, num_segments);
+	}
 
 	SetCostModelParams(cost_model);
 
