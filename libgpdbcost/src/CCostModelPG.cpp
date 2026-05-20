@@ -1057,6 +1057,20 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 	COperator *child_op = exprhdl.Pop(0);
 	DOUBLE run = subpath_total;	 // default: streaming
 	DOUBLE sort_topk_correction = 0.0;
+	// Peel through pass-through inner Limits.  ORCA's optimizer explores
+	// Limit(Limit(...)) candidates (e.g., when the subquery has ORDER BY
+	// and the outer query has LIMIT); the inner Limit doesn't reduce
+	// cardinality but interposes itself so the per-op detection below
+	// would see EopPhysicalLimit instead of the real bottom operator.
+	if (nullptr != child_op &&
+		COperator::EopPhysicalLimit == child_op->Eopid())
+	{
+		COperator *grand = exprhdl.PopGrandchild(0, 0, nullptr);
+		if (nullptr != grand)
+		{
+			child_op = grand;
+		}
+	}
 	if (nullptr != child_op)
 	{
 		const COperator::EOperatorId op = child_op->Eopid();
@@ -1097,7 +1111,9 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 			run = cpu_tuple_cost * input_rows;
 		}
 		else if (COperator::EopPhysicalIndexScan == op ||
-				 COperator::EopPhysicalIndexOnlyScan == op)
+				 COperator::EopPhysicalIndexOnlyScan == op ||
+				 COperator::EopPhysicalDynamicIndexScan == op ||
+				 COperator::EopPhysicalDynamicIndexOnlyScan == op)
 		{
 			// PG btcostestimate's indexStartupCost (selfuncs.c:7780-7798):
 			//   ceil(log2(index->tuples)) × cpu_operator_cost
