@@ -1365,6 +1365,23 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 }
 
 //---------------------------------------------------------------------------
+//	ChildIsSort
+//
+//	Returns true if the merge join's child at the given index is a Sort.
+//	Used to suppress mergejoinscansel savings for Sort inputs: a Sort's
+//	cost is essentially all "startup" (you can't emit any tuple before
+//	the sort completes), so the scan-trimming PG applies to (run portion
+//	× outerendsel) collapses to zero on Sort children.
+//---------------------------------------------------------------------------
+static BOOL
+ChildIsSort(CExpressionHandle &exprhdl, ULONG child_index)
+{
+	COperator *child = exprhdl.Pop(child_index);
+	if (nullptr == child) return false;
+	return COperator::EopPhysicalSort == child->Eopid();
+}
+
+//---------------------------------------------------------------------------
 //	EstimateMJScanFractions
 //
 //	Approximates PG's mergejoinscansel (selfuncs.c:2975) for the leading
@@ -1588,11 +1605,25 @@ CCostModelPG::CostMergeJoin(CMemoryPool *,	// mp
 	// Scan savings: subtract the portion of child cost that won't be
 	// scanned thanks to mergejoinscansel.  CostChildren has already added
 	// the full child total; the negative offset here brings it to PG's
-	// (outer.total × outerendsel) effective contribution.
+	// (outer.total - outer.startup) × outerendsel effective contribution.
+	//
+	// Critical caveat: PG's formula scales only the *run* portion of the
+	// child path.  For a Sort child the entire cost is effectively
+	// startup (you can't emit a sorted tuple before finishing the sort),
+	// so mergejoinscansel can't cut it.  ORCA exposes only total per
+	// child, so without a per-op carve-out we'd treat Sort as if 90% of
+	// its cost is run-time and cut it accordingly — under-costing MJ
+	// dramatically when the outer must be Sorted.  Match PG's behavior
+	// by suppressing the savings entirely when the child is a Sort.
 	const DOUBLE outer_child_cost = pci->PdCost()[0];
 	const DOUBLE inner_child_cost = pci->PdCost()[1];
-	const DOUBLE scan_savings = outer_child_cost * (1.0 - outer_scan) +
-								inner_child_cost * (1.0 - inner_scan);
+	const BOOL outer_is_sort = ChildIsSort(exprhdl, 0);
+	const BOOL inner_is_sort = ChildIsSort(exprhdl, 1);
+	const DOUBLE outer_savings =
+		outer_is_sort ? 0.0 : outer_child_cost * (1.0 - outer_scan);
+	const DOUBLE inner_savings =
+		inner_is_sort ? 0.0 : inner_child_cost * (1.0 - inner_scan);
+	const DOUBLE scan_savings = outer_savings + inner_savings;
 
 	return CCost(pci->NumRebinds() *
 				 (compare_cost + emit_cost - scan_savings));
