@@ -1011,6 +1011,28 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 		{
 			run = cpu_tuple_cost * input_rows;
 		}
+		else if (COperator::EopPhysicalIndexScan == op ||
+				 COperator::EopPhysicalIndexOnlyScan == op)
+		{
+			// PG btcostestimate's indexStartupCost (selfuncs.c:7780-7798):
+			//   ceil(log2(index->tuples)) × cpu_operator_cost
+			//   + (tree_height + 1) × 50 × cpu_operator_cost
+			// — pure CPU descent, no IO.  IO is part of run.
+			//
+			// We don't have IMDIndex::Tuples, but for an IndexScan without
+			// a leading-key equality the subpath output count ≈ index
+			// tuples; for selective scans subpath_rows is small and
+			// log2(small) ≈ 0, which still leaves the (tree_height+1)×50
+			// constant — close enough across the relevant size range.
+			const DOUBLE log_n = std::log2(std::max(input_rows, 2.0));
+			constexpr DOUBLE kTreeHeight = 1.0;
+			constexpr DOUBLE kPageCpuMultiplier = 50.0;
+			const DOUBLE startup_approx =
+				(std::ceil(log_n) +
+				 (kTreeHeight + 1.0) * kPageCpuMultiplier) *
+				cpu_operator_cost;
+			run = std::max(0.0, subpath_total - startup_approx);
+		}
 	}
 	if (run > subpath_total) run = subpath_total;
 
