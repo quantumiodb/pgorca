@@ -1103,6 +1103,66 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	return CCost(loop_count * (index_total + heap_io + cpu_run));
 }
 
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostMergeJoin
+//
+//	Port of PG cost_mergejoin (initial_cost_mergejoin + final_cost_mergejoin,
+//	costsize.c:3552, :3837), simplified:
+//
+//	  rescanratio       = 1 + max(0, mergejointuples − inner_rows) / inner_rows
+//	  merge_qual/tuple  = cpu_operator_cost × n_merge_ops
+//	  compare_cost      = merge_qual_per_tuple × (outer_rows + inner_rows × rescanratio)
+//	  emit_cost         = cpu_tuple_cost × mergejointuples
+//
+//	Simplifications:
+//	  - Skip-row selectivities (mergejoinscansel) not modeled; equivalent to
+//	    PG's clauseless / FULL case where outerstartsel = innerstartsel = 0,
+//	    outerendsel = innerendsel = 1.  For range-bounded mergejoins this
+//	    overestimates a bit.
+//	  - materialize_inner detection not modeled; PG can substitute a
+//	    Material node when the inner is expensive to rescan.  In ORCA the
+//	    Material/Spool insertion is a planner decision, not a cost-model
+//	    one.
+//	  - mark/restore overhead not subtracted for semi/anti joins.
+//	  - qp_qual.per_tuple (non-merge restrictions) lumped into
+//	    cpu_tuple_cost via the same mechanism as CostNLJoin; ORCA usually
+//	    has these as a separate Filter operator anyway.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostMergeJoin(CMemoryPool *,	// mp
+							CExpressionHandle &exprhdl,
+							const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalInnerMergeJoin ==
+					exprhdl.Pop()->Eopid() ||
+				COperator::EopPhysicalFullMergeJoin ==
+					exprhdl.Pop()->Eopid());
+
+	const DOUBLE outer_rows = std::max(1.0, pci->PdRows()[0]);
+	const DOUBLE inner_rows = std::max(1.0, pci->PdRows()[1]);
+	const DOUBLE mergejointuples = pci->Rows();
+
+	// rescanratio: inner has to be re-scanned when outer has duplicate
+	// merge keys.  PG estimates rescanned_tuples ≈ mergejointuples −
+	// inner_rows; for unique-key joins this is 0.
+	const DOUBLE rescanned =
+		std::max(0.0, mergejointuples - inner_rows);
+	const DOUBLE rescanratio = 1.0 + rescanned / inner_rows;
+
+	// child 2 holds the merge condition scalar tree.
+	const ULONG n_merge_ops =
+		CountQualOps(exprhdl.PexprScalarRepChild(2));
+	const DOUBLE merge_qual_per_tuple =
+		cpu_operator_cost * static_cast<DOUBLE>(n_merge_ops);
+
+	const DOUBLE compare_cost =
+		merge_qual_per_tuple *
+		(outer_rows + inner_rows * rescanratio);
+	const DOUBLE emit_cost = cpu_tuple_cost * mergejointuples;
+
+	return CCost(pci->NumRebinds() * (compare_cost + emit_cost));
+}
+
 CCost
 CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 {
@@ -1162,6 +1222,11 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 		case COperator::EopPhysicalBitmapTableScan:
 		case COperator::EopPhysicalDynamicBitmapTableScan:
 			local = CostBitmapTableScan(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalInnerMergeJoin:
+		case COperator::EopPhysicalFullMergeJoin:
+			local = CostMergeJoin(m_mp, exprhdl, pci);
 			break;
 
 		case COperator::EopPhysicalInnerHashJoin:

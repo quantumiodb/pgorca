@@ -82,6 +82,9 @@ private:
 									 CExpressionHandle &exprhdl,
 									 const SCostingInfo *pci);
 
+	static CCost CostMergeJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							   const SCostingInfo *pci);
+
 public:
 	CCostModelPG(CMemoryPool *mp, ULONG ulSegments,
 				 CCostModelParamsPG *pcp = nullptr);
