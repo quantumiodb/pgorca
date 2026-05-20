@@ -1163,6 +1163,53 @@ CCostModelPG::CostMergeJoin(CMemoryPool *,	// mp
 	return CCost(pci->NumRebinds() * (compare_cost + emit_cost));
 }
 
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostConstTableGet
+//
+//	Port of PG cost_valuesscan (costsize.c:1657).  PG charges
+//	  cpu_per_tuple = cpu_operator_cost + cpu_tuple_cost
+//	per row of the constant tuple list, modelling one list-element eval
+//	plus the standard scan overhead.  No IO.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostConstTableGet(CMemoryPool *,	// mp
+								CExpressionHandle &exprhdl,
+								const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalConstTableGet ==
+				exprhdl.Pop()->Eopid());
+	(void) exprhdl;
+
+	const DOUBLE rows = pci->Rows();
+	const DOUBLE cpu_per_tuple = cpu_operator_cost + cpu_tuple_cost;
+	return CCost(pci->NumRebinds() * cpu_per_tuple * rows);
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostComputeScalar
+//
+//	ORCA's CPhysicalComputeScalar evaluates a per-row projection.  PG has
+//	no dedicated operator — it folds tlist evaluation into the parent
+//	scan via pathtarget.per_tuple.  Model the per-row work as
+//	  cpu_operator_cost × n_proj_ops
+//	where n_proj_ops counts the OpExpr/FuncExpr/Cmp nodes in the project
+//	list (matching PG's cost_qual_eval over the tlist).  Pure Var/Const
+//	projections contribute 0.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostComputeScalar(CMemoryPool *,	// mp
+								CExpressionHandle &exprhdl,
+								const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalComputeScalar ==
+				exprhdl.Pop()->Eopid());
+
+	const ULONG n_proj_ops =
+		CountQualOps(exprhdl.PexprScalarRepChild(1));
+	const DOUBLE per_row = cpu_operator_cost * static_cast<DOUBLE>(n_proj_ops);
+	return CCost(pci->NumRebinds() * per_row * pci->Rows());
+}
+
 CCost
 CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 {
@@ -1227,6 +1274,14 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 		case COperator::EopPhysicalInnerMergeJoin:
 		case COperator::EopPhysicalFullMergeJoin:
 			local = CostMergeJoin(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalComputeScalar:
+			local = CostComputeScalar(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalConstTableGet:
+			local = CostConstTableGet(m_mp, exprhdl, pci);
 			break;
 
 		case COperator::EopPhysicalInnerHashJoin:

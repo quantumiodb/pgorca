@@ -85,6 +85,14 @@ private:
 	static CCost CostMergeJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 							   const SCostingInfo *pci);
 
+	static CCost CostComputeScalar(CMemoryPool *mp,
+								   CExpressionHandle &exprhdl,
+								   const SCostingInfo *pci);
+
+	static CCost CostConstTableGet(CMemoryPool *mp,
+								   CExpressionHandle &exprhdl,
+								   const SCostingInfo *pci);
+
 public:
 	CCostModelPG(CMemoryPool *mp, ULONG ulSegments,
 				 CCostModelParamsPG *pcp = nullptr);
