@@ -28,12 +28,16 @@
 #include "gpopt/operators/CScalarArray.h"
 #include "gpopt/operators/CScalarBitmapBoolOp.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
+#include "gpopt/operators/CScalarIdent.h"
 #include <functional>
 #include "naucrates/md/CMDIdColStats.h"
 #include "naucrates/md/CMDIdGPDB.h"
 #include "naucrates/md/IMDColStats.h"
 #include "naucrates/md/IMDIndex.h"
 #include "naucrates/md/IMDRelation.h"
+#include "naucrates/statistics/CBucket.h"
+#include "naucrates/statistics/CHistogram.h"
+#include "naucrates/statistics/CPoint.h"
 #include "naucrates/statistics/CStatistics.h"
 
 // PG cost-tuning GUCs.  Defined as globals in src/backend/optimizer/path/costsize.c
@@ -1361,21 +1365,178 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 }
 
 //---------------------------------------------------------------------------
+//	EstimateMJScanFractions
+//
+//	Approximates PG's mergejoinscansel (selfuncs.c:2975) for the leading
+//	merge equality predicate.  PG observes that a merge join can stop as
+//	soon as one side's value exceeds the other side's max, and can skip
+//	past leading values below the other side's min:
+//
+//	  outer_end = sel(outer <= inner_max)   inner_end = sel(inner <= outer_max)
+//	  outer_start = sel(outer < inner_min)  inner_start = sel(inner < outer_min)
+//
+//	Only one of the two "end" fractions can be < 1 (the side with the
+//	smaller max); the other is reset to 1.  Same rule for "start".
+//	Returns outer_scan_frac = outer_end − outer_start, similarly for inner.
+//
+//	On any failure (missing stats, non-eq leading predicate, missing
+//	histogram, empty bucket array) returns 1.0/1.0, matching PG's "default
+//	leftstart=0, leftend=1" behavior.
+//---------------------------------------------------------------------------
+static void
+EstimateMJScanFractions(CExpressionHandle &exprhdl,
+						const ICostModel::SCostingInfo *pci,
+						DOUBLE &outer_scan_frac, DOUBLE &inner_scan_frac)
+{
+	outer_scan_frac = 1.0;
+	inner_scan_frac = 1.0;
+
+	if (pci->ChildCount() < 2)
+	{
+		return;
+	}
+	ICostModel::CCostingStats *outer_cs = pci->Pcstats(0);
+	ICostModel::CCostingStats *inner_cs = pci->Pcstats(1);
+	if (nullptr == outer_cs || nullptr == inner_cs)
+	{
+		return;
+	}
+	IStatistics *outer_istats = outer_cs->Pstats();
+	IStatistics *inner_istats = inner_cs->Pstats();
+	if (nullptr == outer_istats || nullptr == inner_istats)
+	{
+		return;
+	}
+	CStatistics *outer_stats = CStatistics::CastStats(outer_istats);
+	CStatistics *inner_stats = CStatistics::CastStats(inner_istats);
+	if (nullptr == outer_stats || nullptr == inner_stats)
+	{
+		return;
+	}
+
+	// Find the leading eq comparison in the merge condition tree.
+	CExpression *merge_cond = exprhdl.PexprScalarRepChild(2);
+	if (nullptr == merge_cond)
+	{
+		return;
+	}
+	std::function<CExpression *(CExpression *)> find_eq =
+		[&](CExpression *e) -> CExpression * {
+		if (nullptr == e) return nullptr;
+		const COperator::EOperatorId op = e->Pop()->Eopid();
+		if (COperator::EopScalarCmp == op && e->Arity() == 2)
+		{
+			CExpression *l = (*e)[0];
+			CExpression *r = (*e)[1];
+			if (l != nullptr && r != nullptr &&
+				COperator::EopScalarIdent == l->Pop()->Eopid() &&
+				COperator::EopScalarIdent == r->Pop()->Eopid())
+			{
+				return e;
+			}
+		}
+		if (COperator::EopScalarBoolOp == op)
+		{
+			for (ULONG i = 0; i < e->Arity(); i++)
+			{
+				CExpression *got = find_eq((*e)[i]);
+				if (nullptr != got) return got;
+			}
+		}
+		return nullptr;
+	};
+	CExpression *eq = find_eq(merge_cond);
+	if (nullptr == eq) return;
+
+	const CColRef *col_a =
+		CScalarIdent::PopConvert((*eq)[0]->Pop())->Pcr();
+	const CColRef *col_b =
+		CScalarIdent::PopConvert((*eq)[1]->Pop())->Pcr();
+
+	// Bind cmp.lhs/rhs to outer/inner based on which side owns each colref.
+	const CHistogram *hist_outer = outer_stats->GetHistogram(col_a->Id());
+	const CHistogram *hist_inner = inner_stats->GetHistogram(col_b->Id());
+	if (nullptr == hist_outer || nullptr == hist_inner)
+	{
+		hist_outer = outer_stats->GetHistogram(col_b->Id());
+		hist_inner = inner_stats->GetHistogram(col_a->Id());
+	}
+	if (nullptr == hist_outer || nullptr == hist_inner) return;
+	if (hist_outer->IsEmpty() || hist_inner->IsEmpty()) return;
+	if (hist_outer->GetNumBuckets() == 0 || hist_inner->GetNumBuckets() == 0)
+		return;
+
+	const CBucketArray *ob = hist_outer->GetBuckets();
+	const CBucketArray *ib = hist_inner->GetBuckets();
+	CPoint *outer_min = (*ob)[0]->GetLowerBound();
+	CPoint *outer_max = (*ob)[ob->Size() - 1]->GetUpperBound();
+	CPoint *inner_min = (*ib)[0]->GetLowerBound();
+	CPoint *inner_max = (*ib)[ib->Size() - 1]->GetUpperBound();
+
+	const CDouble outer_freq = hist_outer->GetFrequency();
+	const CDouble inner_freq = hist_inner->GetFrequency();
+	if (outer_freq <= CStatistics::Epsilon ||
+		inner_freq <= CStatistics::Epsilon)
+		return;
+
+	auto SelCmp = [](const CHistogram *h, CStatsPred::EStatsCmpType cmp,
+					 CPoint *point) -> DOUBLE {
+		CHistogram *filt = h->MakeHistogramFilter(cmp, point);
+		DOUBLE f = (filt->GetFrequency() / h->GetFrequency()).Get();
+		GPOS_DELETE(filt);
+		if (f < 0.0) f = 0.0;
+		if (f > 1.0) f = 1.0;
+		return f;
+	};
+	auto SelLEq = [&](const CHistogram *h, CPoint *point) -> DOUBLE {
+		return SelCmp(h, CStatsPred::EstatscmptLEq, point);
+	};
+	auto SelLT = [&](const CHistogram *h, CPoint *point) -> DOUBLE {
+		return SelCmp(h, CStatsPred::EstatscmptL, point);
+	};
+
+	DOUBLE outer_end = SelLEq(hist_outer, inner_max);
+	DOUBLE inner_end = SelLEq(hist_inner, outer_max);
+	// PG: only one "end" fraction can really be < 1; reset the other.
+	if (outer_end > inner_end) outer_end = 1.0;
+	else if (outer_end < inner_end) inner_end = 1.0;
+	else { outer_end = 1.0; inner_end = 1.0; }
+
+	DOUBLE outer_start = SelLT(hist_outer, inner_min);
+	DOUBLE inner_start = SelLT(hist_inner, outer_min);
+	// PG: only one "start" fraction can really be > 0; reset the other.
+	if (outer_start < inner_start) outer_start = 0.0;
+	else if (outer_start > inner_start) inner_start = 0.0;
+	else { outer_start = 0.0; inner_start = 0.0; }
+
+	outer_scan_frac = std::max(0.0, outer_end - outer_start);
+	inner_scan_frac = std::max(0.0, inner_end - inner_start);
+}
+
+//---------------------------------------------------------------------------
 //	CCostModelPG::CostMergeJoin
 //
 //	Port of PG cost_mergejoin (initial_cost_mergejoin + final_cost_mergejoin,
-//	costsize.c:3552, :3837), simplified:
+//	costsize.c:3552, :3837):
 //
-//	  rescanratio       = 1 + max(0, mergejointuples − inner_rows) / inner_rows
-//	  merge_qual/tuple  = cpu_operator_cost × n_merge_ops
-//	  compare_cost      = merge_qual_per_tuple × (outer_rows + inner_rows × rescanratio)
-//	  emit_cost         = cpu_tuple_cost × mergejointuples
+//	  outer_scan = outerendsel − outerstartsel  (via mergejoinscansel)
+//	  inner_scan = innerendsel − innerstartsel
+//	  rescanratio    = 1 + max(0, mergejointuples − inner_rows) / inner_rows
+//	  merge_qual/tup = cpu_operator_cost × n_merge_ops
+//	  compare_cost   = merge_qual_per_tuple ×
+//	                     (outer_rows×outer_scan + inner_rows×inner_scan × rescanratio)
+//	  emit_cost      = cpu_tuple_cost × mergejointuples
+//	  scan_savings   = (1-outer_scan)×outer_child_cost + (1-inner_scan)×inner_child_cost
+//
+//	The scan_savings term is subtracted from the local cost so the
+//	additive composition (children.Get() + local.Get()) matches PG's
+//	  startup + (outer.total-outer.startup)×outerendsel +
+//	  (inner.total-inner.startup)×innerendsel
+//	formula.  Approximation: ORCA exposes only total per child, so the
+//	scaled portion includes the unscaled startup — for IndexScan startup
+//	(~0.28) the error is small relative to the run cost we're correcting.
 //
 //	Simplifications:
-//	  - Skip-row selectivities (mergejoinscansel) not modeled; equivalent to
-//	    PG's clauseless / FULL case where outerstartsel = innerstartsel = 0,
-//	    outerendsel = innerendsel = 1.  For range-bounded mergejoins this
-//	    overestimates a bit.
 //	  - materialize_inner detection not modeled; PG can substitute a
 //	    Material node when the inner is expensive to rescan.  In ORCA the
 //	    Material/Spool insertion is a planner decision, not a cost-model
@@ -1395,9 +1556,16 @@ CCostModelPG::CostMergeJoin(CMemoryPool *,	// mp
 				COperator::EopPhysicalFullMergeJoin ==
 					exprhdl.Pop()->Eopid());
 
-	const DOUBLE outer_rows = std::max(1.0, pci->PdRows()[0]);
-	const DOUBLE inner_rows = std::max(1.0, pci->PdRows()[1]);
+	const DOUBLE outer_rows_full = std::max(1.0, pci->PdRows()[0]);
+	const DOUBLE inner_rows_full = std::max(1.0, pci->PdRows()[1]);
 	const DOUBLE mergejointuples = pci->Rows();
+
+	DOUBLE outer_scan = 1.0, inner_scan = 1.0;
+	EstimateMJScanFractions(exprhdl, pci, outer_scan, inner_scan);
+
+	const DOUBLE outer_rows = outer_rows_full * outer_scan;
+	const DOUBLE inner_rows =
+		std::max(1.0, inner_rows_full * inner_scan);
 
 	// rescanratio: inner has to be re-scanned when outer has duplicate
 	// merge keys.  PG estimates rescanned_tuples ≈ mergejointuples −
@@ -1417,7 +1585,17 @@ CCostModelPG::CostMergeJoin(CMemoryPool *,	// mp
 		(outer_rows + inner_rows * rescanratio);
 	const DOUBLE emit_cost = cpu_tuple_cost * mergejointuples;
 
-	return CCost(pci->NumRebinds() * (compare_cost + emit_cost));
+	// Scan savings: subtract the portion of child cost that won't be
+	// scanned thanks to mergejoinscansel.  CostChildren has already added
+	// the full child total; the negative offset here brings it to PG's
+	// (outer.total × outerendsel) effective contribution.
+	const DOUBLE outer_child_cost = pci->PdCost()[0];
+	const DOUBLE inner_child_cost = pci->PdCost()[1];
+	const DOUBLE scan_savings = outer_child_cost * (1.0 - outer_scan) +
+								inner_child_cost * (1.0 - inner_scan);
+
+	return CCost(pci->NumRebinds() *
+				 (compare_cost + emit_cost - scan_savings));
 }
 
 //---------------------------------------------------------------------------
