@@ -29,6 +29,7 @@ extern bool optimizer_metadata_caching;
 extern int  optimizer_mdcache_size;
 extern int  optimizer_segments;
 extern int  optimizer_cte_inlining_bound;
+extern int  pg_orca_cost_model;	/* 0 = gpdb, 1 = pg */
 
 /* --- double GUCs --- */
 extern double optimizer_sort_factor;

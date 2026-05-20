@@ -263,6 +263,7 @@ install(FILES
 # -------------------------------------------------------------------
 add_executable(gporca_test
     tools/gporca_test/main.cpp
+    tools/gporca_test/pg_cost_stubs.cpp
     $<TARGET_OBJECTS:orca_core>
 )
 

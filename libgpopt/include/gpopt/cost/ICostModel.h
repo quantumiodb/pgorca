@@ -55,7 +55,8 @@ public:
 		EcmtGPDBLegacy = 0,
 		EcmtGPDBCalibrated = 1,
 		EcmtGPDBExperimental = 2,
-		EcmtSentinel = 3
+		EcmtPG = 3,			 // PG-aligned cost model (single-node PG semantics)
+		EcmtSentinel = 4
 	};
 
 	//---------------------------------------------------------------------------
