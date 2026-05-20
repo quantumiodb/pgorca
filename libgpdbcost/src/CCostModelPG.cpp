@@ -25,6 +25,7 @@
 #include "gpopt/operators/CPhysicalIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalScan.h"
+#include "gpopt/operators/CScalarArray.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
 #include "naucrates/md/CMDIdColStats.h"
 #include "naucrates/md/CMDIdGPDB.h"
@@ -227,6 +228,40 @@ CCostModelPG::CostScan(CMemoryPool *,  // mp
 	CDouble cpu_cost = pci->Rows() * CDouble(cpu_tuple_cost);
 
 	return CCost(pci->NumRebinds() * (io_cost + cpu_cost).Get());
+}
+
+// Best-effort estimate of the number of ScalarArrayOp scans (num_sa_scans
+// in PG terminology) for an index condition.  Returns the array literal
+// length when the SAOP's array child is a CScalarArray with known
+// element count; returns 1 when the predicate isn't SAOP or the array
+// length is opaque.
+static ULONG
+CountSAOPScans(CExpression *pexprIdxCond)
+{
+	if (nullptr == pexprIdxCond ||
+		COperator::EopScalarArrayCmp != pexprIdxCond->Pop()->Eopid())
+	{
+		return 1;
+	}
+	if (pexprIdxCond->Arity() < 2)
+	{
+		return 1;
+	}
+	CExpression *array = (*pexprIdxCond)[1];
+	if (nullptr == array)
+	{
+		return 1;
+	}
+	if (COperator::EopScalarArray == array->Pop()->Eopid())
+	{
+		CScalarArray *arr = CScalarArray::PopConvert(array->Pop());
+		const ULONG n = arr->PdrgPconst()->Size();
+		return std::max(1u, n);
+	}
+	// Fallback: VALUES-list style array expression has its constants as
+	// child expressions.  Count direct children if they're all scalars.
+	const ULONG n = array->Arity();
+	return std::max(1u, n);
 }
 
 // Count "operator-like" scalar nodes (CScalarCmp / CScalarOp / CScalarFunc)
@@ -891,15 +926,14 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// cpu_index_tuple_cost per tuple.  Mirror that by counting operators
 	// in the scalar index condition child (index 0 for IndexScan ops).
 	//
-	// TODO: PG also scales descent / index_io by num_sa_scans (array
-	// length) for `x IN (...)` predicates.  We don't have a reliable
-	// array-length signal here — using tuples_fetched as a proxy works
-	// for unique indexes but heavily over-counts non-unique cases where
-	// each array element matches many rows.  Leave num_sa_scans = 1
-	// until array-length plumbing exists.
+	// For ScalarArrayOp predicates (`x IN (...)`), PG charges descent +
+	// index_io per array element (num_sa_scans).  Count the array length
+	// from the SAOP's CScalarArray child where possible; fall back to 1
+	// for opaque arrays.
 	CExpression *pexprIdxCond = exprhdl.PexprScalarRepChild(0);
 	const ULONG n_index_qual_ops = CountQualOps(pexprIdxCond);
-	const DOUBLE num_sa_scans = 1.0;
+	const DOUBLE num_sa_scans =
+		static_cast<DOUBLE>(CountSAOPScans(pexprIdxCond));
 	const DOUBLE index_cpu =
 		(cpu_index_tuple_cost +
 		 cpu_operator_cost * static_cast<DOUBLE>(n_index_qual_ops)) *
@@ -1203,12 +1237,10 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	// side — heap IO is already in heap_io above.  Prefer real index
 	// relpages from IMDIndex; fall back to row-count approximation.
 	//
-	// SAOP scaling is intentionally not modeled here (see TODO in
-	// CostIndexScan): without array-length plumbing the only signal is
-	// tuples_fetched, which over-counts non-unique-index IN-lists by an
-	// order of magnitude.  Leave num_sa_scans = 1.
+	// Pull real index relpages from IMDIndex (via the BitmapIndexProbe's
+	// index descriptor) and count num_sa_scans from the predicate child.
 	DOUBLE index_pages_real = 0.0;
-	const DOUBLE num_sa_scans = 1.0;
+	DOUBLE num_sa_scans = 1.0;
 	{
 		CExpression *pexprIndexCond = exprhdl.PexprScalarRepChild(1);
 		if (nullptr != pexprIndexCond &&
@@ -1222,6 +1254,14 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 					->MDId();
 			const IMDIndex *index = mda_b->RetrieveIndex(idx_mdid);
 			index_pages_real = static_cast<DOUBLE>(index->IndexPages());
+
+			// Look inside the probe's first child (the actual qual) for
+			// a SAOP and read its array length.
+			if (pexprIndexCond->Arity() > 0)
+			{
+				num_sa_scans = static_cast<DOUBLE>(
+					CountSAOPScans((*pexprIndexCond)[0]));
+			}
 		}
 	}
 	constexpr DOUBLE kIndexEntrySize = 24.0;

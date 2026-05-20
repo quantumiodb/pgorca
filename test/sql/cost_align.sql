@@ -108,3 +108,20 @@ EXPLAIN SELECT count(*) FROM cal_tenk1 t1 JOIN cal_onek t2 ON t1.unique1 = t2.un
 EXPLAIN SELECT * FROM cal_tenk1 LEFT JOIN cal_onek ON cal_tenk1.unique1 = cal_onek.unique2;
 EXPLAIN SELECT t1.unique1 FROM cal_tenk1 t1 WHERE t1.unique2 IN (SELECT unique1 FROM cal_onek);
 EXPLAIN SELECT t1.unique1 FROM cal_tenk1 t1 WHERE EXISTS (SELECT 1 FROM cal_onek WHERE cal_onek.unique1 = t1.unique2);
+
+-- More tightly-controlled cases (same plan shape on both sides)
+EXPLAIN SELECT count(*) FROM cal_tenk1 a, cal_onek b WHERE a.unique1 = b.unique2;
+EXPLAIN SELECT a.unique1, b.hundred FROM cal_tenk1 a JOIN cal_tenk1 b ON a.unique1 = b.unique2;
+EXPLAIN SELECT count(DISTINCT hundred) FROM cal_tenk1;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 > 9000;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 = ANY (ARRAY[1, 5, 10, 50]);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 < 100 ORDER BY unique2 LIMIT 5;
+EXPLAIN SELECT hundred FROM cal_tenk1 WHERE hundred BETWEEN 50 AND 60 GROUP BY hundred;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 < 50 AND hundred = 1;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 < 50 OR hundred = 1;
+EXPLAIN SELECT max(unique2) FROM cal_tenk1 WHERE unique1 < 5000;
+EXPLAIN SELECT count(*), avg(unique1) FROM cal_tenk1 WHERE unique1 < 5000 GROUP BY hundred;
+EXPLAIN SELECT * FROM cal_tenk1 ORDER BY string4 DESC LIMIT 100;
+EXPLAIN SELECT * FROM cal_tenk1 ORDER BY string4 DESC;
+EXPLAIN SELECT * FROM (SELECT * FROM cal_tenk1 ORDER BY unique1) s LIMIT 50;
+EXPLAIN SELECT count(*) FROM (SELECT * FROM cal_tenk1 LIMIT 100) s;
