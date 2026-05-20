@@ -202,6 +202,21 @@ CBucket::GetOverlapPercentage(const CPoint *point, BOOL include_point) const
 	CDouble res = 1 / distance_upper;
 	res = res * distance_middle;
 
+	// PG's scalarineqsel subtracts an eq_selec (=1/NDV) for strict
+	// inequalities ("<" vs "<=") because the linear interpolation
+	// produced by Width() represents "<= point" — the point itself
+	// counts as 1/NDV of the bucket population.  Without this we
+	// over-estimate "< 1000" on a unique column by 1 row (the value
+	// 1000 itself, even though it doesn't satisfy "<").
+	if (!include_point && m_distinct > CDouble(0.0))
+	{
+		res = res - CDouble(1.0) / m_distinct;
+		if (res < CDouble(0.0))
+		{
+			res = CDouble(0.0);
+		}
+	}
+
 	return CDouble(std::min(res.Get(), DOUBLE(1.0)));
 }
 
