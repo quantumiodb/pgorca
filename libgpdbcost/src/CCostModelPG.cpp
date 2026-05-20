@@ -16,10 +16,20 @@
 
 #include "gpos/base.h"
 
+#include "gpopt/base/CAutoOptCtxt.h"
+#include "gpopt/base/COptCtxt.h"
 #include "gpopt/base/CUtils.h"
+#include "gpopt/mdcache/CMDAccessor.h"
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CPhysicalAgg.h"
+#include "gpopt/operators/CPhysicalIndexOnlyScan.h"
+#include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalScan.h"
+#include "naucrates/md/CMDIdColStats.h"
+#include "naucrates/md/CMDIdGPDB.h"
+#include "naucrates/md/IMDColStats.h"
+#include "naucrates/md/IMDIndex.h"
+#include "naucrates/md/IMDRelation.h"
 #include "naucrates/statistics/CStatistics.h"
 
 // PG cost-tuning GUCs.  Defined as globals in src/backend/optimizer/path/costsize.c
@@ -29,7 +39,9 @@ extern "C" {
 extern double seq_page_cost;
 extern double random_page_cost;
 extern double cpu_tuple_cost;
+extern double cpu_index_tuple_cost;
 extern double cpu_operator_cost;
+extern int    effective_cache_size;	  // 8KB pages
 extern int    work_mem;				   // KB
 extern double hash_mem_multiplier;
 }
@@ -201,6 +213,33 @@ CCostModelPG::CostScan(CMemoryPool *,  // mp
 	CDouble cpu_cost = pci->Rows() * CDouble(cpu_tuple_cost);
 
 	return CCost(pci->NumRebinds() * (io_cost + cpu_cost).Get());
+}
+
+// Count "operator-like" scalar nodes (CScalarCmp / CScalarOp / CScalarFunc)
+// in an expression tree.  Used to approximate PG's qpqual_cost.per_tuple,
+// which charges one cpu_operator_cost per OpExpr/FuncExpr.  BoolOp /
+// Ident / Const contribute nothing.
+static ULONG
+CountQualOps(CExpression *expr)
+{
+	if (nullptr == expr)
+	{
+		return 0;
+	}
+	ULONG n = 0;
+	const COperator::EOperatorId eopid = expr->Pop()->Eopid();
+	if (COperator::EopScalarCmp == eopid ||
+		COperator::EopScalarOp == eopid ||
+		COperator::EopScalarFunc == eopid)
+	{
+		n = 1;
+	}
+	const ULONG arity = expr->Arity();
+	for (ULONG i = 0; i < arity; i++)
+	{
+		n += CountQualOps((*expr)[i]);
+	}
+	return n;
 }
 
 // Count aggregate functions in the agg's project list (child 1).
@@ -425,12 +464,427 @@ CCostModelPG::CostFilter(CMemoryPool *,	 // mp
 	GPOS_ASSERT(COperator::EopPhysicalFilter == exprhdl.Pop()->Eopid());
 
 	const DOUBLE input_rows = pci->PdRows()[0];
-	const ULONG n_filter_cols = exprhdl.DeriveUsedColumns(1)->Size();
+	const ULONG n_qual_ops =
+		CountQualOps(exprhdl.PexprScalarRepChild(1));
 
 	const DOUBLE qual_per_tuple =
-		cpu_operator_cost * static_cast<DOUBLE>(n_filter_cols);
+		cpu_operator_cost * static_cast<DOUBLE>(n_qual_ops);
 
 	return CCost(pci->NumRebinds() * qual_per_tuple * input_rows);
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostNLJoin
+//
+//	Port of PG cost_nestloop / final_cost_nestloop (costsize.c:3267, :3349).
+//	Without explicit startup/total cost separation from children (ORCA only
+//	exposes total), we treat inner.startup = 0 and skip the rescan
+//	startup-cost discount.
+//
+//	The inner side is re-executed once per outer row.  ORCA passes the
+//	per-execution inner cost via pci->PdCost()[1] together with the
+//	already-applied rebind count in pci->PdRebinds()[1] (= 1 for an
+//	uncorrelated NL, = outer_rows for a correlated NL whose inner has
+//	outer refs).  Compute the gap between outer_rows and that rebind count
+//	and add the remaining inner executions ourselves.
+//
+//	Then add the join's per-tuple CPU work, mirroring PG's
+//	  cpu_per_tuple = cpu_tuple_cost + restrict_qual_cost.per_tuple
+//	  run += cpu_per_tuple * (outer_rows * inner_rows)
+//	approximating qual_cost.per_tuple as cpu_operator_cost × n_qual_cols.
+//
+//	Semi/anti joins (early termination on first match) are not modeled
+//	separately; the full Cartesian count is used.  Overestimates anti
+//	joins; plan-choice impact is usually contained because the same shape
+//	wins under both models.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
+						 CExpressionHandle &exprhdl,
+						 const SCostingInfo *pci)
+{
+	GPOS_ASSERT(CUtils::FNLJoin(exprhdl.Pop()));
+
+	const DOUBLE outer_rows = pci->PdRows()[0];
+	const DOUBLE inner_rows = pci->PdRows()[1];
+	const DOUBLE inner_total_cost = pci->PdCost()[1];
+	const DOUBLE inner_rebinds = pci->PdRebinds()[1];
+
+	// Extra rescans beyond what the inner child cost already accounts for.
+	DOUBLE extra_rescan = 0.0;
+	if (inner_rebinds > 0.0 && outer_rows > inner_rebinds)
+	{
+		const DOUBLE per_exec = inner_total_cost / inner_rebinds;
+		extra_rescan = (outer_rows - inner_rebinds) * per_exec;
+	}
+
+	// CPU cost: scan inner_rows for each outer_row, evaluating join qual.
+	const ULONG n_qual_ops =
+		CountQualOps(exprhdl.PexprScalarRepChild(2));
+	const DOUBLE cpu_per_tuple =
+		cpu_tuple_cost +
+		cpu_operator_cost * static_cast<DOUBLE>(n_qual_ops);
+	const DOUBLE ntuples = outer_rows * inner_rows;
+	const DOUBLE cpu_cost = cpu_per_tuple * ntuples;
+
+	return CCost(pci->NumRebinds() * (extra_rescan + cpu_cost));
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostHashJoin
+//
+//	Port of PG initial_cost_hashjoin + final_cost_hashjoin
+//	(costsize.c:4160, :4275).  Operator-local cost (children added by
+//	CostChildren):
+//
+//	  build_cpu = (cpu_operator_cost × nclauses + cpu_tuple_cost) × inner_rows
+//	  probe_cpu = cpu_operator_cost × nclauses × outer_rows
+//	  qual_cpu  = (cpu_tuple_cost + cpu_operator_cost × nclauses) × output_rows
+//	  spill_io  = 2 × seq_page_cost × (inner_pages + outer_pages)   when batches>1
+//
+//	Simplifications vs PG:
+//	  - outer.startup treated as 0 (ORCA exposes only total per child).
+//	  - innerbucketsize / hashclausesel not modeled separately; we use
+//	    pci->Rows() as the "join cardinality" surrogate for PG's
+//	    hashjointuples, matching unique-key joins and over-counting on
+//	    duplicate-heavy inner keys.
+//	  - numbatches determined by simple ratio of hash-table bytes to
+//	    work_mem × hash_mem_multiplier; PG uses ExecChooseHashTableSize
+//	    with skew-MCV space reservation we skip.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostHashJoin(CMemoryPool *,  // mp
+						   CExpressionHandle &exprhdl,
+						   const SCostingInfo *pci)
+{
+#ifdef GPOS_DEBUG
+	const COperator::EOperatorId op_id = exprhdl.Pop()->Eopid();
+	GPOS_ASSERT(COperator::EopPhysicalInnerHashJoin == op_id ||
+				COperator::EopPhysicalLeftSemiHashJoin == op_id ||
+				COperator::EopPhysicalLeftAntiSemiHashJoin == op_id ||
+				COperator::EopPhysicalLeftAntiSemiHashJoinNotIn == op_id ||
+				COperator::EopPhysicalLeftOuterHashJoin == op_id ||
+				COperator::EopPhysicalRightOuterHashJoin == op_id ||
+				COperator::EopPhysicalFullHashJoin == op_id);
+#endif
+
+	const DOUBLE outer_rows = pci->PdRows()[0];
+	const DOUBLE outer_width = pci->GetWidth()[0];
+	const DOUBLE inner_rows = pci->PdRows()[1];
+	const DOUBLE inner_width = pci->GetWidth()[1];
+	const DOUBLE output_rows = pci->Rows();
+
+	const ULONG n_qual_ops =
+		CountQualOps(exprhdl.PexprScalarRepChild(2));
+	// At least 1 hash clause (else this wouldn't be a hash join).
+	const DOUBLE nclauses = std::max(1.0, static_cast<DOUBLE>(n_qual_ops));
+
+	const DOUBLE build_cpu =
+		(cpu_operator_cost * nclauses + cpu_tuple_cost) * inner_rows;
+	const DOUBLE probe_cpu = cpu_operator_cost * nclauses * outer_rows;
+	const DOUBLE qual_cpu =
+		(cpu_tuple_cost + cpu_operator_cost * nclauses) * output_rows;
+
+	// Spill IO: only when the hash table doesn't fit in working memory.
+	DOUBLE spill_io = 0.0;
+	{
+		constexpr DOUBLE kHeapTupleHeader = 24.0;
+		const DOUBLE inner_bytes =
+			inner_rows * (MaxAlign8(inner_width) + kHeapTupleHeader);
+		const DOUBLE mem_limit =
+			static_cast<DOUBLE>(work_mem) * 1024.0 * hash_mem_multiplier;
+		if (mem_limit > 0.0 && inner_bytes > mem_limit)
+		{
+			const DOUBLE inner_pages =
+				std::ceil(inner_bytes / 8192.0);
+			const DOUBLE outer_pages = std::ceil(
+				outer_rows * (MaxAlign8(outer_width) + kHeapTupleHeader) /
+				8192.0);
+			spill_io =
+				2.0 * seq_page_cost * (inner_pages + outer_pages);
+		}
+	}
+
+	return CCost(pci->NumRebinds() *
+				 (build_cpu + probe_cpu + qual_cpu + spill_io));
+}
+
+// PG's index_pages_fetched (costsize.c:907) — Mackert-Lohman formula.
+static DOUBLE
+IndexPagesFetched(DOUBLE tuples_fetched, DOUBLE pages, DOUBLE index_pages_in)
+{
+	// T is # pages in table, but don't allow it to be zero.
+	DOUBLE T = (pages > 1.0) ? pages : 1.0;
+
+	// total_pages := all relations + this index.  We don't have access to
+	// the full query's table-pages sum (PG threads it through PlannerInfo),
+	// so approximate as T + index_pages — pessimistic for multi-relation
+	// queries, exact for single-table.
+	DOUBLE total_pages = T + std::max(1.0, index_pages_in);
+	if (total_pages < 1.0)
+	{
+		total_pages = 1.0;
+	}
+
+	// b := pro-rated share of effective_cache_size for this table.
+	DOUBLE b = static_cast<DOUBLE>(effective_cache_size) * T / total_pages;
+	b = (b <= 1.0) ? 1.0 : std::ceil(b);
+
+	DOUBLE pages_fetched;
+	if (T <= b)
+	{
+		pages_fetched =
+			(2.0 * T * tuples_fetched) / (2.0 * T + tuples_fetched);
+		if (pages_fetched >= T)
+		{
+			pages_fetched = T;
+		}
+		else
+		{
+			pages_fetched = std::ceil(pages_fetched);
+		}
+	}
+	else
+	{
+		const DOUBLE lim = (2.0 * T * b) / (2.0 * T - b);
+		if (tuples_fetched <= lim)
+		{
+			pages_fetched =
+				(2.0 * T * tuples_fetched) / (2.0 * T + tuples_fetched);
+		}
+		else
+		{
+			pages_fetched = b + (tuples_fetched - lim) * (T - b) / T;
+		}
+		pages_fetched = std::ceil(pages_fetched);
+	}
+	return pages_fetched;
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostIndexScan
+//
+//	Port of PG cost_index (costsize.c:560) for plain IndexScan and
+//	IndexOnlyScan.  Composes:
+//	  - index access CPU (btcostestimate's per-tuple work)
+//	  - heap IO via Mackert-Lohman pages_fetched and correlation-squared
+//	    interpolation between min_IO and max_IO
+//	  - qpqual CPU per tuple fetched
+//
+//	Simplifications:
+//	  - index->pages approximated as ceil(reltuples / 200) when the
+//	    metadata layer doesn't expose IMDIndex::Pages (~50 btree leaf
+//	    entries per page on typical types; close enough for the
+//	    Mackert-Lohman b parameter).
+//	  - amcostestimate's descent + per-clause CPU collapsed into a single
+//	    (cpu_index_tuple_cost + cpu_operator_cost) × tuples_fetched term.
+//	  - total_pages for cache pro-rating = T + index_pages only.
+//	  - allvisfrac not available; IndexOnlyScan reduces heap IO by the
+//	    ratio rel->RelAllVisible() / rel->RelPages().
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostIndexScan(CMemoryPool *mp,
+							CExpressionHandle &exprhdl,
+							const SCostingInfo *pci)
+{
+	COperator *pop = exprhdl.Pop();
+	const COperator::EOperatorId op_id = pop->Eopid();
+	GPOS_ASSERT(COperator::EopPhysicalIndexScan == op_id ||
+				COperator::EopPhysicalIndexOnlyScan == op_id ||
+				COperator::EopPhysicalDynamicIndexScan == op_id ||
+				COperator::EopPhysicalDynamicIndexOnlyScan == op_id);
+
+	const bool indexonly =
+		(COperator::EopPhysicalIndexOnlyScan == op_id ||
+		 COperator::EopPhysicalDynamicIndexOnlyScan == op_id);
+
+	const DOUBLE tuples_fetched = pci->Rows();
+	const DOUBLE loop_count = pci->NumRebinds();
+
+	CPhysicalScan *pscan = CPhysicalScan::PopConvert(pop);
+	IStatistics *base_stats = pscan->PstatsBaseTable();
+	const DOUBLE N = CStatistics::CastStats(base_stats)->Rows().Get();
+	DOUBLE T = static_cast<DOUBLE>(
+		CStatistics::CastStats(base_stats)->RelPages());
+	if (T <= 0.0)
+	{
+		T = 1.0;
+	}
+
+	// allvisfrac for IndexOnlyScan, sourced from the runtime stats object
+	// (which itself reads pg_class.relallvisible).
+	DOUBLE allvis_frac = 0.0;
+	{
+		const ULONG rp = CStatistics::CastStats(base_stats)->RelPages();
+		const ULONG rav =
+			CStatistics::CastStats(base_stats)->RelAllVisible();
+		if (rp > 0)
+		{
+			allvis_frac = static_cast<DOUBLE>(rav) / static_cast<DOUBLE>(rp);
+			if (allvis_frac < 0.0) allvis_frac = 0.0;
+			if (allvis_frac > 1.0) allvis_frac = 1.0;
+		}
+	}
+	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+
+	// Correlation comes from pg_statistic of the leading index key column.
+	DOUBLE correlation = 0.0;
+	IMDId *index_mdid = nullptr;
+	switch (op_id)
+	{
+		case COperator::EopPhysicalIndexScan:
+			index_mdid =
+				CPhysicalIndexScan::PopConvert(pop)->Pindexdesc()->MDId();
+			break;
+		case COperator::EopPhysicalIndexOnlyScan:
+			index_mdid =
+				CPhysicalIndexOnlyScan::PopConvert(pop)->Pindexdesc()->MDId();
+			break;
+		default:
+			// Dynamic{Index,IndexOnly}Scan paths intentionally left as no-op
+			// for now; they would route through CPhysicalDynamicIndexScan
+			// with the same descriptor-access pattern.
+			break;
+	}
+	if (nullptr != index_mdid)
+	{
+		const IMDIndex *index = mda->RetrieveIndex(index_mdid);
+		if (index->Keys() > 0)
+		{
+			// KeyAt(0) is the attno of the leading index key.  Construct
+			// the CMDIdColStats lookup key on the supplied pool.
+			const ULONG leading_attno = index->KeyAt(0);
+			IMDId *rel_mdid = pscan->Ptabdesc()->MDId();
+			rel_mdid->AddRef();
+			CMDIdColStats *colstats_mdid = GPOS_NEW(mp) CMDIdColStats(
+				CMDIdGPDB::CastMdid(rel_mdid), leading_attno);
+			const IMDColStats *col_stats = mda->Pmdcolstats(colstats_mdid);
+			correlation = col_stats->Correlation().Get();
+			colstats_mdid->Release();
+		}
+	}
+
+	// index_pages: IMDIndex doesn't expose pages; approximate.  ~200 btree
+	// entries per page is reasonable for narrow keys (int/bigint).
+	const DOUBLE index_pages = std::max(1.0, std::ceil(N / 200.0));
+
+	// Mackert-Lohman.  PG handles loop_count > 1 by computing pages across
+	// all loops then pro-rating per scan; this models cache reuse.
+	DOUBLE pages_fetched_uncorr;
+	if (loop_count > 1.0)
+	{
+		pages_fetched_uncorr =
+			IndexPagesFetched(tuples_fetched * loop_count, T, index_pages);
+	}
+	else
+	{
+		pages_fetched_uncorr =
+			IndexPagesFetched(tuples_fetched, T, index_pages);
+	}
+	if (indexonly)
+	{
+		pages_fetched_uncorr =
+			std::ceil(pages_fetched_uncorr * (1.0 - allvis_frac));
+	}
+
+	// max_IO: perfectly uncorrelated case (csquared = 0).
+	DOUBLE max_IO = (loop_count > 1.0)
+						? (pages_fetched_uncorr * random_page_cost) / loop_count
+						: pages_fetched_uncorr * random_page_cost;
+
+	// min_IO: perfectly correlated case (csquared = 1).
+	DOUBLE selectivity = (N > 0.0) ? tuples_fetched / N : 0.0;
+	if (selectivity > 1.0) selectivity = 1.0;
+	DOUBLE pages_fetched_corr;
+	if (loop_count > 1.0)
+	{
+		pages_fetched_corr = std::ceil(selectivity * T);
+		pages_fetched_corr =
+			IndexPagesFetched(pages_fetched_corr * loop_count, T, index_pages);
+		if (indexonly)
+		{
+			pages_fetched_corr =
+				std::ceil(pages_fetched_corr * (1.0 - allvis_frac));
+		}
+	}
+	else
+	{
+		pages_fetched_corr = std::ceil(selectivity * T);
+		if (indexonly)
+		{
+			pages_fetched_corr =
+				std::ceil(pages_fetched_corr * (1.0 - allvis_frac));
+		}
+	}
+
+	DOUBLE min_IO = 0.0;
+	if (pages_fetched_corr > 0.0)
+	{
+		if (loop_count > 1.0)
+		{
+			min_IO = (pages_fetched_corr * random_page_cost) / loop_count;
+		}
+		else
+		{
+			min_IO = random_page_cost;
+			if (pages_fetched_corr > 1.0)
+			{
+				min_IO += (pages_fetched_corr - 1.0) * seq_page_cost;
+			}
+		}
+	}
+
+	const DOUBLE csquared = correlation * correlation;
+	const DOUBLE io_cost = max_IO + csquared * (min_IO - max_IO);
+
+	// Index access CPU: btcostestimate folds per-tuple lookup +
+	// per-clause comparison.  Approximate with cpu_index_tuple_cost +
+	// cpu_operator_cost per tuple.
+	const DOUBLE index_cpu =
+		(cpu_index_tuple_cost + cpu_operator_cost) * tuples_fetched;
+
+	// Btree descent: log2(table_pages) + (tree_height + 1) × 50 ops, both
+	// scaled by cpu_operator_cost.  PG's btcostestimate adds this to both
+	// indexStartupCost and indexTotalCost; we have no startup/total split
+	// so it lands in the total.  tree_height isn't exposed by IMDIndex,
+	// approximate as 1 (covers btrees up to ~1M entries).
+	constexpr DOUBLE kTreeHeight = 1.0;
+	constexpr DOUBLE kPageCpuMultiplier = 50.0;
+	const DOUBLE descent_cost =
+		(std::ceil(std::log2(std::max(T, 1.0))) +
+		 (kTreeHeight + 1.0) * kPageCpuMultiplier) *
+		cpu_operator_cost;
+
+	// Index-side IO: PG btcostestimate charges roughly one random index
+	// page per probe plus sequential reads through the relevant leaf range.
+	// Without index_pages_fetched-style detail we approximate as
+	//   ceil(selectivity * index_pages) random index page reads,
+	// floored at 1 (every probe hits at least the leaf).  Under loop_count
+	// > 1, PG amortizes index page IO across rebinds via Mackert-Lohman;
+	// approximate with the same total/loop_count pro-rating used for heap.
+	DOUBLE index_pages_per_scan = std::ceil(selectivity * index_pages);
+	if (index_pages_per_scan < 1.0)
+	{
+		index_pages_per_scan = 1.0;
+	}
+	DOUBLE index_io;
+	if (loop_count > 1.0)
+	{
+		const DOUBLE index_pages_total = IndexPagesFetched(
+			index_pages_per_scan * loop_count, index_pages, index_pages);
+		index_io = (index_pages_total * random_page_cost) / loop_count;
+	}
+	else
+	{
+		index_io = index_pages_per_scan * random_page_cost;
+	}
+
+	// Heap-side per-tuple CPU: cpu_tuple_cost only (qpquals are usually
+	// attached as a separate Filter operator in ORCA).
+	const DOUBLE heap_cpu = cpu_tuple_cost * tuples_fetched;
+
+	return CCost(loop_count *
+				 (descent_cost + io_cost + index_io + index_cpu + heap_cpu));
 }
 
 CCost
@@ -471,6 +925,46 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 
 		case COperator::EopPhysicalFilter:
 			local = CostFilter(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalIndexScan:
+		case COperator::EopPhysicalIndexOnlyScan:
+		case COperator::EopPhysicalDynamicIndexScan:
+		case COperator::EopPhysicalDynamicIndexOnlyScan:
+			local = CostIndexScan(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalInnerHashJoin:
+		case COperator::EopPhysicalLeftSemiHashJoin:
+		case COperator::EopPhysicalLeftAntiSemiHashJoin:
+		case COperator::EopPhysicalLeftAntiSemiHashJoinNotIn:
+		case COperator::EopPhysicalLeftOuterHashJoin:
+		case COperator::EopPhysicalRightOuterHashJoin:
+		case COperator::EopPhysicalFullHashJoin:
+			local = CostHashJoin(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalInnerNLJoin:
+		case COperator::EopPhysicalLeftSemiNLJoin:
+		case COperator::EopPhysicalLeftAntiSemiNLJoin:
+		case COperator::EopPhysicalLeftAntiSemiNLJoinNotIn:
+		case COperator::EopPhysicalLeftOuterNLJoin:
+		case COperator::EopPhysicalCorrelatedInnerNLJoin:
+		case COperator::EopPhysicalCorrelatedLeftOuterNLJoin:
+		case COperator::EopPhysicalCorrelatedLeftSemiNLJoin:
+		case COperator::EopPhysicalCorrelatedInLeftSemiNLJoin:
+		case COperator::EopPhysicalCorrelatedLeftAntiSemiNLJoin:
+		case COperator::EopPhysicalCorrelatedNotInLeftAntiSemiNLJoin:
+		// IndexNL variants share the same shape: inner IndexScan's cost
+		// already has the outer_rows rebind multiplier baked in, so the
+		// shared CostNLJoin handles them correctly (extra_rescan branch
+		// fires only when inner_rebinds < outer_rows, which is false for
+		// correlated IndexNL).
+		case COperator::EopPhysicalInnerIndexNLJoin:
+		case COperator::EopPhysicalLeftOuterIndexNLJoin:
+		case COperator::EopPhysicalLeftSemiIndexNLJoin:
+		case COperator::EopPhysicalLeftAntiSemiIndexNLJoin:
+			local = CostNLJoin(m_mp, exprhdl, pci);
 			break;
 
 		default:

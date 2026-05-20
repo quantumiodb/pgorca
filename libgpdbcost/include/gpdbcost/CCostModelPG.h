@@ -60,6 +60,18 @@ private:
 	static CCost CostFilter(CMemoryPool *mp, CExpressionHandle &exprhdl,
 							const SCostingInfo *pci);
 
+	static CCost CostNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							const SCostingInfo *pci);
+
+	static CCost CostHashJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							  const SCostingInfo *pci);
+
+	static CCost CostIndexScan(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							   const SCostingInfo *pci);
+
+	static CCost CostIndexNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
+								 const SCostingInfo *pci);
+
 public:
 	CCostModelPG(CMemoryPool *mp, ULONG ulSegments,
 				 CCostModelParamsPG *pcp = nullptr);
