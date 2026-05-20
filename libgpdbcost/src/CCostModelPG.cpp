@@ -868,19 +868,15 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// cpu_index_tuple_cost per tuple.  Mirror that by counting operators
 	// in the scalar index condition child (index 0 for IndexScan ops).
 	//
-	// For a ScalarArrayOp index qual (`x IN (...)`), PG additionally
-	// scales descent / index_io / index_cpu by num_sa_scans (= array
-	// length).  Approximate by tuples_fetched on a unique-key SAOP scan;
-	// for non-unique it slightly under-counts but matches the common
-	// case.
+	// TODO: PG also scales descent / index_io by num_sa_scans (array
+	// length) for `x IN (...)` predicates.  We don't have a reliable
+	// array-length signal here — using tuples_fetched as a proxy works
+	// for unique indexes but heavily over-counts non-unique cases where
+	// each array element matches many rows.  Leave num_sa_scans = 1
+	// until array-length plumbing exists.
 	CExpression *pexprIdxCond = exprhdl.PexprScalarRepChild(0);
 	const ULONG n_index_qual_ops = CountQualOps(pexprIdxCond);
-	DOUBLE num_sa_scans = 1.0;
-	if (nullptr != pexprIdxCond &&
-		COperator::EopScalarArrayCmp == pexprIdxCond->Pop()->Eopid())
-	{
-		num_sa_scans = std::max(1.0, tuples_fetched);
-	}
+	const DOUBLE num_sa_scans = 1.0;
 	const DOUBLE index_cpu =
 		(cpu_index_tuple_cost +
 		 cpu_operator_cost * static_cast<DOUBLE>(n_index_qual_ops)) *
@@ -1184,11 +1180,12 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	// side — heap IO is already in heap_io above.  Prefer real index
 	// relpages from IMDIndex; fall back to row-count approximation.
 	//
-	// Also detect a ScalarArrayOp (IN-list, ANY/ALL) bitmap qual.  PG
-	// btcostestimate charges descent + per-tuple + index IO once per
-	// array element (num_sa_scans), so we mirror that with a multiplier.
+	// SAOP scaling is intentionally not modeled here (see TODO in
+	// CostIndexScan): without array-length plumbing the only signal is
+	// tuples_fetched, which over-counts non-unique-index IN-lists by an
+	// order of magnitude.  Leave num_sa_scans = 1.
 	DOUBLE index_pages_real = 0.0;
-	DOUBLE num_sa_scans = 1.0;
+	const DOUBLE num_sa_scans = 1.0;
 	{
 		CExpression *pexprIndexCond = exprhdl.PexprScalarRepChild(1);
 		if (nullptr != pexprIndexCond &&
@@ -1202,21 +1199,6 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 					->MDId();
 			const IMDIndex *index = mda_b->RetrieveIndex(idx_mdid);
 			index_pages_real = static_cast<DOUBLE>(index->IndexPages());
-
-			// Look inside the bitmap probe's predicate child for a
-			// ScalarArrayCmp.  The array element count is the row
-			// estimate of the bitmap scan output for unique indexes —
-			// approximate with pci->Rows().
-			if (pexprIndexCond->Arity() > 0)
-			{
-				CExpression *pexprPred = (*pexprIndexCond)[0];
-				if (nullptr != pexprPred &&
-					COperator::EopScalarArrayCmp ==
-						pexprPred->Pop()->Eopid())
-				{
-					num_sa_scans = std::max(1.0, tuples_fetched);
-				}
-			}
 		}
 	}
 	constexpr DOUBLE kIndexEntrySize = 24.0;
