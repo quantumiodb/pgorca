@@ -327,6 +327,14 @@ NumAggsFromExprHdl(CExpressionHandle &exprhdl)
 //	aggregate's finalfn, which is 0 for count/sum/min/max and
 //	≈ cpu_operator_cost for avg/stddev/array_agg.  Charging cpu_operator_cost
 //	× nAggs per group overestimates by at most a few μ-cost per group.
+//
+//	SubqueryScan layer: PG inserts a SubqueryScan node between an
+//	aggregate and a pullup-blocking subquery (LIMIT/OFFSET, etc.),
+//	charged as cpu_tuple_cost × input_rows.  EXPLAIN often elides the
+//	node from output but its cost is in the parent's startup_cost.  ORCA
+//	flattens these subqueries, so we add the equivalent here when the
+//	immediate child is a Limit (the only pullup blocker reachable via
+//	an Agg child in our supported set).
 //---------------------------------------------------------------------------
 CCost
 CCostModelPG::CostScalarAgg(CMemoryPool *,	// mp
@@ -343,8 +351,15 @@ CCostModelPG::CostScalarAgg(CMemoryPool *,	// mp
 	CDouble final_per_tuple = CDouble(cpu_operator_cost) * CDouble(nAggs);
 	CDouble emit = CDouble(cpu_tuple_cost);	 // 1 output row
 
+	CDouble subqueryscan = CDouble(0.0);
+	COperator *child = exprhdl.Pop(0);
+	if (nullptr != child && COperator::EopPhysicalLimit == child->Eopid())
+	{
+		subqueryscan = CDouble(cpu_tuple_cost) * input_rows;
+	}
+
 	return CCost(pci->NumRebinds() *
-				 (trans + final_per_tuple + emit).Get());
+				 (trans + final_per_tuple + emit + subqueryscan).Get());
 }
 
 //---------------------------------------------------------------------------
@@ -376,8 +391,15 @@ CCostModelPG::CostStreamAgg(CMemoryPool *,	// mp
 		CDouble(cpu_operator_cost) * CDouble(nAggs) * output_rows;
 	CDouble emit = CDouble(cpu_tuple_cost) * output_rows;
 
+	CDouble subqueryscan = CDouble(0.0);
+	COperator *child = exprhdl.Pop(0);
+	if (nullptr != child && COperator::EopPhysicalLimit == child->Eopid())
+	{
+		subqueryscan = CDouble(cpu_tuple_cost) * input_rows;
+	}
+
 	return CCost(pci->NumRebinds() *
-				 (trans + final_per_tuple + emit).Get());
+				 (trans + final_per_tuple + emit + subqueryscan).Get());
 }
 
 //---------------------------------------------------------------------------
@@ -416,8 +438,16 @@ CCostModelPG::CostHashAgg(CMemoryPool *,  // mp
 	CDouble spill =
 		HashAggSpillCost(input_rows, input_width, output_rows, nAggs);
 
+	CDouble subqueryscan = CDouble(0.0);
+	COperator *child = exprhdl.Pop(0);
+	if (nullptr != child && COperator::EopPhysicalLimit == child->Eopid())
+	{
+		subqueryscan = CDouble(cpu_tuple_cost) * input_rows;
+	}
+
 	return CCost(pci->NumRebinds() *
-				 (trans + final_per_tuple + emit + spill).Get());
+				 (trans + final_per_tuple + emit + spill + subqueryscan)
+					 .Get());
 }
 
 //---------------------------------------------------------------------------
