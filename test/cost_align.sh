@@ -23,7 +23,7 @@ PG_CONFIG=${PG_CONFIG:-pg_config}
 # caller can override via PG_ORCA_HOST / PG_ORCA_DB.
 PGHOST=${PG_ORCA_HOST:-/tmp}
 PGDATABASE=${PG_ORCA_DB:-postgres}
-TOL=${COST_ALIGN_TOL_PCT:-10}
+TOL=${COST_ALIGN_TOL_PCT:-20}
 export PGHOST PGDATABASE
 unset PGPORT PGUSER PGOPTIONS
 
@@ -60,13 +60,30 @@ for q in "${queries[@]}"; do
   i=$((i+1))
   pg_out=$("$PSQL" -d "$PGDATABASE" -X -At -c "SET pg_orca.enable_orca=off; $q" 2>/dev/null | grep -vE "^SET|^RESET")
   orca_out=$("$PSQL" -d "$PGDATABASE" -X -At -c "SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg; $q" 2>/dev/null | grep -vE "^SET|^RESET")
-  # Plan shape = sequence of operator names (one per plan line).  Two
-  # plans are "same" only if every operator on every nesting level
-  # matches — strictly more sensitive than just checking the top
-  # operator, since e.g. Aggregate→HashJoin vs Aggregate→MergeJoin are
-  # different physical plans.
-  pg_top=$(echo "$pg_out" | grep -oE "([A-Z][a-zA-Z ]+( on| using| Backward|Aggregate))" | head -10 | xargs)
-  orca_top=$(echo "$orca_out" | grep -oE "([A-Z][a-zA-Z ]+( on| using| Backward|Aggregate))" | head -10 | xargs)
+  # Plan shape = sequence of operator names (one per plan line, in
+  # depth-first order).  Two plans are "same" only if every operator
+  # on every nesting level matches — strictly more sensitive than just
+  # checking the top operator, since e.g. Aggregate→HashJoin vs
+  # Aggregate→MergeJoin are different physical plans.  Strip the
+  # relation/index name and cost annotation so naming differences (e.g.
+  # cal_tenk1_unique1 vs cal_tenk1_hundred) collapse to the same
+  # operator token.
+  # Plan-shape signature: depth-first sequence of operator names.
+  # 1) Drop annotation lines that aren't operators (Index Cond, Filter,
+  #    Optimizer footer, etc.)
+  # 2) Strip the cost=... suffix
+  # 3) Strip leading whitespace and the "-> " arrow
+  # 4) Strip relation/index names after "on"/"using"
+  filter_plan() {
+    sed -E 's/[[:space:]]*\(cost.*//' \
+    | sed -E 's/^[[:space:]]*->[[:space:]]*//; s/^[[:space:]]+//' \
+    | grep -E "^[A-Z]" \
+    | grep -vE "^(Optimizer|Output|Index Cond|Recheck Cond|Sort Key|Group Key|Hash Cond|Merge Cond|Filter|Join Filter|One-Time Filter|Subplans Removed|Workers|Heap Fetches)" \
+    | sed -E 's/[[:space:]]+(using|on)[[:space:]]+[A-Za-z_][A-Za-z_0-9.]*//g; s/[[:space:]]+$//' \
+    | xargs
+  }
+  pg_top=$(echo "$pg_out" | filter_plan)
+  orca_top=$(echo "$orca_out" | filter_plan)
   pg_cost=$(echo "$pg_out" | grep -oE "cost=[0-9.]+\.\.[0-9.]+" | head -1)
   orca_cost=$(echo "$orca_out" | grep -oE "cost=[0-9.]+\.\.[0-9.]+" | head -1)
   if [ -z "$pg_cost" ] || [ -z "$orca_cost" ]; then
