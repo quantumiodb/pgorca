@@ -2546,9 +2546,21 @@ CTranslatorRelcacheToDXL::TransformStatsToDXLBucketArray(
 	// if histogram has any significant information, then extract it
 	if (has_hist)
 	{
+		// PG's histogram_bounds exclude the values that appear in MCV, so
+		// the histogram covers (num_distinct - num_mcv) distinct values, not
+		// num_distinct.  Pass the histogram-only count so the per-bucket
+		// NDV (num_distinct / num_buckets) is computed against the right
+		// universe.  Without this adjustment, equality on a non-MCV value
+		// over-counts the per-bucket NDV and under-estimates rows by the
+		// ratio (num_distinct - num_mcv) / num_distinct.
+		CDouble hist_distinct = num_distinct;
+		if (has_mcv && num_distinct > CDouble(num_mcv_values))
+		{
+			hist_distinct = num_distinct - CDouble(num_mcv_values);
+		}
 		// histogram from gpdb histogram
 		histogram = TransformHistToOrcaHistogram(mp, md_type, hist_values,
-												 num_hist_values, num_distinct,
+												 num_hist_values, hist_distinct,
 												 hist_freq, hist_collation);
 		if (0 == histogram->GetNumBuckets())
 		{
