@@ -777,9 +777,16 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 		}
 	}
 
-	// index_pages: IMDIndex doesn't expose pages; approximate.  ~200 btree
-	// entries per page is reasonable for narrow keys (int/bigint).
-	const DOUBLE index_pages = std::max(1.0, std::ceil(N / 200.0));
+	// index_pages: IMDIndex doesn't expose pages.  Approximate as
+	//   ceil(N × index_entry_size / BLCKSZ)
+	// with entry_size ≈ 24 (IndexTupleData(8) + ItemIdData(4) +
+	// MAXALIGN(int4 key)(8) + slack).  For 10k narrow-key rows this
+	// returns 30, matching pg_class.relpages of a typical btree.  Wider
+	// keys still under-estimate; future work: thread real index relpages
+	// through IMDIndex.
+	constexpr DOUBLE kIndexEntrySize = 24.0;
+	const DOUBLE index_pages =
+		std::max(1.0, std::ceil(N * kIndexEntrySize / 8192.0));
 
 	// Mackert-Lohman.  PG handles loop_count > 1 by computing pages across
 	// all loops then pro-rating per scan; this models cache reuse.
@@ -896,6 +903,18 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// attached as a separate Filter operator in ORCA).
 	const DOUBLE heap_cpu = cpu_tuple_cost * tuples_fetched;
 
+	// NOTE: loop_count here is pci->NumRebinds(), which ORCA always sets
+	// to 1 for an IndexScan even when it is the inner of a correlated NL
+	// (outer cardinality is not threaded into the inner's cost context).
+	// PG, by contrast, re-invokes cost_index with loop_count=outer_rows
+	// inside create_index_path, getting Mackert-Lohman to amortize page
+	// fetches across all probes — typically ~10 % cheaper per scan than
+	// the single-shot cost we compute here.  Plan-choice impact is small
+	// since both PG and ORCA still prefer IndexNL over alternative joins
+	// when the index is selective, but the displayed cost shows a
+	// constant 5-10 % overestimate compared to PG EXPLAIN.  Fixing this
+	// requires either threading outer_rows through the NL context or a
+	// post-pass re-cost in CostNLJoin; neither is in scope here.
 	return CCost(loop_count *
 				 (descent_cost + io_cost + index_io + index_cpu + heap_cpu));
 }
@@ -1053,7 +1072,9 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	// Index access cost (PG's compute_bitmap_pages → cost_bitmap_tree_node
 	// → indextotalcost), modelled like CostIndexScan but only the index
 	// side — heap IO is already in heap_io above.
-	const DOUBLE index_pages = std::max(1.0, std::ceil(N / 200.0));
+	constexpr DOUBLE kIndexEntrySize = 24.0;
+	const DOUBLE index_pages =
+		std::max(1.0, std::ceil(N * kIndexEntrySize / 8192.0));
 	constexpr DOUBLE kTreeHeight = 1.0;
 	constexpr DOUBLE kPageCpuMultiplier = 50.0;
 	const DOUBLE descent =
