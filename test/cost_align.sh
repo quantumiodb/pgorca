@@ -60,8 +60,13 @@ for q in "${queries[@]}"; do
   i=$((i+1))
   pg_out=$("$PSQL" -d "$PGDATABASE" -X -At -c "SET pg_orca.enable_orca=off; $q" 2>/dev/null | grep -vE "^SET|^RESET")
   orca_out=$("$PSQL" -d "$PGDATABASE" -X -At -c "SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg; $q" 2>/dev/null | grep -vE "^SET|^RESET")
-  pg_top=$(echo "$pg_out" | grep -oE "^[A-Z][a-zA-Z ]+" | head -1 | xargs)
-  orca_top=$(echo "$orca_out" | grep -oE "^[A-Z][a-zA-Z ]+" | head -1 | xargs)
+  # Plan shape = sequence of operator names (one per plan line).  Two
+  # plans are "same" only if every operator on every nesting level
+  # matches — strictly more sensitive than just checking the top
+  # operator, since e.g. Aggregate→HashJoin vs Aggregate→MergeJoin are
+  # different physical plans.
+  pg_top=$(echo "$pg_out" | grep -oE "([A-Z][a-zA-Z ]+( on| using| Backward|Aggregate))" | head -10 | xargs)
+  orca_top=$(echo "$orca_out" | grep -oE "([A-Z][a-zA-Z ]+( on| using| Backward|Aggregate))" | head -10 | xargs)
   pg_cost=$(echo "$pg_out" | grep -oE "cost=[0-9.]+\.\.[0-9.]+" | head -1)
   orca_cost=$(echo "$orca_out" | grep -oE "cost=[0-9.]+\.\.[0-9.]+" | head -1)
   if [ -z "$pg_cost" ] || [ -z "$orca_cost" ]; then

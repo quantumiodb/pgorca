@@ -593,11 +593,34 @@ CCostModelPG::CostHashJoin(CMemoryPool *,  // mp
 	// At least 1 hash clause (else this wouldn't be a hash join).
 	const DOUBLE nclauses = std::max(1.0, static_cast<DOUBLE>(n_qual_ops));
 
+	// hashjointuples ≈ PG approx_tuple_count, the # rows that pass the
+	// hash quals under JOIN_INNER semantics.  For inner joins this
+	// matches output_rows; for outer joins output_rows includes
+	// NULL-padded unmatched rows that don't actually evaluate the join
+	// qual, so cap at min(outer_rows, inner_rows).
+	const COperator::EOperatorId op_id = exprhdl.Pop()->Eopid();
+	const BOOL is_outer_join =
+		(COperator::EopPhysicalLeftOuterHashJoin == op_id ||
+		 COperator::EopPhysicalRightOuterHashJoin == op_id ||
+		 COperator::EopPhysicalFullHashJoin == op_id);
+	const DOUBLE hashjointuples =
+		is_outer_join ? std::min(output_rows, std::min(outer_rows, inner_rows))
+					  : output_rows;
+
 	const DOUBLE build_cpu =
 		(cpu_operator_cost * nclauses + cpu_tuple_cost) * inner_rows;
 	const DOUBLE probe_cpu = cpu_operator_cost * nclauses * outer_rows;
-	const DOUBLE qual_cpu =
-		(cpu_tuple_cost + cpu_operator_cost * nclauses) * output_rows;
+	// PG halves the hash-qual eval (line 4496–4497): only buckets that
+	// hash-match actually run the qual.  Use 0.5 × outer × inner ×
+	// (1 / virtualbuckets ≈ 1 / inner_rows) — collapses to 0.5 ×
+	// outer_rows when inner is unique.  qual_cpu is the residual emit
+	// charge (cpu_tuple_cost per surviving tuple).
+	const DOUBLE bucket_size_factor = (inner_rows > 0.0) ? 1.0 : 1.0;
+	const DOUBLE hash_qual_cpu =
+		cpu_operator_cost * nclauses * outer_rows *
+		std::min(1.0, inner_rows * bucket_size_factor / std::max(1.0, inner_rows)) *
+		0.5;
+	const DOUBLE qual_cpu = cpu_tuple_cost * hashjointuples + hash_qual_cpu;
 
 	// Spill IO: only when the hash table doesn't fit in working memory.
 	DOUBLE spill_io = 0.0;
