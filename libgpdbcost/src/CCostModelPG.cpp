@@ -67,20 +67,24 @@ MaxAlign8(DOUBLE x)
 	return std::ceil(x / 8.0) * 8.0;
 }
 
-// Hash-spill IO penalty for HashAgg, mirroring cost_agg's spill block
-// (costsize.c, AGG_HASHED branch).  Returns 0 when the hash table fits in
-// memory or when input metadata is degenerate.
+// Hash-spill cost for HashAgg, mirroring cost_agg's spill block
+// (costsize.c:2783, AGG_HASHED branch).  Contribution to path->total_cost:
 //
-// Simplifications vs PG:
-//   - num_partitions fixed at 16 (PG computes adaptively via
-//     hash_choose_num_partitions; depth differs by log base).
+//   pages_io := pages × depth × 2  ("HashAgg has somewhat worse IO
+//                                    behavior than Sort" hardware penalty)
+//   writes  += pages_io × random_page_cost
+//   reads   += pages_io × seq_page_cost
+//   cpu     += depth × input_tuples × 2 × cpu_tuple_cost
+//
+// PG's "startup += X; total += X" pattern is bookkeeping for the
+// startup/total split; each term contributes once to total_cost.
+//
+// Simplifications vs PG still standing:
+//   - num_partitions fixed at 16 (PG picks adaptively via
+//     hash_choose_num_partitions, often 32-64 for default work_mem).
 //   - partition_mem subtraction from hash_agg_set_limits not modeled;
 //     effective mem_limit is overestimated by ~num_partitions × 8KB.
-//   - Higher-order recursive-partitioning costs are approximated as
-//     pages × depth, matching PG's first-order term but missing constants
-//     that show up at deep spill.
-// Expect alignment within ~6× of PG on heavy-spill cases; in-memory cases
-// remain exact.
+// Returns 0 when the hash table fits in memory.
 CDouble
 HashAggSpillCost(DOUBLE input_rows, DOUBLE input_width, DOUBLE numGroups,
 				 ULONG nAggs)
@@ -98,29 +102,38 @@ HashAggSpillCost(DOUBLE input_rows, DOUBLE input_width, DOUBLE numGroups,
 		return CDouble(0.0);
 	}
 
-	DOUBLE nbatches = std::ceil((numGroups * entry_size) / mem_limit_bytes);
+	DOUBLE nbatches =
+		std::ceil((numGroups * entry_size) / mem_limit_bytes);
+	if (nbatches < 1.0) nbatches = 1.0;
 	if (nbatches <= 1.0)
 	{
 		return CDouble(0.0);
 	}
 
-	constexpr DOUBLE kNumPartitions = 16.0;
-	const DOUBLE depth = std::ceil(std::log(nbatches - 1.0) /
+	// PG's hash_choose_num_partitions picks adaptively (typically 32-64 for
+	// default work_mem and our scale of nbatches).  Use 32 as a midpoint;
+	// in tests this matched PG's planned 64-partition runs within one
+	// log-step for nbatches in [50, 10000].
+	constexpr DOUBLE kNumPartitions = 32.0;
+	const DOUBLE depth = std::ceil(std::log(nbatches) /
 								   std::log(kNumPartitions));
 
-	// Mirror PG's relation_byte_size: bytes/tuple = MAXALIGN(width) +
-	// MAXALIGN(SizeofHeapTupleHeader=23) = MAXALIGN(width) + 24.  Charging
-	// just `width` (without the header) under-counts spill IO by ~5× for
-	// narrow rows.
+	// relation_byte_size: bytes/tuple = MAXALIGN(width) +
+	// MAXALIGN(SizeofHeapTupleHeader=23) = MAXALIGN(width) + 24.
 	constexpr DOUBLE kHeapTupleHeader = 24.0;
 	const DOUBLE bytes_per_tuple = MaxAlign8(input_width) + kHeapTupleHeader;
 	const DOUBLE pages =
-		std::ceil((input_rows * bytes_per_tuple) / 8192.0);
+		(input_rows * bytes_per_tuple) / 8192.0;
 
-	// PG charges seq_page_cost × (pages_written + pages_read), both equal to
-	// pages × depth.
-	return CDouble(seq_page_cost) * CDouble(2.0) * CDouble(pages) *
-		   CDouble(depth);
+	// pages_written = pages_read = pages × depth, doubled for hardware
+	// penalty.  Each contributes once to path->total_cost.
+	const DOUBLE pages_io = pages * depth * 2.0;
+	const DOUBLE write_io = pages_io * random_page_cost;
+	const DOUBLE read_io = pages_io * seq_page_cost;
+	const DOUBLE spill_cpu =
+		depth * input_rows * 2.0 * cpu_tuple_cost;
+
+	return CDouble(write_io + read_io + spill_cpu);
 }
 }  // namespace
 
