@@ -68,6 +68,9 @@ public:
 	// index type
 	virtual EmdindexType IndexType() const = 0;
 
+	// pg_class.relpages for the index relation (0 if unknown)
+	virtual ULONG IndexPages() const = 0;
+
 	// number of keys
 	virtual ULONG Keys() const = 0;
 

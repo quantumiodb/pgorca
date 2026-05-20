@@ -37,7 +37,8 @@ CMDIndexGPDB::CMDIndexGPDB(
 	IMDId *mdid_item_type, ULongPtrArray *index_key_cols_array,
 	ULongPtrArray *included_cols_array, ULongPtrArray *returnable_cols_array,
 	IMdIdArray *mdid_opfamilies_array, IMdIdArray *child_index_oids,
-	ULongPtrArray *sort_direction, ULongPtrArray *nulls_direction)
+	ULongPtrArray *sort_direction, ULongPtrArray *nulls_direction,
+	ULONG index_pages)
 
 	: m_mp(mp),
 	  m_mdid(mdid),
@@ -53,7 +54,8 @@ CMDIndexGPDB::CMDIndexGPDB(
 	  m_mdid_opfamilies_array(mdid_opfamilies_array),
 	  m_child_index_oids(child_index_oids),
 	  m_sort_direction(sort_direction),
-	  m_nulls_direction(nulls_direction)
+	  m_nulls_direction(nulls_direction),
+	  m_index_pages(index_pages)
 {
 	GPOS_ASSERT(mdid->IsValid());
 	GPOS_ASSERT(IMDIndex::EmdindSentinel > index_type);
@@ -383,6 +385,9 @@ CMDIndexGPDB::Serialize(CXMLSerializer *xml_serializer) const
 								 m_mdname->GetMDName());
 	xml_serializer->AddAttribute(
 		CDXLTokens::GetDXLTokenStr(EdxltokenIndexClustered), m_clustered);
+	xml_serializer->AddAttribute(
+		CDXLTokens::GetDXLTokenStr(EdxltokenIndexPages),
+		static_cast<ULONG>(m_index_pages));
 
 	xml_serializer->AddAttribute(
 		CDXLTokens::GetDXLTokenStr(EdxltokenIndexAmCanOrder), m_amcanorder);

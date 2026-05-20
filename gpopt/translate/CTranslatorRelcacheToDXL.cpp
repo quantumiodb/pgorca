@@ -1120,11 +1120,14 @@ CTranslatorRelcacheToDXL::RetrieveIndex(CMemoryPool *mp,
 		child_index_oids = GPOS_NEW(mp) IMdIdArray(mp);
 	}
 
+	const ULONG index_relpages =
+		static_cast<ULONG>(index_rel->rd_rel->relpages);
+
 	CMDIndexGPDB *index = GPOS_NEW(mp) CMDIndexGPDB(
 		mp, mdid_index, mdname, index_clustered, index_partitioned,
 		index_amcanorder, index_type, mdid_item_type, index_key_cols_array,
 		included_cols, returnable_cols, op_families_mdids, child_index_oids,
-		sort_direction, nulls_direction);
+		sort_direction, nulls_direction, index_relpages);
 
 	GPOS_DELETE_ARRAY(attno_mapping);
 	return index;

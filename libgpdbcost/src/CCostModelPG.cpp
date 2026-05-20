@@ -25,6 +25,7 @@
 #include "gpopt/operators/CPhysicalIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalScan.h"
+#include "gpopt/operators/CScalarBitmapIndexProbe.h"
 #include "naucrates/md/CMDIdColStats.h"
 #include "naucrates/md/CMDIdGPDB.h"
 #include "naucrates/md/IMDColStats.h"
@@ -741,7 +742,9 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
 
 	// Correlation comes from pg_statistic of the leading index key column.
+	// index_pages comes from pg_class.relpages of the index relation.
 	DOUBLE correlation = 0.0;
+	DOUBLE index_pages_from_md = 0.0;
 	IMDId *index_mdid = nullptr;
 	switch (op_id)
 	{
@@ -775,18 +778,18 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 			correlation = col_stats->Correlation().Get();
 			colstats_mdid->Release();
 		}
+		index_pages_from_md = static_cast<DOUBLE>(index->IndexPages());
 	}
 
-	// index_pages: IMDIndex doesn't expose pages.  Approximate as
-	//   ceil(N × index_entry_size / BLCKSZ)
-	// with entry_size ≈ 24 (IndexTupleData(8) + ItemIdData(4) +
-	// MAXALIGN(int4 key)(8) + slack).  For 10k narrow-key rows this
-	// returns 30, matching pg_class.relpages of a typical btree.  Wider
-	// keys still under-estimate; future work: thread real index relpages
-	// through IMDIndex.
+	// Prefer the real index_pages from IMDIndex; fall back to a row-count
+	// approximation when the metadata didn't carry it (older DXL, system
+	// indexes without relpages set).  The fallback formula assumes
+	// narrow-key btrees and over-estimates for deduped indexes.
 	constexpr DOUBLE kIndexEntrySize = 24.0;
 	const DOUBLE index_pages =
-		std::max(1.0, std::ceil(N * kIndexEntrySize / 8192.0));
+		(index_pages_from_md > 0.0)
+			? index_pages_from_md
+			: std::max(1.0, std::ceil(N * kIndexEntrySize / 8192.0));
 
 	// Mackert-Lohman.  PG handles loop_count > 1 by computing pages across
 	// all loops then pro-rating per scan; this models cache reuse.
@@ -857,11 +860,19 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	const DOUBLE csquared = correlation * correlation;
 	const DOUBLE io_cost = max_IO + csquared * (min_IO - max_IO);
 
-	// Index access CPU: btcostestimate folds per-tuple lookup +
-	// per-clause comparison.  Approximate with cpu_index_tuple_cost +
-	// cpu_operator_cost per tuple.
+	// Index access CPU: btcostestimate (selfuncs.c:7250) charges
+	//   numIndexTuples × (cpu_index_tuple_cost + qual_op_cost)
+	// where qual_op_cost = cpu_operator_cost × list_length(indexQuals).
+	// For an IndexScan without a WHERE clause on the indexed column
+	// (e.g. pure ORDER BY), indexQuals is empty, so PG charges only
+	// cpu_index_tuple_cost per tuple.  Mirror that by counting operators
+	// in the scalar index condition child (index 0 for IndexScan ops).
+	const ULONG n_index_qual_ops =
+		CountQualOps(exprhdl.PexprScalarRepChild(0));
 	const DOUBLE index_cpu =
-		(cpu_index_tuple_cost + cpu_operator_cost) * tuples_fetched;
+		(cpu_index_tuple_cost +
+		 cpu_operator_cost * static_cast<DOUBLE>(n_index_qual_ops)) *
+		tuples_fetched;
 
 	// Btree descent: log2(table_pages) + (tree_height + 1) × 50 ops, both
 	// scaled by cpu_operator_cost.  PG's btcostestimate adds this to both
@@ -1151,10 +1162,29 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 
 	// Index access cost (PG's compute_bitmap_pages → cost_bitmap_tree_node
 	// → indextotalcost), modelled like CostIndexScan but only the index
-	// side — heap IO is already in heap_io above.
+	// side — heap IO is already in heap_io above.  Prefer real index
+	// relpages from IMDIndex; fall back to row-count approximation.
+	DOUBLE index_pages_real = 0.0;
+	{
+		CExpression *pexprIndexCond = exprhdl.PexprScalarRepChild(1);
+		if (nullptr != pexprIndexCond &&
+			COperator::EopScalarBitmapIndexProbe ==
+				pexprIndexCond->Pop()->Eopid())
+		{
+			CMDAccessor *mda_b = COptCtxt::PoctxtFromTLS()->Pmda();
+			IMDId *idx_mdid =
+				CScalarBitmapIndexProbe::PopConvert(pexprIndexCond->Pop())
+					->Pindexdesc()
+					->MDId();
+			const IMDIndex *index = mda_b->RetrieveIndex(idx_mdid);
+			index_pages_real = static_cast<DOUBLE>(index->IndexPages());
+		}
+	}
 	constexpr DOUBLE kIndexEntrySize = 24.0;
 	const DOUBLE index_pages =
-		std::max(1.0, std::ceil(N * kIndexEntrySize / 8192.0));
+		(index_pages_real > 0.0)
+			? index_pages_real
+			: std::max(1.0, std::ceil(N * kIndexEntrySize / 8192.0));
 	constexpr DOUBLE kTreeHeight = 1.0;
 	constexpr DOUBLE kPageCpuMultiplier = 50.0;
 	const DOUBLE descent =

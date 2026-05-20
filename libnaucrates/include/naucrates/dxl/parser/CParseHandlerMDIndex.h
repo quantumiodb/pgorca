@@ -70,6 +70,9 @@ private:
 	// index key's NULLS direction
 	ULongPtrArray *m_nulls_direction;
 
+	// pg_class.relpages for the index (0 if absent in DXL)
+	ULONG m_index_pages;
+
 	// child index oids parse handler
 	CParseHandlerBase *m_child_indexes_parse_handler;
 
