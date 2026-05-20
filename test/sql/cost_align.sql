@@ -125,3 +125,39 @@ EXPLAIN SELECT * FROM cal_tenk1 ORDER BY string4 DESC LIMIT 100;
 EXPLAIN SELECT * FROM cal_tenk1 ORDER BY string4 DESC;
 EXPLAIN SELECT * FROM (SELECT * FROM cal_tenk1 ORDER BY unique1) s LIMIT 50;
 EXPLAIN SELECT count(*) FROM (SELECT * FROM cal_tenk1 LIMIT 100) s;
+
+-- ---------------------------------------------------------------------
+-- Join-focused cases, adapted from PG regress join.sql, join_hash.sql,
+-- subselect.sql.  Mix of join types, multi-way joins, joins with
+-- filters/aggregates, anti/semi joins, cross joins, and LATERAL.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique1 JOIN cal_onek c ON a.unique2 = c.unique1;
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_tenk1 b ON a.unique1 = b.unique2 JOIN cal_tenk1 c ON b.unique1 = c.unique2;
+EXPLAIN SELECT count(*) FROM cal_tenk1 a JOIN cal_onek b USING (unique1) JOIN cal_onek c USING (unique1);
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_onek b ON a.hundred = b.hundred WHERE a.ten < 5 AND b.hundred < 10;
+EXPLAIN SELECT * FROM cal_onek a CROSS JOIN cal_onek b WHERE a.unique1 = 1 AND b.unique1 < 10;
+EXPLAIN SELECT count(*) FROM cal_onek a, cal_onek b WHERE a.unique1 < 5;
+EXPLAIN SELECT * FROM cal_tenk1 a FULL JOIN cal_onek b ON a.unique1 = b.unique2;
+EXPLAIN SELECT * FROM cal_onek a RIGHT JOIN cal_tenk1 b ON a.unique1 = b.unique2;
+EXPLAIN SELECT * FROM cal_tenk1 a WHERE NOT EXISTS (SELECT 1 FROM cal_onek b WHERE b.unique1 = a.unique1);
+EXPLAIN SELECT * FROM cal_tenk1 a WHERE a.unique1 NOT IN (SELECT unique1 FROM cal_onek);
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_tenk1 b ON a.hundred = b.hundred AND a.ten = b.ten;
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2 WHERE a.hundred < 5;
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2 WHERE b.hundred < 5;
+EXPLAIN SELECT a.hundred, count(*) FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2 GROUP BY a.hundred;
+EXPLAIN SELECT a.hundred, max(b.unique1) FROM cal_tenk1 a JOIN cal_onek b ON a.hundred = b.hundred GROUP BY a.hundred;
+EXPLAIN SELECT a.unique1 FROM cal_tenk1 a JOIN cal_tenk1 b ON a.unique1 < b.unique1 AND a.hundred = b.hundred WHERE a.unique1 < 100;
+EXPLAIN SELECT * FROM cal_tenk1 fact JOIN cal_onek d1 ON fact.unique1 = d1.unique1 JOIN cal_onek d2 ON fact.unique2 = d2.unique1 WHERE d1.hundred = 5;
+EXPLAIN SELECT b.* FROM cal_tenk1 a JOIN cal_tenk1 b ON a.unique1 = b.unique2 WHERE a.unique1 < 50;
+EXPLAIN SELECT count(*) FROM (SELECT unique1 FROM cal_tenk1 WHERE hundred = 5) s JOIN cal_onek b ON s.unique1 = b.unique2;
+EXPLAIN SELECT a.unique1, l.cnt FROM cal_onek a, LATERAL (SELECT count(*) AS cnt FROM cal_tenk1 b WHERE b.unique1 < a.unique1) l WHERE a.unique1 < 10;
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_onek b ON a.hundred = b.hundred AND a.ten < b.ten;
+EXPLAIN SELECT count(*) FROM cal_tenk1 a JOIN cal_onek b ON a.thousand = b.unique1;
+EXPLAIN SELECT * FROM cal_onek a LEFT JOIN cal_tenk1 b ON a.unique1 = b.unique1 WHERE b.unique1 IS NULL;
+EXPLAIN SELECT a.unique1, b.unique1 FROM cal_tenk1 a, cal_tenk1 b WHERE a.unique1 = b.unique2 AND a.hundred = 5;
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique1 ORDER BY a.hundred LIMIT 20;
+EXPLAIN SELECT a.hundred FROM cal_tenk1 a JOIN cal_onek b ON a.hundred = b.hundred GROUP BY a.hundred HAVING count(*) > 5;
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2 JOIN cal_onek c ON b.hundred = c.hundred;
+EXPLAIN SELECT DISTINCT a.hundred FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2;
+EXPLAIN SELECT count(*) FROM cal_tenk1 a WHERE a.unique1 IN (SELECT unique2 FROM cal_onek WHERE unique1 < 100);
+EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_tenk1 b ON a.unique2 = b.unique2 WHERE a.unique1 = 5;
