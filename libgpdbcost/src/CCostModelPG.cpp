@@ -954,9 +954,67 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 	if (ratio > 1.0) ratio = 1.0;
 	if (ratio < 0.0) ratio = 0.0;
 
-	// Adjustment to cancel the unused portion of subpath cost already
-	// charged by CostChildren.
-	return CCost(-(1.0 - ratio) * subpath_total);
+	// PG's adjust_limit_rows_costs:
+	//   total = startup + (subpath_total − startup) × ratio
+	// We don't have startup/total split exposed by ORCA, so we estimate
+	// the "run" portion of the subpath cost (= total − startup) using
+	// per-operator knowledge:
+	//   Sort               : run ≈ cpu_operator_cost × input_rows
+	//                        (PG cost_tuplesort's `run_cost` term)
+	//   HashAgg            : run ≈ cpu_tuple_cost × output_rows
+	//                        (PG cost_agg AGG_HASHED emit term)
+	//   HashJoin           : run ≈ cpu_tuple_cost × output_rows
+	//                        (probe + emit dominate)
+	//   streaming (Scan/NL/UnionAll/ComputeScalar/...): run ≈ total
+	//
+	// Then local = -(1 − ratio) × run, mirroring PG's pro-ration of just
+	// the run portion.
+	COperator *child_op = exprhdl.Pop(0);
+	DOUBLE run = subpath_total;	 // default: streaming
+	DOUBLE sort_topk_correction = 0.0;
+	if (nullptr != child_op)
+	{
+		const COperator::EOperatorId op = child_op->Eopid();
+		if (COperator::EopPhysicalSort == op)
+		{
+			run = cpu_operator_cost * input_rows;
+			// PG cost_tuplesort switches to a bounded heap-sort when
+			//   tuples > 2 × output_tuples
+			// using LOG2(2 × output_tuples) instead of LOG2(tuples) for
+			// the comparison count.  ORCA's CostSort doesn't know about
+			// the LIMIT above it, so it always returns the full-sort
+			// startup; subtract the savings here.
+			if (input_rows > 2.0 * output_rows && output_rows >= 1.0)
+			{
+				const DOUBLE comparison_cost = 2.0 * cpu_operator_cost;
+				const DOUBLE log_old =
+					std::log2(std::max(input_rows, 2.0));
+				const DOUBLE log_new =
+					std::log2(std::max(2.0 * output_rows, 2.0));
+				sort_topk_correction =
+					comparison_cost * input_rows *
+					std::max(0.0, log_old - log_new);
+			}
+		}
+		else if (COperator::EopPhysicalHashAgg == op ||
+				 COperator::EopPhysicalHashAggDeduplicate == op)
+		{
+			run = cpu_tuple_cost * input_rows;
+		}
+		else if (COperator::EopPhysicalInnerHashJoin == op ||
+				 COperator::EopPhysicalLeftSemiHashJoin == op ||
+				 COperator::EopPhysicalLeftAntiSemiHashJoin == op ||
+				 COperator::EopPhysicalLeftAntiSemiHashJoinNotIn == op ||
+				 COperator::EopPhysicalLeftOuterHashJoin == op ||
+				 COperator::EopPhysicalRightOuterHashJoin == op ||
+				 COperator::EopPhysicalFullHashJoin == op)
+		{
+			run = cpu_tuple_cost * input_rows;
+		}
+	}
+	if (run > subpath_total) run = subpath_total;
+
+	return CCost(-sort_topk_correction - (1.0 - ratio) * run);
 }
 
 //---------------------------------------------------------------------------
