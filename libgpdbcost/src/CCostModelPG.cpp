@@ -22,6 +22,7 @@
 #include "gpopt/mdcache/CMDAccessor.h"
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CPhysicalAgg.h"
+#include "gpopt/operators/CPhysicalHashJoin.h"
 #include "gpopt/operators/CPhysicalIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalScan.h"
@@ -659,39 +660,124 @@ CCostModelPG::CostHashJoin(CMemoryPool *,  // mp
 	const DOUBLE inner_width = pci->GetWidth()[1];
 	const DOUBLE output_rows = pci->Rows();
 
-	const ULONG n_qual_ops =
-		CountQualOps(exprhdl.PexprScalarRepChild(2));
-	// At least 1 hash clause (else this wouldn't be a hash join).
-	const DOUBLE nclauses = std::max(1.0, static_cast<DOUBLE>(n_qual_ops));
-
-	// hashjointuples ≈ PG approx_tuple_count, the # rows that pass the
-	// hash quals under JOIN_INNER semantics.  For inner joins this
-	// matches output_rows; for outer joins output_rows includes
-	// NULL-padded unmatched rows that don't actually evaluate the join
-	// qual, so cap at min(outer_rows, inner_rows).
 	const COperator::EOperatorId op_id = exprhdl.Pop()->Eopid();
 	const BOOL is_outer_join =
 		(COperator::EopPhysicalLeftOuterHashJoin == op_id ||
 		 COperator::EopPhysicalRightOuterHashJoin == op_id ||
 		 COperator::EopPhysicalFullHashJoin == op_id);
-	const DOUBLE hashjointuples =
-		is_outer_join ? std::min(output_rows, std::min(outer_rows, inner_rows))
-					  : output_rows;
+
+	// PG's final_cost_hashjoin (costsize.c:4274) separates hash quals
+	// from qpquals (non-hash join predicates):
+	//   build_cpu       = (cpu_op × n_hash + cpu_tuple) × inner
+	//   probe_cpu       = cpu_op × n_hash × outer
+	//   hash_qual_eval  = cpu_op × n_hash × outer × (inner × innerbucketsize) × 0.5
+	//   hashjointuples  = approx_tuple_count under JOIN_INNER w/ hashclauses only
+	//                   ≈ outer × inner × innerbucketsize  (= matches after hash
+	//                     qual but before qpqual filter)
+	//   qpqual_eval     = cpu_op × n_qpqual × hashjointuples
+	//   emit            = cpu_tuple × hashjointuples
+	//
+	// ORCA's CountQualOps over the join scalar tree counts ALL operator
+	// nodes (eq + non-eq).  But hash quals are exactly the operator's
+	// declared inner/outer key list (CPhysicalHashJoin); anything in the
+	// join predicate beyond those is a qpqual, evaluated per match before
+	// the qpqual filter — not per output row.  Without this split we
+	// (a) count both terms as hash quals (over-billing build/probe by
+	// n_qpqual ops), and (b) miss the per-match qpqual + cpu_tuple
+	// charge (under-billing by ~cpu_per_tuple × matches), which on
+	// "hundred=hundred AND ten<ten" produces a -40% cost gap.
+	CPhysicalHashJoin *phj = CPhysicalHashJoin::PopConvert(exprhdl.Pop());
+	const ULONG n_hash_clauses_ul =
+		(nullptr != phj && nullptr != phj->PdrgpexprInnerKeys())
+			? phj->PdrgpexprInnerKeys()->Size()
+			: 0;
+	const DOUBLE n_hash =
+		std::max(1.0, static_cast<DOUBLE>(n_hash_clauses_ul));
+	const DOUBLE n_total =
+		static_cast<DOUBLE>(CountQualOps(exprhdl.PexprScalarRepChild(2)));
+	const DOUBLE n_qpqual = std::max(0.0, n_total - n_hash);
+
+	// Two distinct quantities from the inner hash-key histograms:
+	//   innerbucketsize = PG's "smallest bucketsize across hash clauses"
+	//     = max(1/virtualbuckets, mcvfreq) for the most-skewed key
+	//     ≈ 1/max(NDV) across keys.  Drives the per-bucket qual-eval term.
+	//   hash_selectivity = JOINT selectivity of all hashclauses under
+	//     JOIN_INNER ≈ product(1/NDV_i) (independence).  Drives the
+	//     post-hash match count (PG's approx_tuple_count on hashclauses).
+	// Conflating these breaks 2+ hashclause joins: single key sel gives
+	// 1/100 (the smaller NDV) but joint sel is 1/100 × 1/10 = 1/1000,
+	// inflating ORCA's per-tuple emit by 10× for `hundred=AND ten=`.
+	DOUBLE innerbucketsize = 1.0;
+	DOUBLE hash_selectivity = 1.0;
+	if (nullptr != phj && nullptr != pci->Pcstats(1))
+	{
+		CStatistics *inner_stats = CStatistics::CastStats(
+			pci->Pcstats(1)->Pstats());
+		const CExpressionArray *innerKeys = phj->PdrgpexprInnerKeys();
+		if (nullptr != inner_stats && nullptr != innerKeys)
+		{
+			DOUBLE max_ndv = 1.0;
+			DOUBLE prod_inv_ndv = 1.0;
+			BOOL any_key = false;
+			for (ULONG i = 0; i < innerKeys->Size(); i++)
+			{
+				CExpression *key = (*innerKeys)[i];
+				if (nullptr == key || COperator::EopScalarIdent !=
+										  key->Pop()->Eopid())
+					continue;
+				const CColRef *col =
+					CScalarIdent::PopConvert(key->Pop())->Pcr();
+				const CHistogram *hist =
+					inner_stats->GetHistogram(col->Id());
+				if (nullptr == hist) continue;
+				const DOUBLE ndv = hist->GetNumDistinct().Get();
+				if (ndv <= 1.0) continue;
+				if (ndv > max_ndv) max_ndv = ndv;
+				prod_inv_ndv *= (1.0 / ndv);
+				any_key = true;
+			}
+			if (any_key)
+			{
+				innerbucketsize = 1.0 / max_ndv;
+				if (inner_rows > 0.0 &&
+					innerbucketsize < 1.0 / inner_rows)
+				{
+					innerbucketsize = 1.0 / inner_rows;
+				}
+				hash_selectivity = prod_inv_ndv;
+				if (hash_selectivity > 1.0) hash_selectivity = 1.0;
+				if (hash_selectivity < 1.0 / (outer_rows * inner_rows + 1.0))
+				{
+					hash_selectivity = 1.0 / (outer_rows * inner_rows + 1.0);
+				}
+			}
+		}
+	}
+
+	// Matches after hash qual but before qpqual filter.  For an inner
+	// join with no qpqual, equals output_rows.  For mixed quals, this
+	// is the divisor for qpqual / cpu_tuple billing.
+	const DOUBLE hashjointuples_internal = std::min(
+		outer_rows * inner_rows,
+		std::max(1.0, outer_rows * inner_rows * hash_selectivity));
+	// For outer joins the executor still scans buckets per outer row but
+	// emits NULL-padded rows for non-matches; bill emit/qpqual against
+	// the larger of internal-matches and final output_rows.
+	const DOUBLE billed_tuples = is_outer_join
+									 ? std::min(output_rows,
+												std::min(outer_rows, inner_rows))
+									 : hashjointuples_internal;
 
 	const DOUBLE build_cpu =
-		(cpu_operator_cost * nclauses + cpu_tuple_cost) * inner_rows;
-	const DOUBLE probe_cpu = cpu_operator_cost * nclauses * outer_rows;
-	// PG halves the hash-qual eval (line 4496–4497): only buckets that
-	// hash-match actually run the qual.  Use 0.5 × outer × inner ×
-	// (1 / virtualbuckets ≈ 1 / inner_rows) — collapses to 0.5 ×
-	// outer_rows when inner is unique.  qual_cpu is the residual emit
-	// charge (cpu_tuple_cost per surviving tuple).
-	const DOUBLE bucket_size_factor = (inner_rows > 0.0) ? 1.0 : 1.0;
-	const DOUBLE hash_qual_cpu =
-		cpu_operator_cost * nclauses * outer_rows *
-		std::min(1.0, inner_rows * bucket_size_factor / std::max(1.0, inner_rows)) *
-		0.5;
-	const DOUBLE qual_cpu = cpu_tuple_cost * hashjointuples + hash_qual_cpu;
+		(cpu_operator_cost * n_hash + cpu_tuple_cost) * inner_rows;
+	const DOUBLE probe_cpu = cpu_operator_cost * n_hash * outer_rows;
+	const DOUBLE hash_qual_cpu = cpu_operator_cost * n_hash * outer_rows *
+								 std::max(1.0, inner_rows * innerbucketsize) *
+								 0.5;
+	const DOUBLE qpqual_cpu =
+		cpu_operator_cost * n_qpqual * billed_tuples;
+	const DOUBLE emit_cpu = cpu_tuple_cost * billed_tuples;
+	const DOUBLE qual_cpu = emit_cpu + hash_qual_cpu + qpqual_cpu;
 
 	// Spill IO: only when the hash table doesn't fit in working memory.
 	DOUBLE spill_io = 0.0;
