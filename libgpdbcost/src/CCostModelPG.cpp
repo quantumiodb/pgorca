@@ -26,7 +26,9 @@
 #include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalScan.h"
 #include "gpopt/operators/CScalarArray.h"
+#include "gpopt/operators/CScalarBitmapBoolOp.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
+#include <functional>
 #include "naucrates/md/CMDIdColStats.h"
 #include "naucrates/md/CMDIdGPDB.h"
 #include "naucrates/md/IMDColStats.h"
@@ -1234,35 +1236,41 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 
 	// Index access cost (PG's compute_bitmap_pages → cost_bitmap_tree_node
 	// → indextotalcost), modelled like CostIndexScan but only the index
-	// side — heap IO is already in heap_io above.  Prefer real index
-	// relpages from IMDIndex; fall back to row-count approximation.
-	//
-	// Pull real index relpages from IMDIndex (via the BitmapIndexProbe's
-	// index descriptor) and count num_sa_scans from the predicate child.
+	// side — heap IO is already in heap_io above.  Walks BitmapAnd/Or
+	// trees: index_pages summed over all probes; descent + IO charged
+	// per-probe via num_index_probes.
 	DOUBLE index_pages_real = 0.0;
 	DOUBLE num_sa_scans = 1.0;
+	ULONG num_index_probes = 0;
 	{
-		CExpression *pexprIndexCond = exprhdl.PexprScalarRepChild(1);
-		if (nullptr != pexprIndexCond &&
-			COperator::EopScalarBitmapIndexProbe ==
-				pexprIndexCond->Pop()->Eopid())
-		{
-			CMDAccessor *mda_b = COptCtxt::PoctxtFromTLS()->Pmda();
-			IMDId *idx_mdid =
-				CScalarBitmapIndexProbe::PopConvert(pexprIndexCond->Pop())
-					->Pindexdesc()
-					->MDId();
-			const IMDIndex *index = mda_b->RetrieveIndex(idx_mdid);
-			index_pages_real = static_cast<DOUBLE>(index->IndexPages());
-
-			// Look inside the probe's first child (the actual qual) for
-			// a SAOP and read its array length.
-			if (pexprIndexCond->Arity() > 0)
+		CMDAccessor *mda_b = COptCtxt::PoctxtFromTLS()->Pmda();
+		std::function<void(CExpression *)> walk = [&](CExpression *e) {
+			if (nullptr == e) return;
+			const COperator::EOperatorId op = e->Pop()->Eopid();
+			if (COperator::EopScalarBitmapIndexProbe == op)
 			{
-				num_sa_scans = static_cast<DOUBLE>(
-					CountSAOPScans((*pexprIndexCond)[0]));
+				IMDId *idx_mdid =
+					CScalarBitmapIndexProbe::PopConvert(e->Pop())
+						->Pindexdesc()->MDId();
+				const IMDIndex *index = mda_b->RetrieveIndex(idx_mdid);
+				index_pages_real +=
+					static_cast<DOUBLE>(index->IndexPages());
+				num_index_probes += 1;
+				if (e->Arity() > 0 && num_index_probes == 1)
+				{
+					num_sa_scans = static_cast<DOUBLE>(
+						CountSAOPScans((*e)[0]));
+				}
+				return;
 			}
-		}
+			if (COperator::EopScalarBitmapBoolOp == op)
+			{
+				for (ULONG i = 0; i < e->Arity(); i++)
+					walk((*e)[i]);
+			}
+		};
+		walk(exprhdl.PexprScalarRepChild(1));
+		if (0 == num_index_probes) num_index_probes = 1;
 	}
 	constexpr DOUBLE kIndexEntrySize = 24.0;
 	const DOUBLE index_pages =
@@ -1294,8 +1302,14 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	// PG btcostestimate for SAOP: descent and index_io are charged once
 	// per array element; index_cpu and bitmap_tree_cpu already account
 	// for the total tuples fetched and stay one-shot.
+	//
+	// For BitmapAnd/Or the descent + index_io fire once per probe child;
+	// scale by num_index_probes to account for the OR / AND tree.
+	const DOUBLE per_probe_index_cost =
+		num_sa_scans * (descent + index_io);
 	const DOUBLE index_total =
-		num_sa_scans * (descent + index_io) + index_cpu + bitmap_tree_cpu;
+		static_cast<DOUBLE>(num_index_probes) * per_probe_index_cost +
+		index_cpu + bitmap_tree_cpu;
 
 	return CCost(loop_count * (index_total + heap_io + cpu_run));
 }
