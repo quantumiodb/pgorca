@@ -78,6 +78,10 @@ private:
 	static CCost CostUnionAll(CMemoryPool *mp, CExpressionHandle &exprhdl,
 							  const SCostingInfo *pci);
 
+	static CCost CostBitmapTableScan(CMemoryPool *mp,
+									 CExpressionHandle &exprhdl,
+									 const SCostingInfo *pci);
+
 public:
 	CCostModelPG(CMemoryPool *mp, ULONG ulSegments,
 				 CCostModelParamsPG *pcp = nullptr);

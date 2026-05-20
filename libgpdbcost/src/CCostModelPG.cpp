@@ -963,6 +963,125 @@ CCostModelPG::CostUnionAll(CMemoryPool *,  // mp
 	return CCost(kAppendCpuCostMultiplier * cpu_tuple_cost * pci->Rows());
 }
 
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostBitmapTableScan
+//
+//	Port of PG cost_bitmap_heap_scan (costsize.c:1023) for ORCA's
+//	combined CPhysicalBitmapTableScan operator (which folds PG's separate
+//	Bitmap Heap Scan + Bitmap Index Scan into one node).  Composes:
+//
+//	  heap_io   = pages_fetched × cost_per_page
+//	  cost_per_page = random − (random − seq) × sqrt(pages_fetched / T)
+//	                  when pages_fetched ≥ 2, else random
+//	  cpu_run   = (cpu_tuple_cost + qpqual.per_tuple) × tuples_fetched
+//	  index     = btcostestimate-style descent + index_io + index_cpu
+//	             + 0.1 × cpu_operator_cost × tuples_fetched   (bitmap-tree
+//	                                                            manipulation)
+//
+//	Simplifications:
+//	  - No lossy-bitmap branch (PG models when maxentries < heap_pages).
+//	  - indexTotalCost computed locally instead of received from a child;
+//	    matches PG's compute_bitmap_pages call to cost_bitmap_tree_node.
+//	  - index_pages approximated as ceil(reltuples / 200).
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
+								  CExpressionHandle &exprhdl,
+								  const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalBitmapTableScan ==
+					exprhdl.Pop()->Eopid() ||
+				COperator::EopPhysicalDynamicBitmapTableScan ==
+					exprhdl.Pop()->Eopid());
+
+	COperator *pop = exprhdl.Pop();
+	const DOUBLE tuples_fetched = std::max(1.0, pci->Rows());
+	const DOUBLE loop_count = pci->NumRebinds();
+
+	CPhysicalScan *pscan = CPhysicalScan::PopConvert(pop);
+	IStatistics *base_stats = pscan->PstatsBaseTable();
+	const DOUBLE N = std::max(1.0,
+							  CStatistics::CastStats(base_stats)->Rows().Get());
+	DOUBLE T = static_cast<DOUBLE>(
+		CStatistics::CastStats(base_stats)->RelPages());
+	if (T <= 0.0) T = 1.0;
+
+	// pages_fetched: single-scan Mackert-Lohman (PG compute_bitmap_pages),
+	// then capped at T.  For repeated scans pro-rate via index_pages_fetched.
+	DOUBLE pages_fetched =
+		(2.0 * T * tuples_fetched) / (2.0 * T + tuples_fetched);
+	if (loop_count > 1.0)
+	{
+		// PG: scale tuples × loop, run through index_pages_fetched(table side),
+		// then divide pages by loop_count.  Approximate index_pages with T.
+		const DOUBLE total = IndexPagesFetched(
+			tuples_fetched * loop_count, T, /*index_pages_in=*/T);
+		pages_fetched = total / loop_count;
+	}
+	if (pages_fetched >= T)
+	{
+		pages_fetched = T;
+	}
+	else
+	{
+		pages_fetched = std::ceil(pages_fetched);
+	}
+
+	DOUBLE cost_per_page;
+	if (pages_fetched >= 2.0)
+	{
+		cost_per_page =
+			random_page_cost -
+			(random_page_cost - seq_page_cost) *
+				std::sqrt(pages_fetched / T);
+	}
+	else
+	{
+		cost_per_page = random_page_cost;
+	}
+	const DOUBLE heap_io = pages_fetched * cost_per_page;
+
+	// Bitmap recheck always runs the qpqual (PG: "for the moment, just
+	// assume they will be rechecked always").  child 1 holds the bitmap
+	// qual expression.
+	const ULONG n_qual_ops =
+		CountQualOps(exprhdl.PexprScalarRepChild(1));
+	const DOUBLE cpu_per_tuple =
+		cpu_tuple_cost + cpu_operator_cost * static_cast<DOUBLE>(n_qual_ops);
+	const DOUBLE cpu_run = cpu_per_tuple * tuples_fetched;
+
+	// Index access cost (PG's compute_bitmap_pages → cost_bitmap_tree_node
+	// → indextotalcost), modelled like CostIndexScan but only the index
+	// side — heap IO is already in heap_io above.
+	const DOUBLE index_pages = std::max(1.0, std::ceil(N / 200.0));
+	constexpr DOUBLE kTreeHeight = 1.0;
+	constexpr DOUBLE kPageCpuMultiplier = 50.0;
+	const DOUBLE descent =
+		(std::ceil(std::log2(std::max(T, 1.0))) +
+		 (kTreeHeight + 1.0) * kPageCpuMultiplier) *
+		cpu_operator_cost;
+	const DOUBLE index_cpu =
+		(cpu_index_tuple_cost + cpu_operator_cost) * tuples_fetched;
+	const DOUBLE selectivity = std::min(1.0, tuples_fetched / N);
+	const DOUBLE index_pages_read =
+		std::max(1.0, std::ceil(selectivity * index_pages));
+	const DOUBLE index_io =
+		(loop_count > 1.0)
+			? (IndexPagesFetched(index_pages_read * loop_count, index_pages,
+								 index_pages) *
+			   random_page_cost) /
+				  loop_count
+			: index_pages_read * random_page_cost;
+	// cost_bitmap_tree_node adds 0.1 × cpu_operator_cost × tuples for the
+	// IndexPath case (manipulating the in-memory bitmap).
+	const DOUBLE bitmap_tree_cpu =
+		0.1 * cpu_operator_cost * tuples_fetched;
+	const DOUBLE index_total =
+		descent + index_io + index_cpu + bitmap_tree_cpu;
+
+	return CCost(loop_count * (index_total + heap_io + cpu_run));
+}
+
 CCost
 CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 {
@@ -1017,6 +1136,11 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 		case COperator::EopPhysicalDynamicIndexScan:
 		case COperator::EopPhysicalDynamicIndexOnlyScan:
 			local = CostIndexScan(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalBitmapTableScan:
+		case COperator::EopPhysicalDynamicBitmapTableScan:
+			local = CostBitmapTableScan(m_mp, exprhdl, pci);
 			break;
 
 		case COperator::EopPhysicalInnerHashJoin:
