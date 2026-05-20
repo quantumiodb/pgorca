@@ -85,6 +85,9 @@ private:
 	// index key's NULLs direction
 	ULongPtrArray *m_nulls_direction;
 
+	// pg_class.relpages for the index (0 if unknown)
+	ULONG m_index_pages;
+
 public:
 	CMDIndexGPDB(const CMDIndexGPDB &) = delete;
 
@@ -97,7 +100,8 @@ public:
 				 ULongPtrArray *returnable_cols_array,
 				 IMdIdArray *mdid_opfamilies_array,
 				 IMdIdArray *child_index_oids, ULongPtrArray *sort_direction,
-				 ULongPtrArray *nulls_direction);
+				 ULongPtrArray *nulls_direction,
+				 ULONG index_pages);
 
 	// dtor
 	~CMDIndexGPDB() override;
@@ -116,6 +120,13 @@ public:
 
 	// Does index AM support ordering
 	BOOL CanOrder() const override;
+
+	// pg_class.relpages for the index
+	ULONG
+	IndexPages() const override
+	{
+		return m_index_pages;
+	}
 
 	// index type
 	EmdindexType IndexType() const override;

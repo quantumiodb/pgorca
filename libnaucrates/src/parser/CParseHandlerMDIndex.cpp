@@ -46,7 +46,8 @@ CParseHandlerMDIndex::CParseHandlerMDIndex(
 	  m_returnable_cols_array(nullptr),
 	  m_sort_direction(nullptr),
 	  m_nulls_direction(nullptr),
-	  m_child_indexes_parse_handler(nullptr)
+	  m_child_indexes_parse_handler(nullptr),
+	  m_index_pages(0)
 {
 }
 
@@ -112,6 +113,18 @@ CParseHandlerMDIndex::StartElement(const XMLCh *const element_uri,
 	m_clustered = CDXLOperatorFactory::ExtractConvertAttrValueToBool(
 		m_parse_handler_mgr->GetDXLMemoryManager(), attrs,
 		EdxltokenIndexClustered, EdxltokenIndex);
+
+	// pg_class.relpages for the index; absent in older DXL → 0
+	{
+		const XMLCh *parsed = attrs.getValue(
+			CDXLTokens::XmlstrToken(EdxltokenIndexPages));
+		if (nullptr != parsed)
+		{
+			m_index_pages = CDXLOperatorFactory::ConvertAttrValueToUlong(
+				m_parse_handler_mgr->GetDXLMemoryManager(), parsed,
+				EdxltokenIndexPages, EdxltokenIndex);
+		}
+	}
 
 	// parse index access method ordering
 	m_amcanorder = CDXLOperatorFactory::ExtractConvertAttrValueToBool(
@@ -225,7 +238,7 @@ CParseHandlerMDIndex::EndElement(const XMLCh *const,  // element_uri,
 		m_mp, m_mdid, m_mdname, m_clustered, is_partitioned, m_amcanorder,
 		m_index_type, m_mdid_item_type, m_index_key_cols_array,
 		m_included_cols_array, m_returnable_cols_array, mdid_opfamilies_array,
-		child_indexes, m_sort_direction, m_nulls_direction);
+		child_indexes, m_sort_direction, m_nulls_direction, m_index_pages);
 
 	// deactivate handler
 	m_parse_handler_mgr->DeactivateHandler();
