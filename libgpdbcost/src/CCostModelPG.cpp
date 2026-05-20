@@ -1401,9 +1401,17 @@ CCostModelPG::CostComputeScalar(CMemoryPool *,	// mp
 	GPOS_ASSERT(COperator::EopPhysicalComputeScalar ==
 				exprhdl.Pop()->Eopid());
 
+	// ORCA flattens nested subqueries that PG materializes as a
+	// SubqueryScan node; that layer is invisible in EXPLAIN but is
+	// charged by PG at cpu_tuple_cost per row.  ComputeScalar is the
+	// closest functional analog in ORCA — it feeds each row through a
+	// projection — so charge the same per-row baseline plus
+	// cpu_operator_cost per expression operator (matching PG's
+	// pathtarget per_tuple).
 	const ULONG n_proj_ops =
 		CountQualOps(exprhdl.PexprScalarRepChild(1));
-	const DOUBLE per_row = cpu_operator_cost * static_cast<DOUBLE>(n_proj_ops);
+	const DOUBLE per_row =
+		cpu_tuple_cost + cpu_operator_cost * static_cast<DOUBLE>(n_proj_ops);
 	return CCost(pci->NumRebinds() * per_row * pci->Rows());
 }
 
