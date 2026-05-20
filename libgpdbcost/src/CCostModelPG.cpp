@@ -867,8 +867,20 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// (e.g. pure ORDER BY), indexQuals is empty, so PG charges only
 	// cpu_index_tuple_cost per tuple.  Mirror that by counting operators
 	// in the scalar index condition child (index 0 for IndexScan ops).
-	const ULONG n_index_qual_ops =
-		CountQualOps(exprhdl.PexprScalarRepChild(0));
+	//
+	// For a ScalarArrayOp index qual (`x IN (...)`), PG additionally
+	// scales descent / index_io / index_cpu by num_sa_scans (= array
+	// length).  Approximate by tuples_fetched on a unique-key SAOP scan;
+	// for non-unique it slightly under-counts but matches the common
+	// case.
+	CExpression *pexprIdxCond = exprhdl.PexprScalarRepChild(0);
+	const ULONG n_index_qual_ops = CountQualOps(pexprIdxCond);
+	DOUBLE num_sa_scans = 1.0;
+	if (nullptr != pexprIdxCond &&
+		COperator::EopScalarArrayCmp == pexprIdxCond->Pop()->Eopid())
+	{
+		num_sa_scans = std::max(1.0, tuples_fetched);
+	}
 	const DOUBLE index_cpu =
 		(cpu_index_tuple_cost +
 		 cpu_operator_cost * static_cast<DOUBLE>(n_index_qual_ops)) *
@@ -926,8 +938,15 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// constant 5-10 % overestimate compared to PG EXPLAIN.  Fixing this
 	// requires either threading outer_rows through the NL context or a
 	// post-pass re-cost in CostNLJoin; neither is in scope here.
+	// SAOP scaling: PG charges descent + index IO once per array element.
+	// index_cpu is NOT multiplied because tuples_fetched already counts
+	// matches across all elements (PG divides numIndexTuples by
+	// num_sa_scans, then multiplies back when accumulating into
+	// indexTotalCost — net effect: per-element charge stays the same).
+	// Heap IO and heap CPU also stay one-shot.
 	return CCost(loop_count *
-				 (descent_cost + io_cost + index_io + index_cpu + heap_cpu));
+				 (num_sa_scans * (descent_cost + index_io) + index_cpu +
+				  io_cost + heap_cpu));
 }
 
 //---------------------------------------------------------------------------
@@ -1164,7 +1183,12 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	// → indextotalcost), modelled like CostIndexScan but only the index
 	// side — heap IO is already in heap_io above.  Prefer real index
 	// relpages from IMDIndex; fall back to row-count approximation.
+	//
+	// Also detect a ScalarArrayOp (IN-list, ANY/ALL) bitmap qual.  PG
+	// btcostestimate charges descent + per-tuple + index IO once per
+	// array element (num_sa_scans), so we mirror that with a multiplier.
 	DOUBLE index_pages_real = 0.0;
+	DOUBLE num_sa_scans = 1.0;
 	{
 		CExpression *pexprIndexCond = exprhdl.PexprScalarRepChild(1);
 		if (nullptr != pexprIndexCond &&
@@ -1178,6 +1202,21 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 					->MDId();
 			const IMDIndex *index = mda_b->RetrieveIndex(idx_mdid);
 			index_pages_real = static_cast<DOUBLE>(index->IndexPages());
+
+			// Look inside the bitmap probe's predicate child for a
+			// ScalarArrayCmp.  The array element count is the row
+			// estimate of the bitmap scan output for unique indexes —
+			// approximate with pci->Rows().
+			if (pexprIndexCond->Arity() > 0)
+			{
+				CExpression *pexprPred = (*pexprIndexCond)[0];
+				if (nullptr != pexprPred &&
+					COperator::EopScalarArrayCmp ==
+						pexprPred->Pop()->Eopid())
+				{
+					num_sa_scans = std::max(1.0, tuples_fetched);
+				}
+			}
 		}
 	}
 	constexpr DOUBLE kIndexEntrySize = 24.0;
@@ -1207,8 +1246,11 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	// IndexPath case (manipulating the in-memory bitmap).
 	const DOUBLE bitmap_tree_cpu =
 		0.1 * cpu_operator_cost * tuples_fetched;
+	// PG btcostestimate for SAOP: descent and index_io are charged once
+	// per array element; index_cpu and bitmap_tree_cpu already account
+	// for the total tuples fetched and stay one-shot.
 	const DOUBLE index_total =
-		descent + index_io + index_cpu + bitmap_tree_cpu;
+		num_sa_scans * (descent + index_io) + index_cpu + bitmap_tree_cpu;
 
 	return CCost(loop_count * (index_total + heap_io + cpu_run));
 }
