@@ -887,6 +887,69 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 				 (descent_cost + io_cost + index_io + index_cpu + heap_cpu));
 }
 
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostLimit
+//
+//	Port of PG adjust_limit_rows_costs (pathnode.c:4173).  Limit doesn't do
+//	any per-row work itself; it just stops the subpath early.  PG models
+//	this by pro-rating subpath cost by output_rows / input_rows.
+//
+//	In ORCA's additive composition (children + local), CostChildren has
+//	already charged the full subpath cost; the local term subtracts the
+//	(unused) tail so the composite equals subpath × ratio.  Net cost stays
+//	non-negative because subpath_total ≥ 0 and ratio ≤ 1.
+//
+//	Offset/count expressions: PG also skips charging them ("XXX we don't
+//	bother to add eval costs of the offset/limit expressions themselves to
+//	the path costs"); we match.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostLimit(CMemoryPool *,	// mp
+						CExpressionHandle &exprhdl,
+						const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalLimit == exprhdl.Pop()->Eopid());
+
+	const DOUBLE input_rows = pci->PdRows()[0];
+	const DOUBLE output_rows = pci->Rows();
+	const DOUBLE subpath_total = pci->PdCost()[0];
+
+	if (input_rows <= 0.0)
+	{
+		return CCost(0.0);
+	}
+	DOUBLE ratio = output_rows / input_rows;
+	if (ratio > 1.0) ratio = 1.0;
+	if (ratio < 0.0) ratio = 0.0;
+
+	// Adjustment to cancel the unused portion of subpath cost already
+	// charged by CostChildren.
+	return CCost(-(1.0 - ratio) * subpath_total);
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostUnionAll
+//
+//	PG's cost_append sums subpath costs and adds a small per-row "feed
+//	tuples to parent" charge:
+//	   APPEND_CPU_COST_MULTIPLIER × cpu_tuple_cost × output_rows
+//	with APPEND_CPU_COST_MULTIPLIER = 0.5 (costsize.c:120).  CostChildren
+//	already supplies the sum, so the local term is just the feed charge.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostUnionAll(CMemoryPool *,  // mp
+						   CExpressionHandle &exprhdl,
+						   const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalSerialUnionAll ==
+					exprhdl.Pop()->Eopid() ||
+				COperator::EopPhysicalParallelUnionAll ==
+					exprhdl.Pop()->Eopid());
+	(void) exprhdl;
+	constexpr DOUBLE kAppendCpuCostMultiplier = 0.5;
+	return CCost(kAppendCpuCostMultiplier * cpu_tuple_cost * pci->Rows());
+}
+
 CCost
 CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 {
@@ -925,6 +988,15 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 
 		case COperator::EopPhysicalFilter:
 			local = CostFilter(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalLimit:
+			local = CostLimit(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalSerialUnionAll:
+		case COperator::EopPhysicalParallelUnionAll:
+			local = CostUnionAll(m_mp, exprhdl, pci);
 			break;
 
 		case COperator::EopPhysicalIndexScan:

@@ -72,6 +72,12 @@ private:
 	static CCost CostIndexNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 								 const SCostingInfo *pci);
 
+	static CCost CostLimit(CMemoryPool *mp, CExpressionHandle &exprhdl,
+						   const SCostingInfo *pci);
+
+	static CCost CostUnionAll(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							  const SCostingInfo *pci);
+
 public:
 	CCostModelPG(CMemoryPool *mp, ULONG ulSegments,
 				 CCostModelParamsPG *pcp = nullptr);
