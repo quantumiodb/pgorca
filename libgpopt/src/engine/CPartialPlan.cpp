@@ -118,6 +118,9 @@ CPartialPlan::ExtractChildrenCostingInfo(CMemoryPool *mp, ICostModel *pcm,
 			pci->SetChildWidth(ulIndex, dWidthChild);
 			pci->SetChildRebinds(ulIndex, child_stats->NumRebinds().Get());
 			pci->SetChildCost(ulIndex, m_pccChild->Cost().Get());
+			child_stats->AddRef();
+			pci->SetChildStats(
+				ulIndex, GPOS_NEW(mp) ICostModel::CCostingStats(child_stats));
 
 			// continue with next child
 			ulIndex++;
@@ -139,6 +142,18 @@ CPartialPlan::ExtractChildrenCostingInfo(CMemoryPool *mp, ICostModel *pcm,
 		// use child group's cost lower bound as the child cost
 		DOUBLE dCostChild = pgroupChild->CostLowerBound(mp, prppChild).Get();
 		pci->SetChildCost(ulIndex, dCostChild);
+
+		// Propagate child group stats so per-key NDV / histogram lookups in
+		// the cost model see real distribution info even on the lower-bound
+		// branch (e.g. CostHashJoin's bucketsize / hash_selectivity).  Without
+		// this, the lower-bound estimate falls back to sel=1, charging
+		// outer×inner work per HashJoin and pruning otherwise-cheaper join
+		// orders early (observed on TPC-H Q5 lineitem×(orders×customer) where
+		// the "build on 45k" direction was discarded for the "build on 6M"
+		// direction at lower-bound time).
+		child_stats->AddRef();
+		pci->SetChildStats(
+			ulIndex, GPOS_NEW(mp) ICostModel::CCostingStats(child_stats));
 
 		// advance to next child
 		ulIndex++;
