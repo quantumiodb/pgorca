@@ -388,6 +388,7 @@ cdb_estimate_partitioned_numpages(Relation rel)
 {
 	List	   *inheritors;
 	ListCell   *lc;
+	bool		any_unanalyzed = false;
 
 	PageEstimate estimate = {
 		.totalpages = rel->rd_rel->relpages >= 0 ? (BlockNumber) rel->rd_rel->relpages : 0,
@@ -396,6 +397,15 @@ cdb_estimate_partitioned_numpages(Relation rel)
 
 	if (estimate.totalpages > 0)
 		return estimate;
+
+	/*
+	 * Mirror PG plancat.c estimate_rel_size: when pg_class.relpages == 0
+	 * we let the AM (estimate_rel_size) tell us the real on-disk size, and
+	 * if that's still zero we floor at 10 pages so cost estimates don't
+	 * collapse to zero on never-VACUUMed tables.  Without this, ORCA's
+	 * CostScan falls back to (rows*width/BLCKSZ) giving 2 pages while PG
+	 * sees 10 — same query mis-aligns by ~8 cost units on tiny tables.
+	 */
 
 	inheritors = find_all_inheritors(RelationGetRelid(rel), NoLock, NULL);
 
@@ -413,8 +423,23 @@ cdb_estimate_partitioned_numpages(Relation rel)
 		if (childrel == NULL)
 			continue;
 
-		estimate.totalpages += childrel->rd_rel->relpages;
-		estimate.totalallvisiblepages += childrel->rd_rel->relallvisible;
+		if (childrel->rd_rel->relpages > 0)
+		{
+			estimate.totalpages += childrel->rd_rel->relpages;
+			estimate.totalallvisiblepages += childrel->rd_rel->relallvisible;
+		}
+		else if (childrel->rd_rel->reltuples == -1)
+		{
+			/* Never-VACUUMed: ask the table AM for the actual on-disk size
+			 * (matches PG plancat.c estimate_rel_size).  estimate_rel_size
+			 * also enforces the min-10-pages floor for empty heaps. */
+			BlockNumber	numpages = 0;
+			double		dummy_tuples;
+			double		dummy_allvis;
+			estimate_rel_size(childrel, NULL, &numpages, &dummy_tuples, &dummy_allvis);
+			estimate.totalpages += numpages;
+			any_unanalyzed = true;
+		}
 
 		if (childrel != rel)
 			RelationClose(childrel);
@@ -422,6 +447,7 @@ cdb_estimate_partitioned_numpages(Relation rel)
 
 	list_free(inheritors);
 
+	(void) any_unanalyzed;  /* reserved for future per-rel logic */
 	return estimate;
 }
 
