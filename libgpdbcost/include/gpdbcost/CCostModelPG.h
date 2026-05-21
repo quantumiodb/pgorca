@@ -105,6 +105,19 @@ private:
 								   CExpressionHandle &exprhdl,
 								   const SCostingInfo *pci);
 
+	static CCost CostTVF(CMemoryPool *mp, CExpressionHandle &exprhdl,
+						 const SCostingInfo *pci);
+
+	static CCost CostSequence(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							  const SCostingInfo *pci);
+
+	static CCost CostSpool(CMemoryPool *mp, CExpressionHandle &exprhdl,
+						   const SCostingInfo *pci);
+
+	static CCost CostPartitionSelector(CMemoryPool *mp,
+									   CExpressionHandle &exprhdl,
+									   const SCostingInfo *pci);
+
 public:
 	CCostModelPG(CMemoryPool *mp, ULONG ulSegments,
 				 CCostModelParamsPG *pcp = nullptr);

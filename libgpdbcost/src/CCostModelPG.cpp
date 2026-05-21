@@ -2075,6 +2075,120 @@ CCostModelPG::CostSequenceProject(CMemoryPool *,  // mp
 	return CCost(pci->NumRebinds() * per_row * input_rows);
 }
 
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostTVF
+//
+//	Port of PG cost_functionscan (costsize.c:1537):
+//	  startup = exprcost.startup + exprcost.per_tuple   (one-time fn eval)
+//	  run     = cpu_tuple_cost × tuples                  (scan-per-tuple)
+//
+//	Per the PG comment at costsize.c:1559, set-returning functions are
+//	"executed to completion before returning any rows ... so the function
+//	eval cost is all startup cost".  The per-row charge is just
+//	cpu_tuple_cost — no per-row function-procost contribution.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostTVF(CMemoryPool *,  // mp
+					  CExpressionHandle &exprhdl,
+					  const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalTVF == exprhdl.Pop()->Eopid());
+	(void) exprhdl;
+
+	const DOUBLE rows = pci->Rows();
+	return CCost(pci->NumRebinds() * cpu_tuple_cost * rows);
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostSequence
+//
+//	ORCA's Sequence runs child(0) (typically a CTE producer / init plan)
+//	before child(1) (the consumer-bearing main plan).  PG models the same
+//	pattern as an InitPlan/SubPlan whose cost is added to the outer total
+//	via SS_compute_initplan_cost — there's no PG operator equivalent.
+//	CostChildren already sums both children verbatim, so local cost = 0.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostSequence(CMemoryPool *,  // mp
+						   CExpressionHandle &exprhdl,
+						   const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalSequence == exprhdl.Pop()->Eopid());
+	(void) exprhdl;
+	(void) pci;
+	return CCost(0.0);
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostSpool
+//
+//	1:1 port of PG cost_material (costsize.c:2438):
+//
+//	  run_cost  = 2 × cpu_operator_cost × tuples
+//	  nbytes    = relation_byte_size(tuples, width)
+//	            = tuples × (MAXALIGN(width) + MAXALIGN(SizeofHeapTupleHeader))
+//	            = tuples × (MAXALIGN(width) + 24)
+//	  work_mem_bytes = work_mem × 1024            -- work_mem GUC is in KB
+//	  if nbytes > work_mem_bytes:
+//	    npages    = ceil(nbytes / BLCKSZ)         -- BLCKSZ = 8192
+//	    run_cost += seq_page_cost × npages
+//
+//	The 2 × cpu_operator_cost rate (vs cost_rescan's cpu_operator_cost) is
+//	PG's deliberate tie-breaker so the smaller relation is materialized in
+//	NL-with-Material plans.  Per the PG comment: "this rate must be more
+//	than what cost_rescan charges for materialize" (costsize.c:2454).
+//
+//	Material applies no qual/projection — so no qpqual or per_tuple charges.
+//	Child cost is summed separately by CostChildren.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostSpool(CMemoryPool *,	// mp
+						CExpressionHandle &exprhdl,
+						const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalSpool == exprhdl.Pop()->Eopid());
+	(void) exprhdl;
+
+	const DOUBLE tuples = pci->PdRows()[0];
+	const DOUBLE width = pci->GetWidth()[0];
+
+	// In-memory CPU cost — always charged.
+	DOUBLE run_cost = 2.0 * cpu_operator_cost * tuples;
+
+	// Spill check: relation_byte_size = tuples × (MAXALIGN(width) +
+	// MAXALIGN(SizeofHeapTupleHeader=23)) = tuples × (MAXALIGN(width) + 24).
+	const DOUBLE nbytes = tuples * (MaxAlign8(width) + 24.0);
+	const DOUBLE work_mem_bytes =
+		static_cast<DOUBLE>(work_mem) * 1024.0;
+	if (nbytes > work_mem_bytes)
+	{
+		const DOUBLE BLCKSZ_d = 8192.0;
+		const DOUBLE npages = std::ceil(nbytes / BLCKSZ_d);
+		run_cost += seq_page_cost * npages;
+	}
+
+	return CCost(pci->NumRebinds() * run_cost);
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostPartitionSelector
+//
+//	ORCA-only operator; emits the list of approved partition mdids to the
+//	dynamic scan below it.  PG performs the equivalent partition pruning
+//	at executor init time and doesn't cost it.  Set local = 0.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostPartitionSelector(CMemoryPool *,	// mp
+									CExpressionHandle &exprhdl,
+									const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalPartitionSelector ==
+				exprhdl.Pop()->Eopid());
+	(void) exprhdl;
+	(void) pci;
+	return CCost(0.0);
+}
+
 CCost
 CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 {
@@ -2194,11 +2308,41 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 			local = CostNLJoin(m_mp, exprhdl, pci);
 			break;
 
-		default:
-			// Placeholder until M3+: small per-row cost to preserve relative
-			// ordering.  Replaced operator by operator.
-			local = CCost(pci->Rows() * cpu_tuple_cost);
+		case COperator::EopPhysicalTVF:
+			local = CostTVF(m_mp, exprhdl, pci);
 			break;
+
+		case COperator::EopPhysicalSequence:
+			local = CostSequence(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalSpool:
+			local = CostSpool(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalPartitionSelector:
+			local = CostPartitionSelector(m_mp, exprhdl, pci);
+			break;
+
+		// Operators pg_orca never emits in single-node SELECT planning:
+		//   - Motion×5, Split    : MPP-only (distribution / split-update)
+		//   - DML                : pg_orca planner hook is SELECT-only;
+		//                          INSERT/UPDATE/DELETE go through PG's planner
+		//   - Assert             : cardinality-check operator that ORCA
+		//                          rewrites away before plan finalization in
+		//                          pg_orca configuration
+		case COperator::EopPhysicalMotionGather:
+		case COperator::EopPhysicalMotionBroadcast:
+		case COperator::EopPhysicalMotionHashDistribute:
+		case COperator::EopPhysicalMotionRoutedDistribute:
+		case COperator::EopPhysicalMotionRandom:
+		case COperator::EopPhysicalSplit:
+		case COperator::EopPhysicalDML:
+		case COperator::EopPhysicalAssert:
+			__builtin_unreachable();
+
+		default:
+			__builtin_unreachable();
 	}
 
 	return CCost(children.Get() + local.Get());
