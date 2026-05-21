@@ -202,3 +202,41 @@ EXPLAIN SELECT count(*) FROM cal_tenk1 WHERE unique1 IN (SELECT max(unique1) FRO
 EXPLAIN SELECT corr(unique1, unique2), covar_pop(unique1, unique2) FROM cal_tenk1;
 EXPLAIN SELECT hundred, ten, count(*) FROM cal_tenk1 GROUP BY hundred, ten HAVING sum(unique1) > 1000;
 EXPLAIN SELECT hundred FROM cal_tenk1 GROUP BY hundred HAVING count(*) > 90 ORDER BY hundred LIMIT 10;
+
+-- ---------------------------------------------------------------------
+-- Window function cases, adapted from PG regress window.sql.  Covers
+-- PARTITION BY only, ORDER BY only, both, ranking functions, offset
+-- functions (lag/lead), value-position functions (first/last/nth_value),
+-- explicit frames (ROWS / RANGE / GROUPS), named windows, multiple
+-- windows in one query, window over aggregate, window with subquery,
+-- window-after-filter, and window expressions in WHERE/SELECT/ORDER BY.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT hundred, sum(unique1) OVER (PARTITION BY hundred) FROM cal_tenk1;
+EXPLAIN SELECT hundred, rank() OVER (PARTITION BY hundred ORDER BY unique1) FROM cal_tenk1;
+EXPLAIN SELECT row_number() OVER (ORDER BY unique1) FROM cal_tenk1 WHERE unique2 < 100;
+EXPLAIN SELECT dense_rank() OVER (PARTITION BY ten ORDER BY hundred) FROM cal_tenk1;
+EXPLAIN SELECT percent_rank() OVER (PARTITION BY ten ORDER BY hundred) FROM cal_tenk1;
+EXPLAIN SELECT cume_dist() OVER (PARTITION BY ten ORDER BY hundred) FROM cal_tenk1;
+EXPLAIN SELECT ntile(10) OVER (ORDER BY unique1) FROM cal_tenk1;
+EXPLAIN SELECT lag(unique1) OVER (PARTITION BY hundred ORDER BY unique1) FROM cal_tenk1;
+EXPLAIN SELECT lead(unique1, 2, 0) OVER (PARTITION BY hundred ORDER BY unique1) FROM cal_tenk1;
+EXPLAIN SELECT first_value(unique1) OVER (PARTITION BY hundred ORDER BY unique2) FROM cal_tenk1;
+EXPLAIN SELECT last_value(unique1) OVER (PARTITION BY hundred ORDER BY unique2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM cal_tenk1;
+EXPLAIN SELECT nth_value(unique1, 3) OVER (PARTITION BY hundred) FROM cal_tenk1;
+EXPLAIN SELECT count(*) OVER () FROM cal_tenk1 WHERE unique2 < 50;
+EXPLAIN SELECT count(*) OVER (PARTITION BY hundred) FROM cal_tenk1;
+EXPLAIN SELECT avg(unique1) OVER (PARTITION BY hundred ORDER BY unique2 ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM cal_tenk1;
+EXPLAIN SELECT sum(unique1) OVER (PARTITION BY hundred ORDER BY unique2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM cal_tenk1;
+EXPLAIN SELECT min(unique1) OVER (ORDER BY unique2 GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM cal_tenk1;
+EXPLAIN SELECT sum(unique1) OVER w, count(*) OVER w FROM cal_tenk1 WINDOW w AS (PARTITION BY hundred ORDER BY unique2);
+EXPLAIN SELECT sum(unique1) OVER w1, rank() OVER w2 FROM cal_tenk1 WINDOW w1 AS (PARTITION BY hundred), w2 AS (PARTITION BY ten ORDER BY unique1);
+EXPLAIN SELECT hundred, count(*), sum(count(*)) OVER (PARTITION BY hundred / 10 ORDER BY hundred) FROM cal_tenk1 GROUP BY hundred;
+EXPLAIN SELECT count(*) OVER (PARTITION BY hundred) FROM (SELECT * FROM cal_tenk1 WHERE unique2 < 100) s;
+EXPLAIN SELECT * FROM (SELECT rank() OVER (PARTITION BY hundred ORDER BY unique1) AS r, * FROM cal_tenk1) s WHERE r <= 3;
+EXPLAIN SELECT rank() OVER (PARTITION BY hundred ORDER BY unique1) FROM cal_tenk1 ORDER BY hundred, unique1 LIMIT 100;
+EXPLAIN SELECT sum(a.unique1) OVER (PARTITION BY a.hundred) FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2;
+EXPLAIN SELECT lag(b.unique1) OVER (PARTITION BY a.hundred ORDER BY b.unique2) FROM cal_tenk1 a JOIN cal_onek b ON a.hundred = b.hundred;
+EXPLAIN SELECT hundred, sum(unique1) OVER (PARTITION BY hundred), avg(unique2) OVER (PARTITION BY hundred) FROM cal_tenk1;
+EXPLAIN SELECT row_number() OVER (), unique1 FROM cal_tenk1;
+EXPLAIN SELECT count(*) OVER (ORDER BY unique1 ROWS BETWEEN 100 PRECEDING AND 100 FOLLOWING) FROM cal_tenk1;
+EXPLAIN SELECT hundred, sum(unique1) FILTER (WHERE ten = 0) OVER (PARTITION BY hundred) FROM cal_tenk1;
