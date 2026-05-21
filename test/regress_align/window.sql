@@ -148,7 +148,7 @@ from tenk1
 group by ten order by ten;
 
 -- window and aggregate with GROUP BY expression (9.2 bug)
-explain (costs off)
+explain (costs ON)
 select first_value(max(x)) over (), y
   from (select unique1 as x, ten+four as y from tenk1) ss
   group by y;
@@ -1060,7 +1060,7 @@ insert into t1 values (1,1),(1,2),(2,2);
 select f1, sum(f1) over (partition by f1
                          range between 1 preceding and 1 following)
 from t1 where f1 = f2;  -- error, must have order by
-explain (costs off)
+explain (costs ON)
 select f1, sum(f1) over (partition by f1 order by f2
                          range between 1 preceding and 1 following)
 from t1 where f1 = f2;
@@ -1077,7 +1077,7 @@ from t1 where f1 = f2;
 select f1, sum(f1) over (partition by f1
                          groups between 1 preceding and 1 following)
 from t1 where f1 = f2;  -- error, must have order by
-explain (costs off)
+explain (costs ON)
 select f1, sum(f1) over (partition by f1 order by f2
                          groups between 1 preceding and 1 following)
 from t1 where f1 = f2;

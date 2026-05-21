@@ -375,19 +375,19 @@ SELECT a FROM cte;
 
 -- test that column statistics from a materialized CTE are available
 -- to upper planner (otherwise, we'd get a stupider plan)
-explain (costs off)
+explain (costs ON)
 with x as materialized (select unique1 from tenk1 b)
 select count(*) from tenk1 a
   where unique1 in (select * from x);
 
-explain (costs off)
+explain (costs ON)
 with x as materialized (insert into tenk1 default values returning unique1)
 select count(*) from tenk1 a
   where unique1 in (select * from x);
 
 -- test that pathkeys from a materialized CTE are propagated up to the
 -- outer query
-explain (costs off)
+explain (costs ON)
 with x as materialized (select unique1 from tenk1 b order by unique1)
 select count(*) from tenk1 a
   where unique1 in (select * from x);
@@ -403,7 +403,7 @@ insert into graph0 values
 	(1, 4, 'arc 1 -> 4'),
 	(4, 5, 'arc 4 -> 5');
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with recursive search_graph(f, t, label) as (
 	select * from graph0 g
 	union all
@@ -431,7 +431,7 @@ with recursive search_graph(f, t, label) as (
 ) search depth first by f, t set seq
 select * from search_graph order by seq;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with recursive search_graph(f, t, label) as (
 	select * from graph0 g
 	union all
@@ -460,7 +460,7 @@ with recursive search_graph(f, t, label) as (
 select * from search_graph order by seq;
 
 -- a constant initial value causes issues for EXPLAIN
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with recursive test as (
   select 1 as x
   union all
@@ -477,7 +477,7 @@ with recursive test as (
 ) search depth first by x set y
 select * from test limit 5;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with recursive test as (
   select 1 as x
   union all
@@ -613,7 +613,7 @@ select * from search_graph order by path;
 
 -- CYCLE clause
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with recursive search_graph(f, t, label) as (
 	select * from graph g
 	union all
@@ -641,7 +641,7 @@ with recursive search_graph(f, t, label) as (
 ) cycle f, t set is_cycle to 'Y' default 'N' using path
 select * from search_graph;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with recursive test as (
   select 0 as x
   union all
@@ -1112,7 +1112,7 @@ from int4_tbl i4;
 -- test for bug #19106: interaction of WITH with aggregates
 --
 -- the initial fix for #19055 was too aggressive and broke this case
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with a as ( select id from (values (1), (2)) as v(id) ),
      b as ( select max((select sum(id) from a)) as agg )
 select agg from b;

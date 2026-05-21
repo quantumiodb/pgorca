@@ -287,7 +287,7 @@ SET enable_bitmapscan = ON;
 
 CREATE INDEX intarrayidx ON array_index_op_test USING gin (i);
 
-explain (costs off)
+explain (costs ON)
 SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
 
 SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
@@ -305,7 +305,7 @@ SELECT * FROM array_index_op_test WHERE i <@ '{}' ORDER BY seqno;
 
 CREATE INDEX textarrayidx ON array_index_op_test USING gin (t);
 
-explain (costs off)
+explain (costs ON)
 SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
 
 SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
@@ -866,7 +866,7 @@ SELECT count(*) FROM dupindexcols
 -- return rows in index order
 --
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1
 WHERE unique1 IN (1,42,7)
 ORDER BY unique1;
@@ -876,7 +876,7 @@ WHERE unique1 IN (1,42,7)
 ORDER BY unique1;
 
 -- Skip array on "thousand", SAOP array on "tenthous":
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 2 AND tenthous IN (1001,3000)
 ORDER BY thousand;
@@ -886,7 +886,7 @@ WHERE thousand < 2 AND tenthous IN (1001,3000)
 ORDER BY thousand;
 
 -- Skip array on "thousand", SAOP array on "tenthous", backward scan:
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 2 AND tenthous IN (1001,3000)
 ORDER BY thousand DESC, tenthous DESC;
@@ -895,7 +895,7 @@ SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 2 AND tenthous IN (1001,3000)
 ORDER BY thousand DESC, tenthous DESC;
 
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand > 995 and tenthous in (998, 999)
 ORDER BY thousand desc;
@@ -907,78 +907,78 @@ ORDER BY thousand desc;
 --
 -- Check elimination of redundant and contradictory index quals
 --
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 = ANY('{7, 8, 9}');
 
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 = ANY('{7, 8, 9}');
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 = ANY('{7, 14, 22}') and unique1 = ANY('{33, 44}'::bigint[]);
 
 SELECT unique1 FROM tenk1 WHERE unique1 = ANY('{7, 14, 22}') and unique1 = ANY('{33, 44}'::bigint[]);
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 = ANY(NULL);
 
 SELECT unique1 FROM tenk1 WHERE unique1 = ANY(NULL);
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 = ANY('{NULL,NULL,NULL}');
 
 SELECT unique1 FROM tenk1 WHERE unique1 = ANY('{NULL,NULL,NULL}');
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 IS NULL AND unique1 IS NULL;
 
 SELECT unique1 FROM tenk1 WHERE unique1 IS NULL AND unique1 IS NULL;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 = 1;
 
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 = 1;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 = 12345;
 
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 = 12345;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 >= 42;
 
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 >= 42;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 > 42;
 
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 > 42;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 > 9996 and unique1 >= 9999;
 
 SELECT unique1 FROM tenk1 WHERE unique1 > 9996 and unique1 >= 9999;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 < 3 and unique1 <= 3;
 
 SELECT unique1 FROM tenk1 WHERE unique1 < 3 and unique1 <= 3;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 < 3 and unique1 < (-1)::bigint;
 
 SELECT unique1 FROM tenk1 WHERE unique1 < 3 and unique1 < (-1)::bigint;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 < (-1)::bigint;
 
 SELECT unique1 FROM tenk1 WHERE unique1 IN (1, 42, 7) and unique1 < (-1)::bigint;
 
-explain (costs off)
+explain (costs ON)
 SELECT unique1 FROM tenk1 WHERE (thousand, tenthous) > (NULL, 5);
 
 SELECT unique1 FROM tenk1 WHERE (thousand, tenthous) > (NULL, 5);
 
 -- Skip array redundancy (pair of redundant low_compare inequalities)
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand > -1 and thousand >= 0 AND tenthous = 3000
 ORDER BY thousand;
@@ -988,7 +988,7 @@ WHERE thousand > -1 and thousand >= 0 AND tenthous = 3000
 ORDER BY thousand;
 
 -- Skip array redundancy (pair of redundant high_compare inequalities)
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 3 and thousand <= 2 AND tenthous = 1001
 ORDER BY thousand;
@@ -998,7 +998,7 @@ WHERE thousand < 3 and thousand <= 2 AND tenthous = 1001
 ORDER BY thousand;
 
 -- Skip array preprocessing increments "thousand > -1" to  "thousand >= 0"
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand > -1 AND tenthous IN (1001,3000)
 ORDER BY thousand limit 2;
@@ -1011,7 +1011,7 @@ ORDER BY thousand limit 2;
 -- Check elimination of constant-NULL subexpressions
 --
 
-explain (costs off)
+explain (costs ON)
   select * from tenk1 where (thousand, tenthous) in ((1,1001), (null,null));
 
 --
@@ -1020,17 +1020,17 @@ explain (costs off)
 
 create temp table boolindex (b bool, i int, unique(b, i), junk float);
 
-explain (costs off)
+explain (costs ON)
   select * from boolindex order by b, i limit 10;
-explain (costs off)
+explain (costs ON)
   select * from boolindex where b order by i limit 10;
-explain (costs off)
+explain (costs ON)
   select * from boolindex where b = true order by i desc limit 10;
-explain (costs off)
+explain (costs ON)
   select * from boolindex where not b order by i limit 10;
-explain (costs off)
+explain (costs ON)
   select * from boolindex where b is true order by i desc limit 10;
-explain (costs off)
+explain (costs ON)
   select * from boolindex where b is false order by i desc limit 10;
 
 --

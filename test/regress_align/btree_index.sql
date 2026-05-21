@@ -116,7 +116,7 @@ SELECT b.*
 -- initial positioning strategy must become >= here (it's not the > strategy,
 -- since the absence of "proargtypes" makes that tighter constraint unsafe).
 --
-explain (costs off)
+explain (costs ON)
 SELECT proname, proargtypes, pronamespace
    FROM pg_proc
    WHERE (proname, pronamespace) > ('abs', 0)
@@ -131,7 +131,7 @@ ORDER BY proname, proargtypes, pronamespace LIMIT 1;
 -- Similar to the previous test case, but this time it's a backwards scan
 -- using a < RowCompare.  Must use the <= strategy (and not the < strategy).
 --
-explain (costs off)
+explain (costs ON)
 SELECT proname, proargtypes, pronamespace
    FROM pg_proc
    WHERE (proname, pronamespace) < ('abs', 1_000_000)
@@ -146,7 +146,7 @@ ORDER BY proname DESC, proargtypes DESC, pronamespace DESC LIMIT 1;
 -- Forwards scan RowCompare qual whose row arg has a NULL that affects our
 -- initial positioning strategy
 --
-explain (costs off)
+explain (costs ON)
 SELECT proname, proargtypes, pronamespace
    FROM pg_proc
    WHERE (proname, proargtypes) >= ('abs', NULL) AND proname <= 'abs'
@@ -160,7 +160,7 @@ ORDER BY proname, proargtypes, pronamespace;
 --
 -- Forwards scan RowCompare quals whose row arg has a NULL that ends scan
 --
-explain (costs off)
+explain (costs ON)
 SELECT proname, proargtypes, pronamespace
    FROM pg_proc
    WHERE proname >= 'abs' AND (proname, proargtypes) < ('abs', NULL)
@@ -175,7 +175,7 @@ ORDER BY proname, proargtypes, pronamespace;
 -- Backwards scan RowCompare qual whose row arg has a NULL that affects our
 -- initial positioning strategy
 --
-explain (costs off)
+explain (costs ON)
 SELECT proname, proargtypes, pronamespace
    FROM pg_proc
    WHERE proname >= 'abs' AND (proname, proargtypes) <= ('abs', NULL)
@@ -189,7 +189,7 @@ ORDER BY proname DESC, proargtypes DESC, pronamespace DESC;
 --
 -- Backwards scan RowCompare qual whose row arg has a NULL that ends scan
 --
-explain (costs off)
+explain (costs ON)
 SELECT proname, proargtypes, pronamespace
    FROM pg_proc
    WHERE (proname, proargtypes) > ('abs', NULL) AND proname <= 'abs'
@@ -203,7 +203,7 @@ ORDER BY proname DESC, proargtypes DESC, pronamespace DESC;
 -- Makes B-Tree preprocessing deal with unmarking redundant keys that were
 -- initially marked required (test case relies on current row compare
 -- preprocessing limitations)
-explain (costs off)
+explain (costs ON)
 SELECT proname, proargtypes, pronamespace
    FROM pg_proc
    WHERE proname = 'zzzzzz' AND (proname, proargtypes) > ('abs', NULL)
@@ -225,7 +225,7 @@ ORDER BY proname, proargtypes, pronamespace;
 -- high key "(183, -inf)" on the first page that we'll scan.  The test will only
 -- provide useful coverage when the default 8K BLCKSZ is in use.
 --
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous
   FROM tenk1
   WHERE thousand IN (182, 183) AND tenthous > 7550;
@@ -248,29 +248,29 @@ SELECT thousand, tenthous
 set enable_seqscan to false;
 set enable_indexscan to true;
 set enable_bitmapscan to false;
-explain (costs off)
+explain (costs ON)
 select hundred, twenty from tenk1 where hundred < 48 order by hundred desc limit 1;
 select hundred, twenty from tenk1 where hundred < 48 order by hundred desc limit 1;
 
 -- This variant of the query need only return a single tuple located to the immediate
 -- right of the '(48, -inf)' high key.  It also only needs to scan one single
 -- leaf page (the right sibling of the page scanned by the last test case):
-explain (costs off)
+explain (costs ON)
 select hundred, twenty from tenk1 where hundred <= 48 order by hundred desc limit 1;
 select hundred, twenty from tenk1 where hundred <= 48 order by hundred desc limit 1;
 
 --
 -- Add coverage for ScalarArrayOp btree quals with pivot tuple constants
 --
-explain (costs off)
+explain (costs ON)
 select distinct hundred from tenk1 where hundred in (47, 48, 72, 82);
 select distinct hundred from tenk1 where hundred in (47, 48, 72, 82);
 
-explain (costs off)
+explain (costs ON)
 select distinct hundred from tenk1 where hundred in (47, 48, 72, 82) order by hundred desc;
 select distinct hundred from tenk1 where hundred in (47, 48, 72, 82) order by hundred desc;
 
-explain (costs off)
+explain (costs ON)
 select thousand from tenk1 where thousand in (364, 366,380) and tenthous = 200000;
 select thousand from tenk1 where thousand in (364, 366,380) and tenthous = 200000;
 
@@ -282,24 +282,24 @@ select thousand from tenk1 where thousand in (364, 366,380) and tenthous = 20000
 set enable_seqscan to false;
 set enable_indexscan to true;
 set enable_bitmapscan to false;
-explain (costs off)
+explain (costs ON)
 select proname from pg_proc where proname like E'RI\\_FKey%del' order by 1;
 select proname from pg_proc where proname like E'RI\\_FKey%del' order by 1;
-explain (costs off)
+explain (costs ON)
 select proname from pg_proc where proname ilike '00%foo' order by 1;
 select proname from pg_proc where proname ilike '00%foo' order by 1;
-explain (costs off)
+explain (costs ON)
 select proname from pg_proc where proname ilike 'ri%foo' order by 1;
 
 set enable_indexscan to false;
 set enable_bitmapscan to true;
-explain (costs off)
+explain (costs ON)
 select proname from pg_proc where proname like E'RI\\_FKey%del' order by 1;
 select proname from pg_proc where proname like E'RI\\_FKey%del' order by 1;
-explain (costs off)
+explain (costs ON)
 select proname from pg_proc where proname ilike '00%foo' order by 1;
 select proname from pg_proc where proname ilike '00%foo' order by 1;
-explain (costs off)
+explain (costs ON)
 select proname from pg_proc where proname ilike 'ri%foo' order by 1;
 
 reset enable_seqscan;
@@ -312,17 +312,17 @@ create temp table btree_bpchar (f1 text collate "C");
 create index on btree_bpchar(f1 bpchar_ops) WITH (deduplicate_items=on);
 insert into btree_bpchar values ('foo'), ('fool'), ('bar'), ('quux');
 -- doesn't match index:
-explain (costs off)
+explain (costs ON)
 select * from btree_bpchar where f1 like 'foo';
 select * from btree_bpchar where f1 like 'foo';
-explain (costs off)
+explain (costs ON)
 select * from btree_bpchar where f1 like 'foo%';
 select * from btree_bpchar where f1 like 'foo%';
 -- these do match the index:
-explain (costs off)
+explain (costs ON)
 select * from btree_bpchar where f1::bpchar like 'foo';
 select * from btree_bpchar where f1::bpchar like 'foo';
-explain (costs off)
+explain (costs ON)
 select * from btree_bpchar where f1::bpchar like 'foo%';
 select * from btree_bpchar where f1::bpchar like 'foo%';
 
@@ -383,12 +383,12 @@ set enable_bitmapscan to false;
 
 -- Forwards scan
 SELECT id FROM btree_tall_tbl WHERE id = 55 ORDER BY t, id;
-explain (costs off)
+explain (costs ON)
 SELECT id FROM btree_tall_tbl WHERE id = 55 ORDER BY t, id;
 
 -- Backwards scan
 SELECT id FROM btree_tall_tbl WHERE id = 55 ORDER BY t DESC, id DESC;
-explain (costs off)
+explain (costs ON)
 SELECT id FROM btree_tall_tbl WHERE id = 55 ORDER BY t DESC, id DESC;
 
 reset enable_seqscan;

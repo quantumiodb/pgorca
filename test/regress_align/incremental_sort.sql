@@ -1,13 +1,13 @@
 -- When there is a LIMIT clause, incremental sort is beneficial because
 -- it only has to sort some of the groups, and not the entire table.
-explain (costs off)
+explain (costs ON)
 select * from (select * from tenk1 order by four) t order by four, ten
 limit 1;
 
 -- When work_mem is not enough to sort the entire table, incremental sort
 -- may be faster if individual groups still fit into work_mem.
 set work_mem to '2MB';
-explain (costs off)
+explain (costs ON)
 select * from (select * from tenk1 order by four) t order by four, ten;
 reset work_mem;
 
@@ -21,7 +21,7 @@ declare
   line text;
 begin
   for line in
-    execute 'explain (analyze, costs off, summary off, timing off, buffers off) ' || query
+    execute 'explain (analyze, costs ON, summary off, timing off, buffers off) ' || query
   loop
     out_line := regexp_replace(line, '\d+kB', 'NNkB', 'g');
     return next;
@@ -38,7 +38,7 @@ declare
   element jsonb;
   matching_nodes jsonb := '[]'::jsonb;
 begin
-  execute 'explain (analyze, costs off, summary off, timing off, buffers off, format ''json'') ' || query into strict elements;
+  execute 'explain (analyze, costs ON, summary off, timing off, buffers off, format ''json'') ' || query into strict elements;
   while jsonb_array_length(elements) > 0 loop
     element := elements->0;
     elements := elements - 0;
@@ -116,22 +116,22 @@ $$;
 -- A single large group tested around each mode transition point.
 insert into t(a, b) select i/100 + 1, i + 1 from generate_series(0, 999) n(i);
 analyze t;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 31;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 31;
 select * from (select * from t order by a) s order by a, b limit 31;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 32;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 32;
 select * from (select * from t order by a) s order by a, b limit 32;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 33;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 33;
 select * from (select * from t order by a) s order by a, b limit 33;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 65;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 65;
 select * from (select * from t order by a) s order by a, b limit 65;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 66;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 66;
 select * from (select * from t order by a) s order by a, b limit 66;
 delete from t;
 
 -- An initial large group followed by a small group.
 insert into t(a, b) select i/50 + 1, i + 1 from generate_series(0, 999) n(i);
 analyze t;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 55;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 55;
 select * from (select * from t order by a) s order by a, b limit 55;
 -- Test EXPLAIN ANALYZE with only a fullsort group.
 select explain_analyze_without_memory('select * from (select * from t order by a) s order by a, b limit 55');
@@ -142,13 +142,13 @@ delete from t;
 -- An initial small group followed by a large group.
 insert into t(a, b) select (case when i < 5 then i else 9 end), i from generate_series(1, 1000) n(i);
 analyze t;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 70;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 70;
 select * from (select * from t order by a) s order by a, b limit 70;
 -- Checks case where we hit a group boundary at the last tuple of a batch.
 -- Because the full sort state is bounded, we scan 64 tuples (the mode
 -- transition point) but only retain 5. Thus when we transition modes, all
 -- tuples in the full sort state have different prefix keys.
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 5;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 5;
 select * from (select * from t order by a) s order by a, b limit 5;
 
 -- Test rescan.
@@ -159,7 +159,7 @@ set local enable_hashjoin = off;
 set local enable_mergejoin = off;
 set local enable_material = off;
 set local enable_sort = off;
-explain (costs off) select * from t left join (select * from (select * from t order by a) v order by a, b) s on s.a = t.a where t.a in (1, 2);
+explain (costs ON) select * from t left join (select * from (select * from t order by a) v order by a, b) s on s.a = t.a where t.a in (1, 2);
 select * from t left join (select * from (select * from t order by a) v order by a, b) s on s.a = t.a where t.a in (1, 2);
 rollback;
 -- Test EXPLAIN ANALYZE with both fullsort and presorted groups.
@@ -171,30 +171,30 @@ delete from t;
 -- Small groups of 10 tuples each tested around each mode transition point.
 insert into t(a, b) select i / 10, i from generate_series(1, 1000) n(i);
 analyze t;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 31;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 31;
 select * from (select * from t order by a) s order by a, b limit 31;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 32;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 32;
 select * from (select * from t order by a) s order by a, b limit 32;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 33;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 33;
 select * from (select * from t order by a) s order by a, b limit 33;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 65;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 65;
 select * from (select * from t order by a) s order by a, b limit 65;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 66;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 66;
 select * from (select * from t order by a) s order by a, b limit 66;
 delete from t;
 
 -- Small groups of only 1 tuple each tested around each mode transition point.
 insert into t(a, b) select i, i from generate_series(1, 1000) n(i);
 analyze t;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 31;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 31;
 select * from (select * from t order by a) s order by a, b limit 31;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 32;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 32;
 select * from (select * from t order by a) s order by a, b limit 32;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 33;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 33;
 select * from (select * from t order by a) s order by a, b limit 33;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 65;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 65;
 select * from (select * from t order by a) s order by a, b limit 65;
-explain (costs off) select * from (select * from t order by a) s order by a, b limit 66;
+explain (costs ON) select * from (select * from t order by a) s order by a, b limit 66;
 select * from (select * from t order by a) s order by a, b limit 66;
 delete from t;
 
@@ -213,18 +213,18 @@ create index on t (a);
 analyze t;
 
 set enable_incremental_sort = off;
-explain (costs off) select a,b,sum(c) from t group by 1,2 order by 1,2,3 limit 1;
+explain (costs ON) select a,b,sum(c) from t group by 1,2 order by 1,2,3 limit 1;
 
 set enable_incremental_sort = on;
-explain (costs off) select a,b,sum(c) from t group by 1,2 order by 1,2,3 limit 1;
+explain (costs ON) select a,b,sum(c) from t group by 1,2 order by 1,2,3 limit 1;
 
 -- Incremental sort vs. set operations with varno 0
 set enable_hashagg to off;
-explain (costs off) select * from t union select * from t order by 1,3;
+explain (costs ON) select * from t union select * from t order by 1,3;
 
 -- Full sort, not just incremental sort can be pushed below a gather merge path
 -- by generate_useful_gather_paths.
-explain (costs off) select distinct a,b from t;
+explain (costs ON) select distinct a,b from t;
 
 drop table t;
 
@@ -241,39 +241,39 @@ set min_parallel_table_scan_size = 0;
 set min_parallel_index_scan_size = 0;
 
 -- Parallel sort below join.
-explain (costs off) select distinct sub.unique1, stringu1
+explain (costs ON) select distinct sub.unique1, stringu1
 from tenk1, lateral (select tenk1.unique1 from generate_series(1, 1000)) as sub;
-explain (costs off) select sub.unique1, stringu1
+explain (costs ON) select sub.unique1, stringu1
 from tenk1, lateral (select tenk1.unique1 from generate_series(1, 1000)) as sub
 order by 1, 2;
 -- Parallel sort but with expression that can be safely generated at the base rel.
-explain (costs off) select distinct sub.unique1, md5(stringu1)
+explain (costs ON) select distinct sub.unique1, md5(stringu1)
 from tenk1, lateral (select tenk1.unique1 from generate_series(1, 1000)) as sub;
-explain (costs off) select sub.unique1, md5(stringu1)
+explain (costs ON) select sub.unique1, md5(stringu1)
 from tenk1, lateral (select tenk1.unique1 from generate_series(1, 1000)) as sub
 order by 1, 2;
 -- Parallel sort with an aggregate that can be safely generated in parallel,
 -- but we can't sort by partial aggregate values.
-explain (costs off) select count(*)
+explain (costs ON) select count(*)
 from tenk1 t1
 join tenk1 t2 on t1.unique1 = t2.unique2
 join tenk1 t3 on t2.unique1 = t3.unique1
 order by count(*);
 -- Parallel sort but with expression (correlated subquery) that
 -- is prohibited in parallel plans.
-explain (costs off) select distinct
+explain (costs ON) select distinct
   unique1,
   (select t.unique1 from tenk1 where tenk1.unique1 = t.unique1)
 from tenk1 t, generate_series(1, 1000);
-explain (costs off) select
+explain (costs ON) select
   unique1,
   (select t.unique1 from tenk1 where tenk1.unique1 = t.unique1)
 from tenk1 t, generate_series(1, 1000)
 order by 1, 2;
 -- Parallel sort but with expression not available until the upper rel.
-explain (costs off) select distinct sub.unique1, stringu1 || random()::text
+explain (costs ON) select distinct sub.unique1, stringu1 || random()::text
 from tenk1, lateral (select tenk1.unique1 from generate_series(1, 1000)) as sub;
-explain (costs off) select sub.unique1, stringu1 || random()::text
+explain (costs ON) select sub.unique1, stringu1 || random()::text
 from tenk1, lateral (select tenk1.unique1 from generate_series(1, 1000)) as sub
 order by 1, 2;
 
@@ -290,11 +290,11 @@ create table point_table (a point, b int);
 create index point_table_a_idx on point_table using gist(a);
 
 -- Ensure we get an incremental sort plan for both of the following queries
-explain (costs off) select a, b, a <-> point(5, 5) dist from point_table order by dist, b limit 1;
-explain (costs off) select a, b, a <-> point(5, 5) dist from point_table order by dist, b desc limit 1;
+explain (costs ON) select a, b, a <-> point(5, 5) dist from point_table order by dist, b limit 1;
+explain (costs ON) select a, b, a <-> point(5, 5) dist from point_table order by dist, b desc limit 1;
 
 -- Ensure we get an incremental sort on the outer side of the mergejoin
-explain (costs off)
+explain (costs ON)
 select * from
   (select * from tenk1 order by four) t1 join tenk1 t2 on t1.four = t2.four and t1.two = t2.two
 order by t1.four, t1.two limit 1;

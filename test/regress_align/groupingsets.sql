@@ -143,7 +143,7 @@ select a, d, grouping(a,b,c)
 
 -- check that distinct grouping columns are kept separate
 -- even if they are equal()
-explain (costs off)
+explain (costs ON)
 select g as alias1, g as alias2
   from generate_series(1,3) g
  group by alias1, rollup(alias2);
@@ -188,7 +188,7 @@ begin;
 
 set local enable_bitmapscan = off;
 
-explain (costs off)
+explain (costs ON)
 select x, y
   from (select unique1 as x, unique2 as y from tenk1) as t
   where x = 1
@@ -201,7 +201,7 @@ select x, y
   group by grouping sets (x, y)
   order by 1, 2;
 
-explain (costs off)
+explain (costs ON)
 select x, y
   from (select unique1::oid as x, unique2 as y from tenk1) as t
   where x::integer = 1
@@ -214,7 +214,7 @@ select x, y
   group by grouping sets (x, y)
   order by 1, 2;
 
-explain (costs off)
+explain (costs ON)
 select x, y
   from (select t1.unique1 as x, t1.unique2 as y from tenk1 t1, tenk1 t2) as t
   where x = 1
@@ -230,7 +230,7 @@ select x, y
 rollback;
 
 -- check qual push-down rules for a subquery with grouping sets
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from (
   select 1 as x, q1, sum(q2)
   from int8_tbl i1
@@ -246,7 +246,7 @@ select * from (
 where x = 1 and q1 = 123;
 
 -- check handling of pulled-up SubPlan in GROUPING() argument (bug #17479)
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select grouping(ss.x)
 from int8_tbl i1
 cross join lateral (select (select i1.q1) as x) ss
@@ -257,7 +257,7 @@ from int8_tbl i1
 cross join lateral (select (select i1.q1) as x) ss
 group by ss.x;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select (select grouping(ss.x))
 from int8_tbl i1
 cross join lateral (select (select i1.q1) as x) ss
@@ -279,7 +279,7 @@ select *
        lateral (select a, b, sum(v.x) from gstest_data(v.x) group by rollup (a,b)) s;
 
 -- min max optimization should still work with GROUP BY ()
-explain (costs off)
+explain (costs ON)
   select min(unique1) from tenk1 GROUP BY ();
 
 -- Views with GROUPING SET queries
@@ -310,7 +310,7 @@ select a, b, sum(v.x)
  group by cube (a,b) order by a,b;
 
 -- Test reordering of grouping sets
-explain (costs off)
+explain (costs ON)
 select * from gstest1 group by grouping sets((a,b,v),(v)) order by v,b,a;
 
 -- Agg level check. This query should error out.
@@ -327,35 +327,35 @@ having exists (select 1 from onek b where sum(distinct a.four) = b.four);
 -- Tests around pushdown of HAVING clauses, partially testing against previous bugs
 select a,count(*) from gstest2 group by rollup(a) order by a;
 select a,count(*) from gstest2 group by rollup(a) having a is distinct from 1 order by a;
-explain (costs off)
+explain (costs ON)
   select a,count(*) from gstest2 group by rollup(a) having a is distinct from 1 order by a;
 
 select v.c, (select count(*) from gstest2 group by () having v.c)
   from (values (false),(true)) v(c) order by v.c;
-explain (costs off)
+explain (costs ON)
   select v.c, (select count(*) from gstest2 group by () having v.c)
     from (values (false),(true)) v(c) order by v.c;
 
 -- test pushdown of non-degenerate HAVING clause that does not reference any
 -- columns that are nullable by grouping sets
-explain (costs off)
+explain (costs ON)
 select a, b, count(*) from gstest2 group by grouping sets ((a, b), (a)) having a > 1 and b > 1;
 select a, b, count(*) from gstest2 group by grouping sets ((a, b), (a)) having a > 1 and b > 1;
 
-explain (costs off)
+explain (costs ON)
 select a, b, count(*) from gstest2 group by rollup(a), b having b > 1;
 select a, b, count(*) from gstest2 group by rollup(a), b having b > 1;
 
 -- test pushdown of degenerate HAVING clause
-explain (costs off)
+explain (costs ON)
 select count(*) from gstest2 group by grouping sets (()) having false;
 select count(*) from gstest2 group by grouping sets (()) having false;
 
-explain (costs off)
+explain (costs ON)
 select a, count(*) from gstest2 group by grouping sets ((a), ()) having false;
 select a, count(*) from gstest2 group by grouping sets ((a), ()) having false;
 
-explain (costs off)
+explain (costs ON)
 select a, b, count(*) from gstest2 group by grouping sets ((a), (b)) having false;
 select a, b, count(*) from gstest2 group by grouping sets ((a), (b)) having false;
 
@@ -401,16 +401,16 @@ select array_agg(v order by v) from gstest4 group by grouping sets ((id,unsortab
 
 select a, b, grouping(a,b), sum(v), count(*), max(v)
   from gstest1 group by grouping sets ((a),(b)) order by 3,1,2;
-explain (costs off) select a, b, grouping(a,b), sum(v), count(*), max(v)
+explain (costs ON) select a, b, grouping(a,b), sum(v), count(*), max(v)
   from gstest1 group by grouping sets ((a),(b)) order by 3,1,2;
 
 select a, b, grouping(a,b), sum(v), count(*), max(v)
   from gstest1 group by cube(a,b) order by 3,1,2;
-explain (costs off) select a, b, grouping(a,b), sum(v), count(*), max(v)
+explain (costs ON) select a, b, grouping(a,b), sum(v), count(*), max(v)
   from gstest1 group by cube(a,b) order by 3,1,2;
 
 -- shouldn't try and hash
-explain (costs off)
+explain (costs ON)
   select a, b, grouping(a,b), array_agg(v order by v)
     from gstest1 group by cube(a,b);
 
@@ -425,7 +425,7 @@ select unhashable_col, unsortable_col,
        count(*), sum(v)
   from gstest4 group by grouping sets ((unhashable_col),(unsortable_col))
  order by 3, 5;
-explain (costs off)
+explain (costs ON)
   select unhashable_col, unsortable_col,
          grouping(unhashable_col, unsortable_col),
          count(*), sum(v)
@@ -437,7 +437,7 @@ select unhashable_col, unsortable_col,
        count(*), sum(v)
   from gstest4 group by grouping sets ((v,unhashable_col),(v,unsortable_col))
  order by 3,5;
-explain (costs off)
+explain (costs ON)
   select unhashable_col, unsortable_col,
          grouping(unhashable_col, unsortable_col),
          count(*), sum(v)
@@ -446,21 +446,21 @@ explain (costs off)
 
 -- empty input: first is 0 rows, second 1, third 3 etc.
 select a, b, sum(v), count(*) from gstest_empty group by grouping sets ((a,b),a);
-explain (costs off)
+explain (costs ON)
   select a, b, sum(v), count(*) from gstest_empty group by grouping sets ((a,b),a);
 select a, b, sum(v), count(*) from gstest_empty group by grouping sets ((a,b),());
 select a, b, sum(v), count(*) from gstest_empty group by grouping sets ((a,b),(),(),());
-explain (costs off)
+explain (costs ON)
   select a, b, sum(v), count(*) from gstest_empty group by grouping sets ((a,b),(),(),());
 select sum(v), count(*) from gstest_empty group by grouping sets ((),(),());
-explain (costs off)
+explain (costs ON)
   select sum(v), count(*) from gstest_empty group by grouping sets ((),(),());
 
 -- check that functionally dependent cols are not nulled
 select a, d, grouping(a,b,c)
   from gstest3
  group by grouping sets ((a,b), (a,c));
-explain (costs off)
+explain (costs ON)
   select a, d, grouping(a,b,c)
     from gstest3
    group by grouping sets ((a,b), (a,c));
@@ -471,7 +471,7 @@ select a, b, sum(v.x)
   from (values (1),(2)) v(x), gstest_data(v.x)
  group by grouping sets (a,b)
  order by 1, 2, 3;
-explain (costs off)
+explain (costs ON)
   select a, b, sum(v.x)
     from (values (1),(2)) v(x), gstest_data(v.x)
    group by grouping sets (a,b)
@@ -479,7 +479,7 @@ explain (costs off)
 select *
   from (values (1),(2)) v(x),
        lateral (select a, b, sum(v.x) from gstest_data(v.x) group by grouping sets (a,b)) s;
-explain (costs off)
+explain (costs ON)
   select *
     from (values (1),(2)) v(x),
          lateral (select a, b, sum(v.x) from gstest_data(v.x) group by grouping sets (a,b)) s;
@@ -487,18 +487,18 @@ explain (costs off)
 -- Tests for chained aggregates
 select a, b, grouping(a,b), sum(v), count(*), max(v)
   from gstest1 group by grouping sets ((a,b),(a+1,b+1),(a+2,b+2)) order by 3,6;
-explain (costs off)
+explain (costs ON)
   select a, b, grouping(a,b), sum(v), count(*), max(v)
     from gstest1 group by grouping sets ((a,b),(a+1,b+1),(a+2,b+2)) order by 3,6;
 select a, b, sum(c), sum(sum(c)) over (order by a,b) as rsum
   from gstest2 group by cube (a,b) order by rsum, a, b;
-explain (costs off)
+explain (costs ON)
   select a, b, sum(c), sum(sum(c)) over (order by a,b) as rsum
     from gstest2 group by cube (a,b) order by rsum, a, b;
 select a, b, sum(v.x)
   from (values (1),(2)) v(x), gstest_data(v.x)
  group by cube (a,b) order by a,b;
-explain (costs off)
+explain (costs ON)
   select a, b, sum(v.x)
     from (values (1),(2)) v(x), gstest_data(v.x)
    group by cube (a,b) order by a,b;
@@ -529,13 +529,13 @@ select array(select row(v.a,s1.*) from (select two,four, count(*) from onek grou
 set enable_indexscan = false;
 set hash_mem_multiplier = 1.0;
 set work_mem = '64kB';
-explain (costs off)
+explain (costs ON)
   select unique1,
          count(two), count(four), count(ten),
          count(hundred), count(thousand), count(twothousand),
          count(*)
     from tenk1 group by grouping sets (unique1,twothousand,thousand,hundred,ten,four,two);
-explain (costs off)
+explain (costs ON)
   select unique1,
          count(two), count(four), count(ten),
          count(hundred), count(thousand), count(twothousand),
@@ -543,7 +543,7 @@ explain (costs off)
     from tenk1 group by grouping sets (unique1,hundred,ten,four,two);
 
 set work_mem = '384kB';
-explain (costs off)
+explain (costs ON)
   select unique1,
          count(two), count(four), count(ten),
          count(hundred), count(thousand), count(twothousand),
@@ -600,7 +600,7 @@ set enable_sort = true;
 set enable_hashagg = false;
 set jit_above_cost = 0;
 
-explain (costs off)
+explain (costs ON)
 select g100, g10, sum(g::numeric), count(*), max(g::text)
 from gs_data_1 group by cube (g1000, g100,g10);
 
@@ -613,7 +613,7 @@ from gs_data_1 group by cube (g1000, g100,g10);
 set enable_hashagg = true;
 set enable_sort = false;
 
-explain (costs off)
+explain (costs ON)
 select g100, g10, sum(g::numeric), count(*), max(g::text)
 from gs_data_1 group by cube (g1000, g100,g10);
 
@@ -661,11 +661,11 @@ group by rollup(a, b), rollup(a, c)
 order by a, b, c;
 
 -- test handling of outer GroupingFunc within subqueries
-explain (costs off)
+explain (costs ON)
 select (select grouping(v1)) from (values ((select 1))) v(v1) group by cube(v1);
 select (select grouping(v1)) from (values ((select 1))) v(v1) group by cube(v1);
 
-explain (costs off)
+explain (costs ON)
 select (select grouping(v1)) from (values ((select 1))) v(v1) group by v1;
 select (select grouping(v1)) from (values ((select 1))) v(v1) group by v1;
 
@@ -673,7 +673,7 @@ select (select grouping(v1)) from (values ((select 1))) v(v1) group by v1;
 create temp table gstest5(id integer primary key, v integer);
 insert into gstest5 select i, i from generate_series(1,5)i;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select grouping((select t1.v from gstest5 t2 where id = t1.id)),
        (select t1.v from gstest5 t2 where id = t1.id) as s
 from gstest5 t1
@@ -692,7 +692,7 @@ order by case when grouping((select t1.v from gstest5 t2 where id = t1.id)) = 0
               else null end
          nulls first;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select grouping((select t1.v from gstest5 t2 where id = t1.id)),
        (select t1.v from gstest5 t2 where id = t1.id) as s,
        case when grouping((select t1.v from gstest5 t2 where id = t1.id)) = 0
@@ -712,16 +712,16 @@ group by grouping sets(v, s)
 order by o nulls first;
 
 -- test handling of expressions that should match lower target items
-explain (costs off)
+explain (costs ON)
 select a < b and b < 3 from (values (1, 2)) t(a, b) group by rollup(a < b and b < 3) having a < b and b < 3;
 select a < b and b < 3 from (values (1, 2)) t(a, b) group by rollup(a < b and b < 3) having a < b and b < 3;
 
-explain (costs off)
+explain (costs ON)
 select not a from (values(true)) t(a) group by rollup(not a) having not not a;
 select not a from (values(true)) t(a) group by rollup(not a) having not not a;
 
 -- test handling of expressions nullable by grouping sets
-explain (costs off)
+explain (costs ON)
 select distinct on (a, b) a, b
 from (values (1, 1), (2, 2)) as t (a, b) where a = b
 group by grouping sets((a, b), (a))
@@ -732,7 +732,7 @@ from (values (1, 1), (2, 2)) as t (a, b) where a = b
 group by grouping sets((a, b), (a))
 order by a, b;
 
-explain (costs off)
+explain (costs ON)
 select distinct on (a, b+1) a, b+1
 from (values (1, 0), (2, 1)) as t (a, b) where a = b+1
 group by grouping sets((a, b+1), (a))
@@ -743,7 +743,7 @@ from (values (1, 0), (2, 1)) as t (a, b) where a = b+1
 group by grouping sets((a, b+1), (a))
 order by a, b+1;
 
-explain (costs off)
+explain (costs ON)
 select a, b
 from (values (1, 1), (2, 2)) as t (a, b) where a = b
 group by grouping sets((a, b), (a))
@@ -754,11 +754,11 @@ from (values (1, 1), (2, 2)) as t (a, b) where a = b
 group by grouping sets((a, b), (a))
 order by a, b nulls first;
 
-explain (costs off)
+explain (costs ON)
 select 1 as one group by rollup(one) order by one nulls first;
 select 1 as one group by rollup(one) order by one nulls first;
 
-explain (costs off)
+explain (costs ON)
 select a, b, row_number() over (order by a, b nulls first)
 from (values (1, 1), (2, 2)) as t (a, b) where a = b
 group by grouping sets((a, b), (a));
@@ -768,7 +768,7 @@ from (values (1, 1), (2, 2)) as t (a, b) where a = b
 group by grouping sets((a, b), (a));
 
 -- test handling of SRFs with grouping sets
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select generate_series(1, a) as g
 from (values (1, 1), (2, 2)) as t (a, b)
 group by rollup(g)
@@ -779,7 +779,7 @@ from (values (1, 1), (2, 2)) as t (a, b)
 group by rollup(g)
 order by 1;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select generate_series(1, a) as g, a+b as ab
 from (values (1, 1), (2, 2)) as t (a, b)
 group by rollup(a, ab)

@@ -122,13 +122,13 @@ SELECT q1 FROM int8_tbl EXCEPT ALL SELECT q1 FROM int8_tbl FOR NO KEY UPDATE;
 
 set enable_hashagg to on;
 
-explain (costs off)
+explain (costs ON)
 select count(*) from
   ( select unique1 from tenk1 union select fivethous from tenk1 ) ss;
 select count(*) from
   ( select unique1 from tenk1 union select fivethous from tenk1 ) ss;
 
-explain (costs off)
+explain (costs ON)
 select count(*) from
   ( select unique1 from tenk1 intersect select fivethous from tenk1 ) ss;
 select count(*) from
@@ -137,37 +137,37 @@ select count(*) from
 -- this query will prefer a sorted setop unless we force it.
 set enable_indexscan to off;
 
-explain (costs off)
+explain (costs ON)
 select unique1 from tenk1 except select unique2 from tenk1 where unique2 != 10;
 select unique1 from tenk1 except select unique2 from tenk1 where unique2 != 10;
 
 reset enable_indexscan;
 
 -- the hashed implementation is sensitive to child plans' tuple slot types
-explain (costs off)
+explain (costs ON)
 select * from int8_tbl intersect select q2, q1 from int8_tbl order by 1, 2;
 select * from int8_tbl intersect select q2, q1 from int8_tbl order by 1, 2;
 select q2, q1 from int8_tbl intersect select * from int8_tbl order by 1, 2;
 
 set enable_hashagg to off;
 
-explain (costs off)
+explain (costs ON)
 select count(*) from
   ( select unique1 from tenk1 union select fivethous from tenk1 ) ss;
 select count(*) from
   ( select unique1 from tenk1 union select fivethous from tenk1 ) ss;
 
-explain (costs off)
+explain (costs ON)
 select count(*) from
   ( select unique1 from tenk1 intersect select fivethous from tenk1 ) ss;
 select count(*) from
   ( select unique1 from tenk1 intersect select fivethous from tenk1 ) ss;
 
-explain (costs off)
+explain (costs ON)
 select unique1 from tenk1 except select unique2 from tenk1 where unique2 != 10;
 select unique1 from tenk1 except select unique2 from tenk1 where unique2 != 10;
 
-explain (costs off)
+explain (costs ON)
 select f1 from int4_tbl union all
   (select unique1 from tenk1 union select unique2 from tenk1);
 
@@ -176,12 +176,12 @@ reset enable_hashagg;
 -- non-hashable type
 set enable_hashagg to on;
 
-explain (costs off)
+explain (costs ON)
 select x from (values ('11'::varbit), ('10'::varbit)) _(x) union select x from (values ('11'::varbit), ('10'::varbit)) _(x);
 
 set enable_hashagg to off;
 
-explain (costs off)
+explain (costs ON)
 select x from (values ('11'::varbit), ('10'::varbit)) _(x) union select x from (values ('11'::varbit), ('10'::varbit)) _(x);
 
 reset enable_hashagg;
@@ -189,30 +189,30 @@ reset enable_hashagg;
 -- arrays
 set enable_hashagg to on;
 
-explain (costs off)
+explain (costs ON)
 select x from (values (array[1, 2]), (array[1, 3])) _(x) union select x from (values (array[1, 2]), (array[1, 4])) _(x);
 select x from (values (array[1, 2]), (array[1, 3])) _(x) union select x from (values (array[1, 2]), (array[1, 4])) _(x);
-explain (costs off)
+explain (costs ON)
 select x from (values (array[1, 2]), (array[1, 3])) _(x) intersect select x from (values (array[1, 2]), (array[1, 4])) _(x);
 select x from (values (array[1, 2]), (array[1, 3])) _(x) intersect select x from (values (array[1, 2]), (array[1, 4])) _(x);
-explain (costs off)
+explain (costs ON)
 select x from (values (array[1, 2]), (array[1, 3])) _(x) except select x from (values (array[1, 2]), (array[1, 4])) _(x);
 select x from (values (array[1, 2]), (array[1, 3])) _(x) except select x from (values (array[1, 2]), (array[1, 4])) _(x);
 
 -- non-hashable type
-explain (costs off)
+explain (costs ON)
 select x from (values (array['10'::varbit]), (array['11'::varbit])) _(x) union select x from (values (array['10'::varbit]), (array['01'::varbit])) _(x);
 select x from (values (array['10'::varbit]), (array['11'::varbit])) _(x) union select x from (values (array['10'::varbit]), (array['01'::varbit])) _(x);
 
 set enable_hashagg to off;
 
-explain (costs off)
+explain (costs ON)
 select x from (values (array[1, 2]), (array[1, 3])) _(x) union select x from (values (array[1, 2]), (array[1, 4])) _(x);
 select x from (values (array[1, 2]), (array[1, 3])) _(x) union select x from (values (array[1, 2]), (array[1, 4])) _(x);
-explain (costs off)
+explain (costs ON)
 select x from (values (array[1, 2]), (array[1, 3])) _(x) intersect select x from (values (array[1, 2]), (array[1, 4])) _(x);
 select x from (values (array[1, 2]), (array[1, 3])) _(x) intersect select x from (values (array[1, 2]), (array[1, 4])) _(x);
-explain (costs off)
+explain (costs ON)
 select x from (values (array[1, 2]), (array[1, 3])) _(x) except select x from (values (array[1, 2]), (array[1, 4])) _(x);
 select x from (values (array[1, 2]), (array[1, 3])) _(x) except select x from (values (array[1, 2]), (array[1, 4])) _(x);
 
@@ -221,13 +221,13 @@ reset enable_hashagg;
 -- records
 set enable_hashagg to on;
 
-explain (costs off)
+explain (costs ON)
 select x from (values (row(1, 2)), (row(1, 3))) _(x) union select x from (values (row(1, 2)), (row(1, 4))) _(x);
 select x from (values (row(1, 2)), (row(1, 3))) _(x) union select x from (values (row(1, 2)), (row(1, 4))) _(x);
-explain (costs off)
+explain (costs ON)
 select x from (values (row(1, 2)), (row(1, 3))) _(x) intersect select x from (values (row(1, 2)), (row(1, 4))) _(x);
 select x from (values (row(1, 2)), (row(1, 3))) _(x) intersect select x from (values (row(1, 2)), (row(1, 4))) _(x);
-explain (costs off)
+explain (costs ON)
 select x from (values (row(1, 2)), (row(1, 3))) _(x) except select x from (values (row(1, 2)), (row(1, 4))) _(x);
 select x from (values (row(1, 2)), (row(1, 3))) _(x) except select x from (values (row(1, 2)), (row(1, 4))) _(x);
 
@@ -235,27 +235,27 @@ select x from (values (row(1, 2)), (row(1, 3))) _(x) except select x from (value
 
 -- With an anonymous row type, the typcache does not report that the
 -- type is hashable.  (Otherwise, this would fail at execution time.)
-explain (costs off)
+explain (costs ON)
 select x from (values (row('10'::varbit)), (row('11'::varbit))) _(x) union select x from (values (row('10'::varbit)), (row('01'::varbit))) _(x);
 select x from (values (row('10'::varbit)), (row('11'::varbit))) _(x) union select x from (values (row('10'::varbit)), (row('01'::varbit))) _(x);
 
 -- With a defined row type, the typcache can inspect the type's fields
 -- for hashability.
 create type ct1 as (f1 varbit);
-explain (costs off)
+explain (costs ON)
 select x from (values (row('10'::varbit)::ct1), (row('11'::varbit)::ct1)) _(x) union select x from (values (row('10'::varbit)::ct1), (row('01'::varbit)::ct1)) _(x);
 select x from (values (row('10'::varbit)::ct1), (row('11'::varbit)::ct1)) _(x) union select x from (values (row('10'::varbit)::ct1), (row('01'::varbit)::ct1)) _(x);
 drop type ct1;
 
 set enable_hashagg to off;
 
-explain (costs off)
+explain (costs ON)
 select x from (values (row(1, 2)), (row(1, 3))) _(x) union select x from (values (row(1, 2)), (row(1, 4))) _(x);
 select x from (values (row(1, 2)), (row(1, 3))) _(x) union select x from (values (row(1, 2)), (row(1, 4))) _(x);
-explain (costs off)
+explain (costs ON)
 select x from (values (row(1, 2)), (row(1, 3))) _(x) intersect select x from (values (row(1, 2)), (row(1, 4))) _(x);
 select x from (values (row(1, 2)), (row(1, 3))) _(x) intersect select x from (values (row(1, 2)), (row(1, 4))) _(x);
-explain (costs off)
+explain (costs ON)
 select x from (values (row(1, 2)), (row(1, 3))) _(x) except select x from (values (row(1, 2)), (row(1, 4))) _(x);
 select x from (values (row(1, 2)), (row(1, 3))) _(x) except select x from (values (row(1, 2)), (row(1, 4))) _(x);
 
@@ -263,7 +263,7 @@ select x from (values (row(1, 2)), (row(1, 3))) _(x) except select x from (value
 
 -- Ensure we get a HashAggregate plan.  Keep enable_hashagg=off to ensure
 -- there's no chance of a sort.
-explain (costs off) select '123'::xid union select '123'::xid;
+explain (costs ON) select '123'::xid union select '123'::xid;
 
 reset enable_hashagg;
 
@@ -326,7 +326,7 @@ set enable_sort = false;
 -- We've no way to check hashed UNION as the empty pathkeys in the Append are
 -- fine to make use of Unique, which is cheaper than HashAggregate and we've
 -- no means to disable Unique.
-explain (costs off)
+explain (costs ON)
 select from generate_series(1,5) intersect select from generate_series(1,3);
 
 select from generate_series(1,5) union all select from generate_series(1,3);
@@ -339,9 +339,9 @@ select from generate_series(1,5) except all select from generate_series(1,3);
 set enable_hashagg = false;
 set enable_sort = true;
 
-explain (costs off)
+explain (costs ON)
 select from generate_series(1,5) union select from generate_series(1,3);
-explain (costs off)
+explain (costs ON)
 select from generate_series(1,5) intersect select from generate_series(1,3);
 
 select from generate_series(1,5) union select from generate_series(1,3);
@@ -395,14 +395,14 @@ set enable_indexscan = on;
 set enable_bitmapscan = off;
 set enable_sort = off;
 
-explain (costs off)
+explain (costs ON)
  SELECT * FROM
  (SELECT a || b AS ab FROM t1
   UNION ALL
   SELECT * FROM t2) t
  WHERE ab = 'ab';
 
-explain (costs off)
+explain (costs ON)
  SELECT * FROM
  (SELECT a || b AS ab FROM t1
   UNION
@@ -424,7 +424,7 @@ CREATE INDEX t1c_ab_idx on t1c ((a || b));
 set enable_seqscan = on;
 set enable_indexonlyscan = off;
 
-explain (costs off)
+explain (costs ON)
   SELECT * FROM
   (SELECT a || b AS ab FROM t1
    UNION ALL
@@ -448,7 +448,7 @@ create table events (event_id int primary key);
 create table other_events (event_id int primary key);
 create table events_child () inherits (events);
 
-explain (costs off)
+explain (costs ON)
 select event_id
  from (select event_id from events
        union all
@@ -460,7 +460,7 @@ drop table events_child, events, other_events;
 reset enable_indexonlyscan;
 
 -- Test constraint exclusion of UNION ALL subqueries
-explain (costs off)
+explain (costs ON)
  SELECT * FROM
   (SELECT 1 AS t, * FROM tenk1 a
    UNION ALL
@@ -468,7 +468,7 @@ explain (costs off)
  WHERE t = 2;
 
 -- Test that we push quals into UNION sub-selects only when it's safe
-explain (costs off)
+explain (costs ON)
 SELECT * FROM
   (SELECT 1 AS t, 2 AS x
    UNION
@@ -483,7 +483,7 @@ SELECT * FROM
 WHERE x < 4
 ORDER BY x;
 
-explain (costs off)
+explain (costs ON)
 SELECT * FROM
   (SELECT 1 AS t, generate_series(1,10) AS x
    UNION
@@ -498,7 +498,7 @@ SELECT * FROM
 WHERE x < 4
 ORDER BY x;
 
-explain (costs off)
+explain (costs ON)
 SELECT * FROM
   (SELECT 1 AS t, (random()*3)::int AS x
    UNION
@@ -515,7 +515,7 @@ ORDER BY x;
 
 -- Test cases where the native ordering of a sub-select has more pathkeys
 -- than the outer query cares about
-explain (costs off)
+explain (costs ON)
 select distinct q1 from
   (select distinct * from int8_tbl i81
    union all
@@ -528,7 +528,7 @@ select distinct q1 from
    select distinct * from int8_tbl i82) ss
 where q2 = q2;
 
-explain (costs off)
+explain (costs ON)
 select distinct q1 from
   (select distinct * from int8_tbl i81
    union all
@@ -551,7 +551,7 @@ create temp table t3 as select generate_series(-1000,1000) as x;
 create index t3i on t3 (expensivefunc(x));
 analyze t3;
 
-explain (costs off)
+explain (costs ON)
 select * from
   (select * from t3 a union all select * from t3 b) ss
   join int4_tbl on f1 = expensivefunc(x);
@@ -563,7 +563,7 @@ drop table t3;
 drop function expensivefunc(int);
 
 -- Test handling of appendrel quals that const-simplify into an AND
-explain (costs off)
+explain (costs ON)
 select * from
   (select *, 0 as x from int8_tbl a
    union all
@@ -580,19 +580,19 @@ where (x = 0) or (q1 >= q2 and q1 <= q2);
 --
 
 -- Ensure we get a Nested Loop join between tenk1 and tenk2
-explain (costs off)
+explain (costs ON)
 select t1.unique1 from tenk1 t1
 inner join tenk2 t2 on t1.tenthous = t2.tenthous and t2.thousand = 0
    union all
 (values(1)) limit 1;
 
 -- Ensure there is no problem if cheapest_startup_path is NULL
-explain (costs off)
+explain (costs ON)
 select * from tenk1 t1
 left join lateral
   (select t1.tenthous from tenk2 t2 union all (values(1)))
 on true limit 1;
 
 -- Test handling of Vars with varno 0 in estimate_array_length
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select null::int[] union all select null::int[] union all select null::bigint[];

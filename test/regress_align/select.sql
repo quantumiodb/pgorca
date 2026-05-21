@@ -192,43 +192,43 @@ SELECT * FROM foo ORDER BY f1 DESC NULLS LAST;
 --
 
 -- partial index is usable
-explain (costs off)
+explain (costs ON)
 select * from onek2 where unique2 = 11 and stringu1 = 'ATAAAA';
 select * from onek2 where unique2 = 11 and stringu1 = 'ATAAAA';
 -- actually run the query with an analyze to use the partial index
-explain (costs off, analyze on, timing off, summary off, buffers off)
+explain (costs ON, analyze on, timing off, summary off, buffers off)
 select * from onek2 where unique2 = 11 and stringu1 = 'ATAAAA';
-explain (costs off)
+explain (costs ON)
 select unique2 from onek2 where unique2 = 11 and stringu1 = 'ATAAAA';
 select unique2 from onek2 where unique2 = 11 and stringu1 = 'ATAAAA';
 -- partial index predicate implies clause, so no need for retest
-explain (costs off)
+explain (costs ON)
 select * from onek2 where unique2 = 11 and stringu1 < 'B';
 select * from onek2 where unique2 = 11 and stringu1 < 'B';
-explain (costs off)
+explain (costs ON)
 select unique2 from onek2 where unique2 = 11 and stringu1 < 'B';
 select unique2 from onek2 where unique2 = 11 and stringu1 < 'B';
 -- but if it's an update target, must retest anyway
-explain (costs off)
+explain (costs ON)
 select unique2 from onek2 where unique2 = 11 and stringu1 < 'B' for update;
 select unique2 from onek2 where unique2 = 11 and stringu1 < 'B' for update;
 -- partial index is not applicable
-explain (costs off)
+explain (costs ON)
 select unique2 from onek2 where unique2 = 11 and stringu1 < 'C';
 select unique2 from onek2 where unique2 = 11 and stringu1 < 'C';
 -- partial index implies clause, but bitmap scan must recheck predicate anyway
 SET enable_indexscan TO off;
-explain (costs off)
+explain (costs ON)
 select unique2 from onek2 where unique2 = 11 and stringu1 < 'B';
 select unique2 from onek2 where unique2 = 11 and stringu1 < 'B';
 RESET enable_indexscan;
 -- check multi-index cases too
-explain (costs off)
+explain (costs ON)
 select unique1, unique2 from onek2
   where (unique2 = 11 or unique1 = 0) and stringu1 < 'B';
 select unique1, unique2 from onek2
   where (unique2 = 11 or unique1 = 0) and stringu1 < 'B';
-explain (costs off)
+explain (costs ON)
 select unique1, unique2 from onek2
   where (unique2 = 11 and stringu1 < 'B') or unique1 = 0;
 select unique1, unique2 from onek2
@@ -260,5 +260,5 @@ select * from (values (2),(null),(1)) v(k) where k = k;
 create table list_parted_tbl (a int,b int) partition by list (a);
 create table list_parted_tbl1 partition of list_parted_tbl
   for values in (1) partition by list(b);
-explain (costs off) select * from list_parted_tbl;
+explain (costs ON) select * from list_parted_tbl;
 drop table list_parted_tbl;

@@ -60,8 +60,8 @@ filter_plan() {
 # (ended by `;` on its own line or at end of line).
 preprocess() {
   awk '
-    BEGIN { qn = 0 }
-    /^[[:space:]]*EXPLAIN/ && !/EXECUTE|PREPARE|ANALYZE|analyze/ {
+    BEGIN { qn = 0; IGNORECASE = 1 }
+    /^[[:space:]]*EXPLAIN/ && !/EXECUTE|PREPARE|ANALYZE/ {
       qn++
       printf "\\echo ===Q%d===\n", qn
     }

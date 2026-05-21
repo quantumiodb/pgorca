@@ -53,7 +53,7 @@ EXPLAIN (COSTS ON)
   SELECT * FROM test_tablesample_v1;
 
 -- check inheritance behavior
-explain (costs off)
+explain (costs ON)
   select count(*) from person tablesample bernoulli (100);
 select count(*) from person tablesample bernoulli (100);
 select count(*) from person;
@@ -68,7 +68,7 @@ select * from
 select * from
   (values (0),(100)) v(pct),
   lateral (select count(*) from tenk1 tablesample system (pct)) ss;
-explain (costs off)
+explain (costs ON)
 select pct, count(unique1) from
   (values (0),(100)) v(pct),
   lateral (select * from tenk1 tablesample bernoulli (pct)) ss
@@ -105,6 +105,6 @@ SELECT q.* FROM (SELECT * FROM test_tablesample) as q TABLESAMPLE BERNOULLI (5);
 create table parted_sample (a int) partition by list (a);
 create table parted_sample_1 partition of parted_sample for values in (1);
 create table parted_sample_2 partition of parted_sample for values in (2);
-explain (costs off)
+explain (costs ON)
   select * from parted_sample tablesample bernoulli (100);
 drop table parted_sample, parted_sample_1, parted_sample_2;

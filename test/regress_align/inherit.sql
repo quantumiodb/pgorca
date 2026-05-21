@@ -112,7 +112,7 @@ language plpgsql;
 create trigger some_tab_stmt_trig
   before update on some_tab execute function some_tab_stmt_trig_func();
 
-explain (costs off)
+explain (costs ON)
 update some_tab set f3 = 11 where f1 = 12 and f2 = 13;
 update some_tab set f3 = 11 where f1 = 12 and f2 = 13;
 
@@ -124,10 +124,10 @@ create table some_tab (a int, b int);
 create table some_tab_child () inherits (some_tab);
 insert into some_tab_child values(1,2);
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 update some_tab set a = a + 1 where false;
 update some_tab set a = a + 1 where false;
-explain (verbose, costs off)
+explain (verbose, costs ON)
 update some_tab set a = a + 1 where false returning b, a;
 update some_tab set a = a + 1 where false returning b, a;
 table some_tab;
@@ -265,8 +265,8 @@ insert into derived (i) values (0);
 select derived::base from derived;
 select NULL::derived::base;
 -- remove redundant conversions.
-explain (verbose on, costs off) select row(i, b)::more_derived::derived::base from more_derived;
-explain (verbose on, costs off) select (1, 2)::more_derived::derived::base;
+explain (verbose on, costs ON) select row(i, b)::more_derived::derived::base from more_derived;
+explain (verbose on, costs ON) select (1, 2)::more_derived::derived::base;
 drop table more_derived;
 drop table derived;
 drop table base;
@@ -608,13 +608,13 @@ analyze patest0;
 analyze patest1;
 analyze patest2;
 
-explain (costs off)
+explain (costs ON)
 select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
 select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
 
 drop index patest2i;
 
-explain (costs off)
+explain (costs ON)
 select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
 select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
 
@@ -642,22 +642,22 @@ insert into matest3 (name) values ('Test 5');
 insert into matest3 (name) values ('Test 6');
 
 set enable_indexscan = off;  -- force use of seqscan/sort, so no merge
-explain (verbose, costs off) select * from matest0 order by 1-id;
+explain (verbose, costs ON) select * from matest0 order by 1-id;
 select * from matest0 order by 1-id;
-explain (verbose, costs off) select min(1-id) from matest0;
+explain (verbose, costs ON) select min(1-id) from matest0;
 select min(1-id) from matest0;
 reset enable_indexscan;
 
 set enable_seqscan = off;  -- plan with fewest seqscans should be merge
 set enable_parallel_append = off; -- Don't let parallel-append interfere
-explain (verbose, costs off) select * from matest0 order by 1-id;
+explain (verbose, costs ON) select * from matest0 order by 1-id;
 select * from matest0 order by 1-id;
-explain (verbose, costs off) select min(1-id) from matest0;
+explain (verbose, costs ON) select min(1-id) from matest0;
 select min(1-id) from matest0;
 reset enable_seqscan;
 reset enable_parallel_append;
 
-explain (verbose, costs off)  -- bug #18652
+explain (verbose, costs ON)  -- bug #18652
 select 1 - id as c from
 (select id from matest3 t1 union all select id * 2 from matest3 t2) ss
 order by c;
@@ -679,7 +679,7 @@ create index matest1i on matest1 (b, c);
 
 set enable_nestloop = off;  -- we want a plan with two MergeAppends
 
-explain (costs off)
+explain (costs ON)
 select t1.* from matest0 t1, matest0 t2
 where t1.b = t2.b and t2.c = t2.d
 order by t1.b limit 10;
@@ -696,7 +696,7 @@ insert into matest1 select generate_series(1, 200);
 analyze matest0;
 analyze matest1;
 
-explain (costs off)
+explain (costs ON)
 select * from matest0 where a < 100 order by a;
 
 drop table matest0 cascade;
@@ -710,39 +710,39 @@ set enable_indexscan = on;
 set enable_bitmapscan = off;
 
 -- Check handling of duplicated, constant, or volatile targetlist items
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous FROM tenk1
 UNION ALL
 SELECT thousand, thousand FROM tenk1
 ORDER BY thousand, tenthous;
 
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous, thousand+tenthous AS x FROM tenk1
 UNION ALL
 SELECT 42, 42, hundred FROM tenk1
 ORDER BY thousand, tenthous;
 
-explain (costs off)
+explain (costs ON)
 SELECT thousand, tenthous FROM tenk1
 UNION ALL
 SELECT thousand, random()::integer FROM tenk1
 ORDER BY thousand, tenthous;
 
 -- Check min/max aggregate optimization
-explain (costs off)
+explain (costs ON)
 SELECT min(x) FROM
   (SELECT unique1 AS x FROM tenk1 a
    UNION ALL
    SELECT unique2 AS x FROM tenk1 b) s;
 
-explain (costs off)
+explain (costs ON)
 SELECT min(y) FROM
   (SELECT unique1 AS x, unique1 AS y FROM tenk1 a
    UNION ALL
    SELECT unique2 AS x, unique2 AS y FROM tenk1 b) s;
 
 -- XXX planner doesn't recognize that index on unique2 is sufficiently sorted
-explain (costs off)
+explain (costs ON)
 SELECT x, y FROM
   (SELECT thousand AS x, tenthous AS y FROM tenk1 a
    UNION ALL
@@ -750,7 +750,7 @@ SELECT x, y FROM
 ORDER BY x, y;
 
 -- exercise rescan code path via a repeatedly-evaluated subquery
-explain (costs off)
+explain (costs ON)
 SELECT
     ARRAY(SELECT f.i FROM (
         (SELECT d + g.i FROM generate_series(4, 30, 3) d ORDER BY 1)
@@ -782,7 +782,7 @@ alter table inhcld inherit inhpar;
 insert into inhpar select x, x::text from generate_series(1,5) x;
 insert into inhcld select x::text, x from generate_series(6,10) x;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 update inhpar i set (f1, f2) = (select i.f1, i.f2 || '-' from int4_tbl limit 1);
 update inhpar i set (f1, f2) = (select i.f1, i.f2 || '-' from int4_tbl limit 1);
 select * from inhpar;
@@ -799,7 +799,7 @@ alter table inhpar attach partition inhcld1 for values from (1) to (5);
 alter table inhpar attach partition inhcld2 for values from (5) to (100);
 insert into inhpar select x, x::text from generate_series(1,10) x;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 update inhpar i set (f1, f2) = (select i.f1, i.f2 || '-' from int4_tbl limit 1);
 update inhpar i set (f1, f2) = (select i.f1, i.f2 || '-' from int4_tbl limit 1);
 select * from inhpar;
@@ -1224,12 +1224,12 @@ create table part_ab_cd partition of list_parted for values in ('ab', 'cd');
 create table part_ef_gh partition of list_parted for values in ('ef', 'gh');
 create table part_null_xy partition of list_parted for values in (null, 'xy');
 
-explain (costs off) select * from list_parted;
-explain (costs off) select * from list_parted where a is null;
-explain (costs off) select * from list_parted where a is not null;
-explain (costs off) select * from list_parted where a in ('ab', 'cd', 'ef');
-explain (costs off) select * from list_parted where a = 'ab' or a in (null, 'cd');
-explain (costs off) select * from list_parted where a = 'ab';
+explain (costs ON) select * from list_parted;
+explain (costs ON) select * from list_parted where a is null;
+explain (costs ON) select * from list_parted where a is not null;
+explain (costs ON) select * from list_parted where a in ('ab', 'cd', 'ef');
+explain (costs ON) select * from list_parted where a = 'ab' or a in (null, 'cd');
+explain (costs ON) select * from list_parted where a = 'ab';
 
 create table range_list_parted (
 	a	int,
@@ -1249,18 +1249,18 @@ create table part_40_inf_ab partition of part_40_inf for values in ('ab');
 create table part_40_inf_cd partition of part_40_inf for values in ('cd');
 create table part_40_inf_null partition of part_40_inf for values in (null);
 
-explain (costs off) select * from range_list_parted;
-explain (costs off) select * from range_list_parted where a = 5;
-explain (costs off) select * from range_list_parted where b = 'ab';
-explain (costs off) select * from range_list_parted where a between 3 and 23 and b in ('ab');
+explain (costs ON) select * from range_list_parted;
+explain (costs ON) select * from range_list_parted where a = 5;
+explain (costs ON) select * from range_list_parted where b = 'ab';
+explain (costs ON) select * from range_list_parted where a between 3 and 23 and b in ('ab');
 
 /* Should select no rows because range partition key cannot be null */
-explain (costs off) select * from range_list_parted where a is null;
+explain (costs ON) select * from range_list_parted where a is null;
 
 /* Should only select rows from the null-accepting partition */
-explain (costs off) select * from range_list_parted where b is null;
-explain (costs off) select * from range_list_parted where a is not null and a < 67;
-explain (costs off) select * from range_list_parted where a >= 30;
+explain (costs ON) select * from range_list_parted where b is null;
+explain (costs ON) select * from range_list_parted where a is not null and a < 67;
+explain (costs ON) select * from range_list_parted where a >= 30;
 
 drop table list_parted;
 drop table range_list_parted;
@@ -1275,13 +1275,13 @@ create table mcrparted2 partition of mcrparted for values from (10, 5, 10) to (1
 create table mcrparted3 partition of mcrparted for values from (11, 1, 1) to (20, 10, 10);
 create table mcrparted4 partition of mcrparted for values from (20, 10, 10) to (20, 20, 20);
 create table mcrparted5 partition of mcrparted for values from (20, 20, 20) to (maxvalue, maxvalue, maxvalue);
-explain (costs off) select * from mcrparted where a = 0;	-- scans mcrparted0, mcrparted_def
-explain (costs off) select * from mcrparted where a = 10 and abs(b) < 5;	-- scans mcrparted1, mcrparted_def
-explain (costs off) select * from mcrparted where a = 10 and abs(b) = 5;	-- scans mcrparted1, mcrparted2, mcrparted_def
-explain (costs off) select * from mcrparted where abs(b) = 5;	-- scans all partitions
-explain (costs off) select * from mcrparted where a > -1;	-- scans all partitions
-explain (costs off) select * from mcrparted where a = 20 and abs(b) = 10 and c > 10;	-- scans mcrparted4
-explain (costs off) select * from mcrparted where a = 20 and c > 20; -- scans mcrparted3, mcrparte4, mcrparte5, mcrparted_def
+explain (costs ON) select * from mcrparted where a = 0;	-- scans mcrparted0, mcrparted_def
+explain (costs ON) select * from mcrparted where a = 10 and abs(b) < 5;	-- scans mcrparted1, mcrparted_def
+explain (costs ON) select * from mcrparted where a = 10 and abs(b) = 5;	-- scans mcrparted1, mcrparted2, mcrparted_def
+explain (costs ON) select * from mcrparted where abs(b) = 5;	-- scans all partitions
+explain (costs ON) select * from mcrparted where a > -1;	-- scans all partitions
+explain (costs ON) select * from mcrparted where a = 20 and abs(b) = 10 and c > 10;	-- scans mcrparted4
+explain (costs ON) select * from mcrparted where a = 20 and c > 20; -- scans mcrparted3, mcrparte4, mcrparte5, mcrparted_def
 
 -- check that partitioned table Appends cope with being referenced in
 -- subplans
@@ -1289,7 +1289,7 @@ create table parted_minmax (a int, b varchar(16)) partition by range (a);
 create table parted_minmax1 partition of parted_minmax for values from (1) to (10);
 create index parted_minmax1i on parted_minmax1 (a, b);
 insert into parted_minmax values (1,'12345');
-explain (costs off) select min(a), max(a) from parted_minmax where b = '12345';
+explain (costs ON) select min(a), max(a) from parted_minmax where b = '12345';
 select min(a), max(a) from parted_minmax where b = '12345';
 drop table parted_minmax;
 
@@ -1299,16 +1299,16 @@ drop table parted_minmax;
 create index mcrparted_a_abs_c_idx on mcrparted (a, abs(b), c);
 
 -- MergeAppend must be used when a default partition exists
-explain (costs off) select * from mcrparted order by a, abs(b), c;
+explain (costs ON) select * from mcrparted order by a, abs(b), c;
 
 drop table mcrparted_def;
 
 -- Append is used for a RANGE partitioned table with no default
 -- and no subpartitions
-explain (costs off) select * from mcrparted order by a, abs(b), c;
+explain (costs ON) select * from mcrparted order by a, abs(b), c;
 
 -- Append is used with subpaths in reverse order with backwards index scans
-explain (costs off) select * from mcrparted order by a desc, abs(b) desc, c desc;
+explain (costs ON) select * from mcrparted order by a desc, abs(b) desc, c desc;
 
 -- check that Append plan is used containing a MergeAppend for sub-partitions
 -- that are unordered.
@@ -1317,18 +1317,18 @@ create table mcrparted5 partition of mcrparted for values from (20, 20, 20) to (
 create table mcrparted5a partition of mcrparted5 for values in(20);
 create table mcrparted5_def partition of mcrparted5 default;
 
-explain (costs off) select * from mcrparted order by a, abs(b), c;
+explain (costs ON) select * from mcrparted order by a, abs(b), c;
 
 drop table mcrparted5_def;
 
 -- check that an Append plan is used and the sub-partitions are flattened
 -- into the main Append when the sub-partition is unordered but contains
 -- just a single sub-partition.
-explain (costs off) select a, abs(b) from mcrparted order by a, abs(b), c;
+explain (costs ON) select a, abs(b) from mcrparted order by a, abs(b), c;
 
 -- check that Append is used when the sub-partitioned tables are pruned
 -- during planning.
-explain (costs off) select * from mcrparted where a < 20 order by a, abs(b), c;
+explain (costs ON) select * from mcrparted where a < 20 order by a, abs(b), c;
 
 set enable_bitmapscan to off;
 set enable_sort to off;
@@ -1338,37 +1338,37 @@ create table mclparted2 partition of mclparted for values in(2);
 create index on mclparted (a);
 
 -- Ensure an Append is used for a list partition with an order by.
-explain (costs off) select * from mclparted order by a;
+explain (costs ON) select * from mclparted order by a;
 
 -- Ensure a MergeAppend is used when a partition exists with interleaved
 -- datums in the partition bound.
 create table mclparted3_5 partition of mclparted for values in(3,5);
 create table mclparted4 partition of mclparted for values in(4);
 
-explain (costs off) select * from mclparted order by a;
-explain (costs off) select * from mclparted where a in(3,4,5) order by a;
+explain (costs ON) select * from mclparted order by a;
+explain (costs ON) select * from mclparted where a in(3,4,5) order by a;
 
 -- Introduce a NULL and DEFAULT partition so we can test more complex cases
 create table mclparted_null partition of mclparted for values in(null);
 create table mclparted_def partition of mclparted default;
 
 -- Append can be used providing we don't scan the interleaved partition
-explain (costs off) select * from mclparted where a in(1,2,4) order by a;
-explain (costs off) select * from mclparted where a in(1,2,4) or a is null order by a;
+explain (costs ON) select * from mclparted where a in(1,2,4) order by a;
+explain (costs ON) select * from mclparted where a in(1,2,4) or a is null order by a;
 
 -- Test a more complex case where the NULL partition allows some other value
 drop table mclparted_null;
 create table mclparted_0_null partition of mclparted for values in(0,null);
 
 -- Ensure MergeAppend is used since 0 and NULLs are in the same partition.
-explain (costs off) select * from mclparted where a in(1,2,4) or a is null order by a;
-explain (costs off) select * from mclparted where a in(0,1,2,4) order by a;
+explain (costs ON) select * from mclparted where a in(1,2,4) or a is null order by a;
+explain (costs ON) select * from mclparted where a in(0,1,2,4) order by a;
 
 -- Ensure Append is used when the null partition is pruned
-explain (costs off) select * from mclparted where a in(1,2,4) order by a;
+explain (costs ON) select * from mclparted where a in(1,2,4) order by a;
 
 -- Ensure MergeAppend is used when the default partition is not pruned
-explain (costs off) select * from mclparted where a in(1,2,4,100) order by a;
+explain (costs ON) select * from mclparted where a in(1,2,4,100) order by a;
 
 drop table mclparted;
 reset enable_sort;
@@ -1382,12 +1382,12 @@ create index on mcrparted2 (a, abs(b), c);
 create index on mcrparted3 (a, abs(b), c);
 create index on mcrparted4 (a, abs(b), c);
 
-explain (costs off) select * from mcrparted where a < 20 order by a, abs(b), c limit 1;
+explain (costs ON) select * from mcrparted where a < 20 order by a, abs(b), c limit 1;
 
 set enable_bitmapscan = 0;
 -- Ensure Append node can be used when the partition is ordered by some
 -- pathkeys which were deemed redundant.
-explain (costs off) select * from mcrparted where a = 10 order by a, abs(b), c;
+explain (costs ON) select * from mcrparted where a = 10 order by a, abs(b), c;
 reset enable_bitmapscan;
 
 drop table mcrparted;
@@ -1398,7 +1398,7 @@ create table bool_lp_true partition of bool_lp for values in(true);
 create table bool_lp_false partition of bool_lp for values in(false);
 create index on bool_lp (b);
 
-explain (costs off) select * from bool_lp order by b;
+explain (costs ON) select * from bool_lp order by b;
 
 drop table bool_lp;
 
@@ -1409,10 +1409,10 @@ create table bool_rp_true_1k partition of bool_rp for values from (true,0) to (t
 create table bool_rp_false_2k partition of bool_rp for values from (false,1000) to (false,2000);
 create table bool_rp_true_2k partition of bool_rp for values from (true,1000) to (true,2000);
 create index on bool_rp (b,a);
-explain (costs off) select * from bool_rp where b = true order by b,a;
-explain (costs off) select * from bool_rp where b = false order by b,a;
-explain (costs off) select * from bool_rp where b = true order by a;
-explain (costs off) select * from bool_rp where b = false order by a;
+explain (costs ON) select * from bool_rp where b = true order by b,a;
+explain (costs ON) select * from bool_rp where b = false order by b,a;
+explain (costs ON) select * from bool_rp where b = true order by a;
+explain (costs ON) select * from bool_rp where b = false order by a;
 
 drop table bool_rp;
 
@@ -1423,8 +1423,8 @@ create table range_parted1 partition of range_parted for values from (0,0) to (1
 create table range_parted2 partition of range_parted for values from (10,10) to (20,20);
 create index on range_parted (a,b,c);
 
-explain (costs off) select * from range_parted order by a,b,c;
-explain (costs off) select * from range_parted order by a desc,b desc,c desc;
+explain (costs ON) select * from range_parted order by a,b,c;
+explain (costs ON) select * from range_parted order by a desc,b desc,c desc;
 
 drop table range_parted;
 
@@ -1444,21 +1444,21 @@ revoke all on permtest_grandchild from regress_no_child_access;
 grant select on permtest_parent to regress_no_child_access;
 set session authorization regress_no_child_access;
 -- without stats access, these queries would produce hash join plans:
-explain (costs off)
+explain (costs ON)
   select * from permtest_parent p1 inner join permtest_parent p2
   on p1.a = p2.a and p1.c ~ 'a1$';
-explain (costs off)
+explain (costs ON)
   select * from permtest_parent p1 inner join permtest_parent p2
   on p1.a = p2.a and left(p1.c, 3) ~ 'a1$';
 reset session authorization;
 revoke all on permtest_parent from regress_no_child_access;
 grant select(a,c) on permtest_parent to regress_no_child_access;
 set session authorization regress_no_child_access;
-explain (costs off)
+explain (costs ON)
   select p2.a, p1.c from permtest_parent p1 inner join permtest_parent p2
   on p1.a = p2.a and p1.c ~ 'a1$';
 -- we will not have access to the expression index's stats here:
-explain (costs off)
+explain (costs ON)
   select p2.a, p1.c from permtest_parent p1 inner join permtest_parent p2
   on p1.a = p2.a and left(p1.c, 3) ~ 'a1$';
 reset session authorization;
@@ -1582,7 +1582,7 @@ insert into tuplesest_tab select i, i from generate_series(1, 100)i;
 analyze tuplesest_parted;
 analyze tuplesest_tab;
 
-explain (costs off)
+explain (costs ON)
 select * from tuplesest_tab join
   (select b from tuplesest_parted where c < 100 group by b) sub
   on tuplesest_tab.a = sub.b;

@@ -126,7 +126,7 @@ where (unique1, unique2) < any (select ten, ten from tenk1 where hundred < 3)
 order by 1;
 
 -- Also check row comparison with an indexable condition
-explain (costs off)
+explain (costs ON)
 select thousand, tenthous from tenk1
 where (thousand, tenthous) >= (997, 5000)
 order by thousand, tenthous;
@@ -135,7 +135,7 @@ select thousand, tenthous from tenk1
 where (thousand, tenthous) >= (997, 5000)
 order by thousand, tenthous;
 
-explain (costs off)
+explain (costs ON)
 select thousand, tenthous, four from tenk1
 where (thousand, tenthous, four) > (998, 5000, 3)
 order by thousand, tenthous;
@@ -144,7 +144,7 @@ select thousand, tenthous, four from tenk1
 where (thousand, tenthous, four) > (998, 5000, 3)
 order by thousand, tenthous;
 
-explain (costs off)
+explain (costs ON)
 select thousand, tenthous from tenk1
 where (998, 5000) < (thousand, tenthous)
 order by thousand, tenthous;
@@ -153,7 +153,7 @@ select thousand, tenthous from tenk1
 where (998, 5000) < (thousand, tenthous)
 order by thousand, tenthous;
 
-explain (costs off)
+explain (costs ON)
 select thousand, hundred from tenk1
 where (998, 5000) < (thousand, hundred)
 order by thousand, hundred;
@@ -170,7 +170,7 @@ insert into test_table values ('b', 'a');
 create index on test_table (a,b);
 set enable_sort = off;
 
-explain (costs off)
+explain (costs ON)
 select a,b from test_table where (a,b) > ('a','a') order by a,b;
 
 select a,b from test_table where (a,b) > ('a','a') order by a,b;
@@ -180,7 +180,7 @@ reset enable_sort;
 -- Check row comparisons with IN
 select * from int8_tbl i8 where i8 in (row(123,456));  -- fail, type mismatch
 
-explain (costs off)
+explain (costs ON)
 select * from int8_tbl i8
 where i8 in (row(123,456)::int8_tbl, '(4567890123456789,123)');
 
@@ -446,7 +446,7 @@ select row_to_json(ss) from
 select row_to_json(ss) from
   (select q1 as a, q2 as b from int8_tbl offset 0) as ss(x,y);
 
-explain (costs off)
+explain (costs ON)
 select row_to_json(q) from
   (select thousand, tenthous from tenk1
    where thousand = 42 and tenthous < 2000 offset 0) q;
@@ -474,7 +474,7 @@ select row_to_json(tt3::tt2::tt1) from tt3;
 -- IS [NOT] NULL should not recurse into nested composites (bug #14235)
 --
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select r, r is null as isnull, r is not null as isnotnull
 from (values (1,row(1,2)), (1,row(null,null)), (1,null),
              (null,row(1,2)), (null,row(null,null)), (null,null) ) r(a,b);
@@ -483,7 +483,7 @@ select r, r is null as isnull, r is not null as isnotnull
 from (values (1,row(1,2)), (1,row(null,null)), (1,null),
              (null,row(1,2)), (null,row(null,null)), (null,null) ) r(a,b);
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with r(a,b) as materialized
   (values (1,row(1,2)), (1,row(null,null)), (1,null),
           (null,row(1,2)), (null,row(null,null)), (null,null) )
@@ -497,7 +497,7 @@ select r, r is null as isnull, r is not null as isnotnull from r;
 --
 -- Check parsing of indirect references to composite values (bug #18077)
 --
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with cte(c) as materialized (select row(1, 2)),
      cte2(c) as (select * from cte)
 select * from cte2 as t
@@ -523,19 +523,19 @@ drop view composite_v;
 --
 -- Check cases where the composite comes from a proven-dummy rel (bug #18576)
 --
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select (ss.a).x, (ss.a).n from
   (select information_schema._pg_expandarray(array[1,2]) AS a) ss;
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select (ss.a).x, (ss.a).n from
   (select information_schema._pg_expandarray(array[1,2]) AS a) ss
 where false;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with cte(c) as materialized (select row(1, 2)),
      cte2(c) as (select * from cte)
 select (c).f1 from cte2 as t;
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with cte(c) as materialized (select row(1, 2)),
      cte2(c) as (select * from cte)
 select (c).f1 from cte2 as t

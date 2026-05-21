@@ -144,24 +144,24 @@ SELECT *, pg_typeof(f1) FROM
 
 -- ... unless there's context to suggest differently
 
-explain (verbose, costs off) select '42' union all select '43';
-explain (verbose, costs off) select '42' union all select 43;
+explain (verbose, costs ON) select '42' union all select '43';
+explain (verbose, costs ON) select '42' union all select 43;
 
 -- check materialization of an initplan reference (bug #14524)
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select 1 = all (select (select 1));
 select 1 = all (select (select 1));
 
 --
 -- Check EXISTS simplification with LIMIT
 --
-explain (costs off)
+explain (costs ON)
 select * from int4_tbl o where exists
   (select 1 from int4_tbl i where i.f1=o.f1 limit null);
-explain (costs off)
+explain (costs ON)
 select * from int4_tbl o where not exists
   (select 1 from int4_tbl i where i.f1=o.f1 limit 1);
-explain (costs off)
+explain (costs ON)
 select * from int4_tbl o where exists
   (select 1 from int4_tbl i where i.f1=o.f1 limit 0);
 
@@ -427,7 +427,7 @@ select (select (a.*)::text) from view_a a;
 -- Test case for bug #19037: no relation entry for relid N
 --
 
-explain (costs off)
+explain (costs ON)
 select (1 = any(array_agg(f1))) = any (select false) from int4_tbl;
 
 select (1 = any(array_agg(f1))) = any (select false) from int4_tbl;
@@ -523,7 +523,7 @@ select * from outer_text where (f1, f2) not in (select * from inner_text);
 -- inner-side values must be done with appropriate operator
 --
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select 'foo'::text in (select 'bar'::name union all select 'bar'::name);
 
 select 'foo'::text in (select 'bar'::name union all select 'bar'::name);
@@ -533,7 +533,7 @@ select 'foo'::text in (select 'bar'::name union all select 'bar'::name);
 -- (Hashing could be supported, but for now we don't)
 --
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select row(row(row(1))) = any (select row(row(1)));
 
 select row(row(row(1))) = any (select row(row(1)));
@@ -560,7 +560,7 @@ language sql as 'select $1::text = $2';
 
 create operator = (procedure=bogus_int8_text_eq, leftarg=int8, rightarg=text);
 
-explain (costs off)
+explain (costs ON)
 select * from int8_tbl where q1 in (select c1 from inner_text);
 select * from int8_tbl where q1 in (select c1 from inner_text);
 
@@ -569,7 +569,7 @@ select * from int8_tbl where q1 in (select c1 from inner_text);
 create or replace function bogus_int8_text_eq(int8, text) returns boolean
 language sql as 'select $1::text = $2 and $1::text = $2';
 
-explain (costs off)
+explain (costs ON)
 select * from int8_tbl where q1 in (select c1 from inner_text);
 select * from int8_tbl where q1 in (select c1 from inner_text);
 
@@ -578,7 +578,7 @@ select * from int8_tbl where q1 in (select c1 from inner_text);
 create or replace function bogus_int8_text_eq(int8, text) returns boolean
 language sql as 'select $2 = $1::text';
 
-explain (costs off)
+explain (costs ON)
 select * from int8_tbl where q1 in (select c1 from inner_text);
 select * from int8_tbl where q1 in (select c1 from inner_text);
 
@@ -587,13 +587,13 @@ rollback;  -- to get rid of the bogus operator
 --
 -- Test resolution of hashed vs non-hashed implementation of EXISTS subplan
 --
-explain (costs off)
+explain (costs ON)
 select count(*) from tenk1 t
 where (exists(select 1 from tenk1 k where k.unique1 = t.unique2) or ten < 0);
 select count(*) from tenk1 t
 where (exists(select 1 from tenk1 k where k.unique1 = t.unique2) or ten < 0);
 
-explain (costs off)
+explain (costs ON)
 select count(*) from tenk1 t
 where (exists(select 1 from tenk1 k where k.unique1 = t.unique2) or ten < 0)
   and thousand = 1;
@@ -607,7 +607,7 @@ create temp table exists_tbl_null partition of exists_tbl for values in (null);
 create temp table exists_tbl_def partition of exists_tbl default;
 insert into exists_tbl select x, x/2, x+1 from generate_series(0,10) x;
 analyze exists_tbl;
-explain (costs off)
+explain (costs ON)
 select * from exists_tbl t1
   where (exists(select 1 from exists_tbl t2 where t1.c1 = t2.c2) or c3 < 0);
 select * from exists_tbl t1
@@ -625,16 +625,16 @@ where a.thousand = b.thousand
 --
 -- Check that nested sub-selects are not pulled up if they contain volatiles
 --
-explain (verbose, costs off)
+explain (verbose, costs ON)
   select x, x from
     (select (select now()) as x from (values(1),(2)) v(y)) ss;
-explain (verbose, costs off)
+explain (verbose, costs ON)
   select x, x from
     (select (select random()) as x from (values(1),(2)) v(y)) ss;
-explain (verbose, costs off)
+explain (verbose, costs ON)
   select x, x from
     (select (select now() where y=y) as x from (values(1),(2)) v(y)) ss;
-explain (verbose, costs off)
+explain (verbose, costs ON)
   select x, x from
     (select (select random() where y=y) as x from (values(1),(2)) v(y)) ss;
 
@@ -642,7 +642,7 @@ explain (verbose, costs off)
 -- Test rescan of a hashed subplan (the use of random() is to prevent the
 -- sub-select from being pulled up, which would result in not hashing)
 --
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select sum(ss.tst::int) from
   onek o cross join lateral (
   select i.ten in (select f1 from int4_tbl where f1 <= o.hundred) as tst,
@@ -663,7 +663,7 @@ where o.ten = 0;
 begin;
 set local enable_sort = off;
 
-explain (costs off)
+explain (costs ON)
 select count(*) from
   onek o cross join lateral (
     select * from onek i1 where i1.unique1 = o.unique1
@@ -688,7 +688,7 @@ rollback;
 begin;
 set local enable_hashagg = off;
 
-explain (costs off)
+explain (costs ON)
 select count(*) from
   onek o cross join lateral (
     select * from onek i1 where i1.unique1 = o.unique1
@@ -710,7 +710,7 @@ rollback;
 --
 -- Test rescan of a RecursiveUnion node
 --
-explain (costs off)
+explain (costs ON)
 select sum(o.four), sum(ss.a) from
   onek o cross join lateral (
     with recursive x(a) as
@@ -759,7 +759,7 @@ select val.x
 where s.i < 10 and (select val.x) < 110;
 
 -- another variant of that (bug #16213)
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
 (values
   (3 not in (select * from (values (1), (2)) ss1)),
@@ -775,7 +775,7 @@ select * from
 --
 -- Check sane behavior with nested IN SubLinks
 --
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from int4_tbl where
   (case when f1 in (select unique1 from tenk1 a) then f1 else null end) in
   (select ten from tenk1 b);
@@ -786,7 +786,7 @@ select * from int4_tbl where
 --
 -- Check for incorrect optimization when IN subquery contains a SRF
 --
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from int4_tbl o where (f1, f1) in
   (select f1, generate_series(1,50) / 10 g from int4_tbl i group by f1);
 select * from int4_tbl o where (f1, f1) in
@@ -807,7 +807,7 @@ from int4_tbl;
 -- (most of the complication here is to prevent the test case from being
 -- flattened too much)
 --
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
     int4_tbl i4,
     lateral (
@@ -852,7 +852,7 @@ begin
   return x > y;
 end$$;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
   (select 9 as x, unnest(array[1,2,3,11,12,13]) as u) ss
   where tattle(x, 8);
@@ -864,7 +864,7 @@ select * from
 -- if we pretend it's stable, we get different results:
 alter function tattle(x int, y int) stable;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
   (select 9 as x, unnest(array[1,2,3,11,12,13]) as u) ss
   where tattle(x, 8);
@@ -874,7 +874,7 @@ select * from
   where tattle(x, 8);
 
 -- although even a stable qual should not be pushed down if it references SRF
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
   (select 9 as x, unnest(array[1,2,3,11,12,13]) as u) ss
   where tattle(x, u);
@@ -887,7 +887,7 @@ select * from
 -- check that an upper-level qual is not pushed down if it references a grouped
 -- Var whose underlying expression contains SRFs
 --
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
   (select generate_series(1, ten) as g, count(*) from tenk1 group by 1) ss
   where ss.g = 1;
@@ -902,7 +902,7 @@ select * from
 --
 alter function tattle(x int, y int) volatile;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
   (select tattle(3, ten) as v, count(*) from tenk1 where unique1 < 3 group by 1) ss
   where ss.v;
@@ -914,7 +914,7 @@ select * from
 -- if we pretend it's stable, we get different results:
 alter function tattle(x int, y int) stable;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
   (select tattle(3, ten) as v, count(*) from tenk1 where unique1 < 3 group by 1) ss
   where ss.v;
@@ -947,7 +947,7 @@ $$
 declare ln text;
 begin
     for ln in
-        explain (analyze, summary off, timing off, costs off, buffers off)
+        explain (analyze, summary off, timing off, costs ON, buffers off)
         select * from (select pk,c2 from sq_limit order by c1,pk) as x limit 3
     loop
         ln := regexp_replace(ln, 'Memory: \S*',  'Memory: xxx');
@@ -990,7 +990,7 @@ begin;
 create temp table json_tab (a int);
 insert into json_tab values (1);
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from json_tab t1 left join (select json_array(1, a) from json_tab t2) s on false;
 
 select * from json_tab t1 left join (select json_array(1, a) from json_tab t2) s on false;
@@ -1002,7 +1002,7 @@ rollback;
 -- expression that doesn't need to be wrapped in a PlaceHolderVar
 --
 
-explain (costs off)
+explain (costs ON)
 select tname, attname from (
 select relname::information_schema.sql_identifier as tname, * from
   (select * from pg_class c) ss1) ss2
@@ -1016,7 +1016,7 @@ select relname::information_schema.sql_identifier as tname, * from
 where tname = 'tenk1' and attnum = 1;
 
 -- Check behavior when there's a lateral reference in the output expression
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select t1.ten, sum(x) from
   tenk1 t1 left join lateral (
     select t1.ten + t2.ten as x, t2.fivethous from tenk1 t2
@@ -1031,7 +1031,7 @@ select t1.ten, sum(x) from
 group by t1.ten
 order by t1.ten;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select t1.q1, x from
   int8_tbl t1 left join
   (int8_tbl t2 left join
@@ -1048,7 +1048,7 @@ order by 1, 2;
 
 -- strict expressions containing variables of rels under the same lowest
 -- nulling outer join can escape being wrapped
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select t1.q1, x from
   int8_tbl t1 left join
   (int8_tbl t2 inner join
@@ -1064,7 +1064,7 @@ select t1.q1, x from
 order by 1, 2;
 
 -- otherwise we need to wrap the strict expressions
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select t1.q1, x from
   int8_tbl t1 left join
   (int8_tbl t2 left join
@@ -1081,7 +1081,7 @@ order by 1, 2;
 
 -- lateral references for simple Vars can escape being wrapped if the
 -- referenced rel is under the same lowest nulling outer join
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select t1.q1, x from
   int8_tbl t1 left join
   (int8_tbl t2 inner join
@@ -1097,7 +1097,7 @@ select t1.q1, x from
 order by 1, 2;
 
 -- otherwise we need to wrap the Vars
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select t1.q1, x from
   int8_tbl t1 left join
   (int8_tbl t2 left join
@@ -1114,7 +1114,7 @@ order by 1, 2;
 
 -- lateral references for PHVs can also escape being wrapped if the
 -- referenced rel is under the same lowest nulling outer join
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select ss2.* from
   int8_tbl t1 left join
   (int8_tbl t2 left join
@@ -1132,7 +1132,7 @@ select ss2.* from
 order by 1, 2, 3;
 
 -- otherwise we need to wrap the PHVs
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select ss2.* from
   int8_tbl t1 left join
   (int8_tbl t2 left join
@@ -1154,41 +1154,41 @@ order by 1, 2, 3;
 --
 
 -- Basic subquery that can be inlined
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as (select * from (select f1 from subselect_tbl) ss)
 select * from x where f1 = 1;
 
 -- Explicitly request materialization
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as materialized (select * from (select f1 from subselect_tbl) ss)
 select * from x where f1 = 1;
 
 -- Stable functions are safe to inline
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as (select * from (select f1, now() from subselect_tbl) ss)
 select * from x where f1 = 1;
 
 -- Volatile functions prevent inlining
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as (select * from (select f1, random() from subselect_tbl) ss)
 select * from x where f1 = 1;
 
 -- SELECT FOR UPDATE cannot be inlined
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as (select * from (select f1 from subselect_tbl for update) ss)
 select * from x where f1 = 1;
 
 -- Multiply-referenced CTEs are inlined only when requested
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as (select * from (select f1, now() as n from subselect_tbl) ss)
 select * from x, x x2 where x.n = x2.n;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as not materialized (select * from (select f1, now() as n from subselect_tbl) ss)
 select * from x, x x2 where x.n = x2.n;
 
 -- Multiply-referenced CTEs can't be inlined if they contain outer self-refs
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with recursive x(a) as
   ((values ('a'), ('b'))
    union all
@@ -1205,7 +1205,7 @@ with recursive x(a) as
     where length(z.a || z1.a) < 5))
 select * from x;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with recursive x(a) as
   ((values ('a'), ('b'))
    union all
@@ -1223,30 +1223,30 @@ with recursive x(a) as
 select * from x;
 
 -- Check handling of outer references
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as (select * from int4_tbl)
 select * from (with y as (select * from x) select * from y) ss;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as materialized (select * from int4_tbl)
 select * from (with y as (select * from x) select * from y) ss;
 
 -- Ensure that we inline the correct CTE when there are
 -- multiple CTEs with the same name
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as (select 1 as y)
 select * from (with x as (select 2 as y) select * from x) ss;
 
 -- Row marks are not pushed into CTEs
-explain (verbose, costs off)
+explain (verbose, costs ON)
 with x as (select * from subselect_tbl)
 select * from x for update;
 
 -- Pull up direct-correlated ANY_SUBLINKs
-explain (costs off)
+explain (costs ON)
 select * from tenk1 A where hundred in (select hundred from tenk2 B where B.odd = A.odd);
 
-explain (costs off)
+explain (costs ON)
 select * from tenk1 A where exists
 (select 1 from tenk2 B
 where A.hundred in (select C.hundred FROM tenk2 C
@@ -1254,29 +1254,29 @@ WHERE c.odd = b.odd));
 
 -- we should only try to pull up the sublink into RHS of a left join
 -- but a.hundred is not available.
-explain (costs off)
+explain (costs ON)
 SELECT * FROM tenk1 A LEFT JOIN tenk2 B
 ON A.hundred in (SELECT c.hundred FROM tenk2 C WHERE c.odd = b.odd);
 
 -- we should only try to pull up the sublink into RHS of a left join
 -- but a.odd is not available for this.
-explain (costs off)
+explain (costs ON)
 SELECT * FROM tenk1 A LEFT JOIN tenk2 B
 ON B.hundred in (SELECT c.hundred FROM tenk2 C WHERE c.odd = a.odd);
 
 -- should be able to pull up since all the references are available.
-explain (costs off)
+explain (costs ON)
 SELECT * FROM tenk1 A LEFT JOIN tenk2 B
 ON B.hundred in (SELECT c.hundred FROM tenk2 C WHERE c.odd = b.odd);
 
 -- we can pull up the sublink into the inner JoinExpr.
-explain (costs off)
+explain (costs ON)
 SELECT * FROM tenk1 A INNER JOIN tenk2 B
 ON A.hundred in (SELECT c.hundred FROM tenk2 C WHERE c.odd = b.odd)
 WHERE a.thousand < 750;
 
 -- we can pull up the aggregate sublink into RHS of a left join.
-explain (costs off)
+explain (costs ON)
 SELECT * FROM tenk1 A LEFT JOIN tenk2 B
 ON B.hundred in (SELECT min(c.hundred) FROM tenk2 C WHERE c.odd = b.odd);
 

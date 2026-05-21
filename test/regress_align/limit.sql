@@ -99,7 +99,7 @@ SELECT
 
 create temp sequence testseq;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select unique1, unique2, nextval('testseq')
   from tenk1 order by unique2 limit 10;
 
@@ -108,7 +108,7 @@ select unique1, unique2, nextval('testseq')
 
 select currval('testseq');
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select unique1, unique2, nextval('testseq')
   from tenk1 order by tenthous limit 10;
 
@@ -117,14 +117,14 @@ select unique1, unique2, nextval('testseq')
 
 select currval('testseq');
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select unique1, unique2, generate_series(1,10)
   from tenk1 order by unique2 limit 7;
 
 select unique1, unique2, generate_series(1,10)
   from tenk1 order by unique2 limit 7;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select unique1, unique2, generate_series(1,10)
   from tenk1 order by tenthous limit 7;
 
@@ -132,12 +132,12 @@ select unique1, unique2, generate_series(1,10)
   from tenk1 order by tenthous limit 7;
 
 -- use of random() is to keep planner from folding the expressions together
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select generate_series(0,2) as s1, generate_series((random()*.1)::int,2) as s2;
 
 select generate_series(0,2) as s1, generate_series((random()*.1)::int,2) as s2;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select generate_series(0,2) as s1, generate_series((random()*.1)::int,2) as s2
 order by s2 desc;
 
@@ -145,7 +145,7 @@ select generate_series(0,2) as s1, generate_series((random()*.1)::int,2) as s2
 order by s2 desc;
 
 -- test for failure to set all aggregates' aggtranstype
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select sum(tenthous) as s1, sum(tenthous) + random()*0 as s2
   from tenk1 group by thousand order by thousand limit 3;
 

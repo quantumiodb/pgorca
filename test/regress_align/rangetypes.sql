@@ -373,7 +373,7 @@ select count(*) from test_range_spgist where ir &> int4range(100,500);
 select count(*) from test_range_spgist where ir -|- int4range(100,500);
 
 -- test index-only scans
-explain (costs off)
+explain (costs ON)
 select ir from test_range_spgist where ir -|- int4range(10,20) order by ir;
 select ir from test_range_spgist where ir -|- int4range(10,20) order by ir;
 
@@ -392,7 +392,7 @@ select count(*) from test_range_elem where i <@ int4range(10,50);
 
 -- also test spgist index on anyrange expression
 create index on test_range_elem using spgist(int4range(i,i+10));
-explain (costs off)
+explain (costs ON)
 select count(*) from test_range_elem where int4range(i,i+10) <@ int4range(10,30);
 select count(*) from test_range_elem where int4range(i,i+10) <@ int4range(10,30);
 
@@ -635,50 +635,50 @@ create function table_fail(i anyelement) returns table(i anyelement, r anyrange)
 --
 
 -- empty range
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select current_date <@ daterange 'empty';
 
 -- unbounded range
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select current_date <@ daterange(NULL, NULL);
 
 -- only lower bound present
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select current_date <@ daterange('2000-01-01', NULL, '[)');
 
 -- only upper bound present
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select current_date <@ daterange(NULL, '2000-01-01', '(]');
 
 -- lower range "-Infinity" excluded
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select current_date <@ daterange('-Infinity', '1997-04-10'::date, '()');
 
 -- lower range "-Infinity" included
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select current_date <@ daterange('-Infinity', '1997-04-10'::date, '[)');
 
 -- upper range "Infinity" excluded
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select current_date <@ daterange('2002-09-25'::date, 'Infinity', '[)');
 
 -- upper range "Infinity" included
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select current_date <@ daterange('2002-09-25'::date, 'Infinity', '[]');
 
 -- should also work if we use "@>"
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select daterange('-Infinity', '1997-04-10'::date, '()') @> current_date;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select daterange('2002-09-25'::date, 'Infinity', '[]') @> current_date;
 
 -- Check that volatile cases are not optimized
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select now() <@ tstzrange('2024-01-20 00:00', '2024-01-21 00:00');
-explain (verbose, costs off)  -- unsafe!
+explain (verbose, costs ON)  -- unsafe!
 select clock_timestamp() <@ tstzrange('2024-01-20 00:00', '2024-01-21 00:00');
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select clock_timestamp() <@ tstzrange('2024-01-20 00:00', NULL);
 
 -- test a custom range type with a non-default operator class
@@ -691,7 +691,7 @@ create temp table text_support_test (t text collate "C");
 
 insert into text_support_test values ('a'), ('c'), ('d'), ('ch');
 
-explain (costs off)
+explain (costs ON)
 select * from text_support_test where t <@ textrange_supp('a', 'd');
 select * from text_support_test where t <@ textrange_supp('a', 'd');
 

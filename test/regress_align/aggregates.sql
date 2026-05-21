@@ -203,7 +203,7 @@ from tenk1 o;
 
 -- Test handling of Params within aggregate arguments in hashed aggregation.
 -- Per bug report from Jeevan Chalke.
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select s1, s2, sm
 from generate_series(1, 3) s1,
      lateral (select s2, sum(s1 + s2) sm
@@ -215,7 +215,7 @@ from generate_series(1, 3) s1,
               from generate_series(1, 3) s2 group by s2) ss
 order by 1, 2;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select array(select sum(x+y) s
             from generate_series(1,3) y group by y order by s)
   from generate_series(1,3) x;
@@ -355,16 +355,16 @@ FROM bool_test;
 --
 
 -- Basic cases
-explain (costs off)
+explain (costs ON)
   select min(unique1) from tenk1;
 select min(unique1) from tenk1;
-explain (costs off)
+explain (costs ON)
   select max(unique1) from tenk1;
 select max(unique1) from tenk1;
-explain (costs off)
+explain (costs ON)
   select max(unique1) from tenk1 where unique1 < 42;
 select max(unique1) from tenk1 where unique1 < 42;
-explain (costs off)
+explain (costs ON)
   select max(unique1) from tenk1 where unique1 > 42;
 select max(unique1) from tenk1 where unique1 > 42;
 
@@ -374,45 +374,45 @@ select max(unique1) from tenk1 where unique1 > 42;
 -- the optimized plan, so temporarily disable parallel query.
 begin;
 set local max_parallel_workers_per_gather = 0;
-explain (costs off)
+explain (costs ON)
   select max(unique1) from tenk1 where unique1 > 42000;
 select max(unique1) from tenk1 where unique1 > 42000;
 rollback;
 
 -- multi-column index (uses tenk1_thous_tenthous)
-explain (costs off)
+explain (costs ON)
   select max(tenthous) from tenk1 where thousand = 33;
 select max(tenthous) from tenk1 where thousand = 33;
-explain (costs off)
+explain (costs ON)
   select min(tenthous) from tenk1 where thousand = 33;
 select min(tenthous) from tenk1 where thousand = 33;
 
 -- check parameter propagation into an indexscan subquery
-explain (costs off)
+explain (costs ON)
   select f1, (select min(unique1) from tenk1 where unique1 > f1) AS gt
     from int4_tbl;
 select f1, (select min(unique1) from tenk1 where unique1 > f1) AS gt
   from int4_tbl;
 
 -- check some cases that were handled incorrectly in 8.3.0
-explain (costs off)
+explain (costs ON)
   select distinct max(unique2) from tenk1;
 select distinct max(unique2) from tenk1;
-explain (costs off)
+explain (costs ON)
   select max(unique2) from tenk1 order by 1;
 select max(unique2) from tenk1 order by 1;
-explain (costs off)
+explain (costs ON)
   select max(unique2) from tenk1 order by max(unique2);
 select max(unique2) from tenk1 order by max(unique2);
-explain (costs off)
+explain (costs ON)
   select max(unique2) from tenk1 order by max(unique2)+1;
 select max(unique2) from tenk1 order by max(unique2)+1;
-explain (costs off)
+explain (costs ON)
   select max(unique2), generate_series(1,3) as g from tenk1 order by g desc;
 select max(unique2), generate_series(1,3) as g from tenk1 order by g desc;
 
 -- interesting corner case: constant gets optimized into a seqscan
-explain (costs off)
+explain (costs ON)
   select max(100) from tenk1;
 select max(100) from tenk1;
 
@@ -431,12 +431,12 @@ insert into minmaxtest1 values(13), (14);
 insert into minmaxtest2 values(15), (16);
 insert into minmaxtest3 values(17), (18);
 
-explain (costs off)
+explain (costs ON)
   select min(f1), max(f1) from minmaxtest;
 select min(f1), max(f1) from minmaxtest;
 
 -- DISTINCT doesn't do anything useful here, but it shouldn't fail
-explain (costs off)
+explain (costs ON)
   select distinct min(f1), max(f1) from minmaxtest;
 select distinct min(f1), max(f1) from minmaxtest;
 
@@ -445,7 +445,7 @@ drop table minmaxtest cascade;
 -- DISTINCT can also trigger wrong answers with hash aggregation (bug #18465)
 begin;
 set local enable_sort = off;
-explain (costs off)
+explain (costs ON)
   select f1, (select distinct min(t1.f1) from int4_tbl t1 where t1.f1 = t0.f1)
   from int4_tbl t0;
 select f1, (select distinct min(t1.f1) from int4_tbl t1 where t1.f1 = t0.f1)
@@ -468,31 +468,31 @@ create temp table t2 (x int, y int, z int, primary key (x, y));
 create temp table t3 (a int, b int, c int, primary key(a, b) deferrable);
 
 -- Non-primary-key columns can be removed from GROUP BY
-explain (costs off) select * from t1 group by a,b,c,d;
+explain (costs ON) select * from t1 group by a,b,c,d;
 
 -- No removal can happen if the complete PK is not present in GROUP BY
-explain (costs off) select a,c from t1 group by a,c,d;
+explain (costs ON) select a,c from t1 group by a,c,d;
 
 -- Test removal across multiple relations
-explain (costs off) select *
+explain (costs ON) select *
 from t1 inner join t2 on t1.a = t2.x and t1.b = t2.y
 group by t1.a,t1.b,t1.c,t1.d,t2.x,t2.y,t2.z;
 
 -- Test case where t1 can be optimized but not t2
-explain (costs off) select t1.*,t2.x,t2.z
+explain (costs ON) select t1.*,t2.x,t2.z
 from t1 inner join t2 on t1.a = t2.x and t1.b = t2.y
 group by t1.a,t1.b,t1.c,t1.d,t2.x,t2.z;
 
 -- Cannot optimize when PK is deferrable
-explain (costs off) select * from t3 group by a,b,c;
+explain (costs ON) select * from t3 group by a,b,c;
 
 create temp table t1c () inherits (t1);
 
 -- Ensure we don't remove any columns when t1 has a child table
-explain (costs off) select * from t1 group by a,b,c,d;
+explain (costs ON) select * from t1 group by a,b,c,d;
 
 -- Okay to remove columns if we're only querying the parent.
-explain (costs off) select * from only t1 group by a,b,c,d;
+explain (costs ON) select * from only t1 group by a,b,c,d;
 
 create temp table p_t1 (
   a int,
@@ -505,31 +505,31 @@ create temp table p_t1_1 partition of p_t1 for values in(1);
 create temp table p_t1_2 partition of p_t1 for values in(2);
 
 -- Ensure we can remove non-PK columns for partitioned tables.
-explain (costs off) select * from p_t1 group by a,b,c,d;
+explain (costs ON) select * from p_t1 group by a,b,c,d;
 
 create unique index t2_z_uidx on t2(z);
 
 -- Ensure we don't remove any columns from the GROUP BY for a unique
 -- index on a NULLable column.
-explain (costs off) select y,z from t2 group by y,z;
+explain (costs ON) select y,z from t2 group by y,z;
 
 -- Make the column NOT NULL and ensure we remove the redundant column
 alter table t2 alter column z set not null;
-explain (costs off) select y,z from t2 group by y,z;
+explain (costs ON) select y,z from t2 group by y,z;
 
 -- When there are multiple supporting unique indexes and the GROUP BY contains
 -- columns to cover all of those, ensure we pick the index with the least
 -- number of columns so that we can remove more columns from the GROUP BY.
-explain (costs off) select x,y,z from t2 group by x,y,z;
+explain (costs ON) select x,y,z from t2 group by x,y,z;
 
 -- As above but try ordering the columns differently to ensure we get the
 -- same result.
-explain (costs off) select x,y,z from t2 group by z,x,y;
+explain (costs ON) select x,y,z from t2 group by z,x,y;
 
 -- Ensure we don't use a partial index as proof of functional dependency
 drop index t2_z_uidx;
 create index t2_z_uidx on t2 (z) where z > 0;
-explain (costs off) select y,z from t2 group by y,z;
+explain (costs ON) select y,z from t2 group by y,z;
 
 -- A unique index defined as NULLS NOT DISTINCT does not need a supporting NOT
 -- NULL constraint on the indexed columns.  Ensure the redundant columns are
@@ -537,7 +537,7 @@ explain (costs off) select y,z from t2 group by y,z;
 drop index t2_z_uidx;
 alter table t2 alter column z drop not null;
 create unique index t2_z_uidx on t2(z) nulls not distinct;
-explain (costs off) select y,z from t2 group by y,z;
+explain (costs ON) select y,z from t2 group by y,z;
 
 drop table t1 cascade;
 drop table t2;
@@ -580,20 +580,20 @@ drop table t1, t2;
 --
 
 -- Ensure we order by four.  This suits the most aggregate functions.
-explain (costs off)
+explain (costs ON)
 select sum(two order by two),max(four order by four), min(four order by four)
 from tenk1;
 
 -- Ensure we order by two.  It's a tie between ordering by two and four but
 -- we tiebreak on the aggregate's position.
-explain (costs off)
+explain (costs ON)
 select
   sum(two order by two), max(four order by four),
   min(four order by four), max(two order by two)
 from tenk1;
 
 -- Similar to above, but tiebreak on ordering by four
-explain (costs off)
+explain (costs ON)
 select
   max(four order by four), sum(two order by two),
   min(four order by four), max(two order by two)
@@ -601,7 +601,7 @@ from tenk1;
 
 -- Ensure this one orders by ten since there are 3 aggregates that require ten
 -- vs two that suit two and four.
-explain (costs off)
+explain (costs ON)
 select
   max(four order by four), sum(two order by two),
   min(four order by four), max(two order by two),
@@ -611,7 +611,7 @@ from tenk1;
 -- Try a case involving a GROUP BY clause where the GROUP BY column is also
 -- part of an aggregate's ORDER BY clause.  We want a sort order that works
 -- for the GROUP BY along with the first and the last aggregate.
-explain (costs off)
+explain (costs ON)
 select
   sum(unique1 order by ten, two), sum(unique1 order by four),
   sum(unique1 order by two, four)
@@ -621,7 +621,7 @@ group by ten;
 -- Ensure that we never choose to provide presorted input to an Aggref with
 -- a volatile function in the ORDER BY / DISTINCT clause.  We want to ensure
 -- these sorts are performed individually rather than at the query level.
-explain (costs off)
+explain (costs ON)
 select
   sum(unique1 order by two), sum(unique1 order by four),
   sum(unique1 order by four, two), sum(unique1 order by two, random()),
@@ -635,7 +635,7 @@ from (select null as val from generate_series(1, 2));
 
 -- Ensure no ordering is requested when enable_presorted_aggregate is off
 set enable_presorted_aggregate to off;
-explain (costs off)
+explain (costs ON)
 select sum(two order by two) from tenk1;
 reset enable_presorted_aggregate;
 
@@ -644,17 +644,17 @@ reset enable_presorted_aggregate;
 --
 
 -- Ensure we presort when the aggregate contains plain Vars
-explain (costs off)
+explain (costs ON)
 select sum(two order by two) filter (where two > 1) from tenk1;
 
 -- Ensure we presort for RelabelType'd Vars
-explain (costs off)
+explain (costs ON)
 select string_agg(distinct f1, ',') filter (where length(f1) > 1)
 from varchar_tbl;
 
 -- Ensure we don't presort when the aggregate's argument contains an
 -- explicit cast.
-explain (costs off)
+explain (costs ON)
 select string_agg(distinct f1::varchar(2), ',') filter (where length(f1) > 1)
 from varchar_tbl;
 
@@ -875,7 +875,7 @@ group by y;
 select * from v_pagg_test order by y;
 
 -- Ensure parallel aggregation is actually being used.
-explain (costs off) select * from v_pagg_test order by y;
+explain (costs ON) select * from v_pagg_test order by y;
 
 -- Ensure results are the same without parallel aggregation.
 set max_parallel_workers_per_gather = 0;
@@ -883,7 +883,7 @@ select * from v_pagg_test order by y;
 
 -- Check that we don't fail on anonymous record types.
 set max_parallel_workers_per_gather = 2;
-explain (costs off)
+explain (costs ON)
 select array_dims(array_agg(s)) from (select * from pagg_test) s;
 select array_dims(array_agg(s)) from (select * from pagg_test) s;
 
@@ -1547,7 +1547,7 @@ set enable_hashagg = false;
 
 set jit_above_cost = 0;
 
-explain (costs off)
+explain (costs ON)
 select g%10000 as c1, sum(g::numeric) as c2, count(*) as c3
   from agg_data_20k group by g%10000;
 
@@ -1583,7 +1583,7 @@ set enable_sort = false;
 
 set jit_above_cost = 0;
 
-explain (costs off)
+explain (costs ON)
 select g%10000 as c1, sum(g::numeric) as c2, count(*) as c3
   from agg_data_20k group by g%10000;
 

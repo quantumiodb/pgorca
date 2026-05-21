@@ -542,7 +542,7 @@ select * from array_to_set(array['one', 'two']) as t(f1 numeric(4,2),f2 text);
 select * from array_to_set(array['one', 'two']) as t(f1 point,f2 text);
 
 -- with "strict", this function can't be inlined in FROM
-explain (verbose, costs off)
+explain (verbose, costs ON)
   select * from array_to_set(array['one', 'two']) as t(f1 numeric(4,2),f2 text);
 
 -- but without, it can be:
@@ -555,7 +555,7 @@ select array_to_set(array['one', 'two']);
 select * from array_to_set(array['one', 'two']) as t(f1 int,f2 text);
 select * from array_to_set(array['one', 'two']) as t(f1 numeric(4,2),f2 text);
 select * from array_to_set(array['one', 'two']) as t(f1 point,f2 text);
-explain (verbose, costs off)
+explain (verbose, costs ON)
   select * from array_to_set(array['one', 'two']) as t(f1 numeric(4,2),f2 text);
 
 create temp table rngfunc(f1 int8, f2 int8);
@@ -587,10 +587,10 @@ create function testrngfunc() returns rngfunc_type as $$
   select 7.136178319899999964, 7.136178319899999964;
 $$ language sql immutable;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select testrngfunc();
 select testrngfunc();
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from testrngfunc();
 select * from testrngfunc();
 
@@ -598,10 +598,10 @@ create or replace function testrngfunc() returns rngfunc_type as $$
   select 7.136178319899999964, 7.136178319899999964;
 $$ language sql volatile;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select testrngfunc();
 select testrngfunc();
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from testrngfunc();
 select * from testrngfunc();
 
@@ -611,10 +611,10 @@ create function testrngfunc() returns setof rngfunc_type as $$
   select 7.136178319899999964, 7.136178319899999964;
 $$ language sql immutable;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select testrngfunc();
 select testrngfunc();
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from testrngfunc();
 select * from testrngfunc();
 
@@ -622,10 +622,10 @@ create or replace function testrngfunc() returns setof rngfunc_type as $$
   select 7.136178319899999964, 7.136178319899999964;
 $$ language sql volatile;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select testrngfunc();
 select testrngfunc();
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from testrngfunc();
 select * from testrngfunc();
 
@@ -633,10 +633,10 @@ create or replace function testrngfunc() returns setof rngfunc_type as $$
   select 1, 2 union select 3, 4 order by 1;
 $$ language sql immutable;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select testrngfunc();
 select testrngfunc();
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from testrngfunc();
 select * from testrngfunc();
 
@@ -736,7 +736,7 @@ language sql stable;
 select rngfuncbar();
 select * from rngfuncbar();
 -- this function is now inlinable, too:
-explain (verbose, costs off) select * from rngfuncbar();
+explain (verbose, costs ON) select * from rngfuncbar();
 
 drop function rngfuncbar();
 
@@ -765,7 +765,7 @@ create function extractq2(t int8_tbl) returns int8 as $$
   select t.q2
 $$ language sql immutable;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select x from int8_tbl, extractq2(int8_tbl) f(x);
 
 select x from int8_tbl, extractq2(int8_tbl) f(x);
@@ -774,7 +774,7 @@ create function extractq2_2(t int8_tbl) returns table(ret1 int8) as $$
   select extractq2(t) offset 0
 $$ language sql immutable;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select x from int8_tbl, extractq2_2(int8_tbl) f(x);
 
 select x from int8_tbl, extractq2_2(int8_tbl) f(x);
@@ -785,7 +785,7 @@ create function extractq2_2_opt(t int8_tbl) returns table(ret1 int8) as $$
   select extractq2(t)
 $$ language sql immutable;
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select x from int8_tbl, extractq2_2_opt(int8_tbl) f(x);
 
 select x from int8_tbl, extractq2_2_opt(int8_tbl) f(x);
@@ -803,7 +803,7 @@ drop type rngfunc2;
 
 -- check handling of functions pulled up into function RTEs (bug #17227)
 
-explain (verbose, costs off)
+explain (verbose, costs ON)
 select * from
   (select jsonb_path_query_array(module->'lectures', '$[*]') as lecture
    from unnest(array['{"lectures": [{"id": "1"}]}'::jsonb])
