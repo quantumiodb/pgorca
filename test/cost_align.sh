@@ -105,7 +105,50 @@ for q in "${queries[@]}"; do
   # 3) Strip leading whitespace and the "-> " arrow
   # 4) Strip relation/index names after "on"/"using"
   filter_plan() {
-    sed -E 's/[[:space:]]*\(cost.*//' \
+    # First drop "cost-passthrough" Result wrappers: ORCA's
+    # PdxlnRemapOutputColumns (CTranslatorExprToDXL.cpp:2753) inserts a
+    # Result above an operator solely to reorder/rename output columns.
+    # Its cost annotation equals the child's verbatim (it inherits via
+    # GetProperties(pexpr)).  PG never emits this kind of wrapper, so
+    # without stripping it the plan-shape signature reports DIFF on
+    # queries whose costs are actually 1:1 with PG.
+    awk '
+      function strip(line) { gsub(/^[[:space:]]*->[[:space:]]*/, "", line); return line }
+      function get_cost(line) {
+        if (match(line, /cost=[0-9.]+\.\.[0-9.]+/)) {
+          return substr(line, RSTART, RLENGTH)
+        }
+        return ""
+      }
+      {
+        if (saved != "") {
+          # We have a pending Result line; check if this line is its child
+          # (same cost), and the current line is an operator (not annotation).
+          this_clean = $0
+          this_stripped = strip(this_clean)
+          if (this_stripped ~ /^[A-Z]/ && get_cost(this_clean) == saved_cost) {
+            # passthrough Result — drop saved, emit current
+            print $0
+            saved = ""
+            saved_cost = ""
+            next
+          }
+          # Not a cost-match child — emit the saved Result first
+          print saved
+          saved = ""
+          saved_cost = ""
+        }
+        cleaned = strip($0)
+        if (cleaned ~ /^Result[[:space:]]+\(cost=/) {
+          saved = $0
+          saved_cost = get_cost($0)
+          next
+        }
+        print $0
+      }
+      END { if (saved != "") print saved }
+    ' \
+    | sed -E 's/[[:space:]]*\(cost.*//' \
     | sed -E 's/^[[:space:]]*->[[:space:]]*//; s/^[[:space:]]+//' \
     | grep -E "^[A-Z]" \
     | grep -vE "^(Optimizer|Output|Index Cond|Recheck Cond|Sort Key|Group Key|Hash Cond|Merge Cond|Filter|Join Filter|One-Time Filter|Subplans Removed|Workers|Heap Fetches|Window|InitPlan|SubPlan|CTE|Function Call)" \
