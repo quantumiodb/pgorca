@@ -68,8 +68,12 @@ echo "----+------------------------+------------------------+---------+---------
       printf '\\echo ===Q%d===\n%s\n%s\n' "$idx" "$pre" "$query"
     done
   }
-  batch_pg=$(build_batch "SET pg_orca.enable_orca=off;")
-  batch_orca=$(build_batch "SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg;")
+  # GUCs that must persist across per-query SETs in the batch.  Each
+  # batch is a fresh psql session, so the setup-script SETs don't leak
+  # in; prepend these explicitly.
+  COMMON_GUCS="SET enable_partitionwise_join = on; SET enable_partitionwise_aggregate = on;"
+  batch_pg=$(build_batch "$COMMON_GUCS SET pg_orca.enable_orca=off;")
+  batch_orca=$(build_batch "$COMMON_GUCS SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg;")
   all_pg=$("$PSQL" -d "$PGDATABASE" -X -At <<<"$batch_pg" 2>/dev/null)
   all_orca=$("$PSQL" -d "$PGDATABASE" -X -At <<<"$batch_orca" 2>/dev/null)
 

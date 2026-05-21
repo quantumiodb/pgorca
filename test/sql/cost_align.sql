@@ -63,8 +63,48 @@ SELECT g, (g + 500) % 1000, g % 10, g % 100
 FROM generate_series(0, 999) g;
 CREATE INDEX cal_onek_unique1 ON cal_onek (unique1);
 
+-- ---------------------------------------------------------------------
+-- Partitioned tables for partition-pruning / partition-wise join / agg
+-- tests, modeled on PG regress partition_join.sql / partition_aggregate.sql.
+-- prt1_p: range-partitioned on a (4 partitions of 250 rows each)
+-- prt2_p: range-partitioned on b (matching boundaries, smaller fact)
+-- lprt:  list-partitioned on c (3 partitions)
+-- ---------------------------------------------------------------------
+DROP TABLE IF EXISTS prt1_p, prt2_p, lprt;
+
+CREATE TABLE prt1_p (a int4, b int4, c name) PARTITION BY RANGE(a);
+CREATE TABLE prt1_p_p1 PARTITION OF prt1_p FOR VALUES FROM (0)   TO (250);
+CREATE TABLE prt1_p_p2 PARTITION OF prt1_p FOR VALUES FROM (250) TO (500);
+CREATE TABLE prt1_p_p3 PARTITION OF prt1_p FOR VALUES FROM (500) TO (750);
+CREATE TABLE prt1_p_p4 PARTITION OF prt1_p FOR VALUES FROM (750) TO (1000);
+INSERT INTO prt1_p
+SELECT g, g % 100, 'k' || (g % 10)
+FROM generate_series(0, 999) g;
+CREATE INDEX prt1_p_a_idx ON prt1_p (a);
+
+CREATE TABLE prt2_p (a int4, b int4, c name) PARTITION BY RANGE(b);
+CREATE TABLE prt2_p_p1 PARTITION OF prt2_p FOR VALUES FROM (0)   TO (50);
+CREATE TABLE prt2_p_p2 PARTITION OF prt2_p FOR VALUES FROM (50)  TO (100);
+INSERT INTO prt2_p
+SELECT g, g, 'k' || (g % 10)
+FROM generate_series(0, 99) g;
+CREATE INDEX prt2_p_b_idx ON prt2_p (b);
+
+CREATE TABLE lprt (a int4, c text) PARTITION BY LIST(c);
+CREATE TABLE lprt_x PARTITION OF lprt FOR VALUES IN ('x');
+CREATE TABLE lprt_y PARTITION OF lprt FOR VALUES IN ('y');
+CREATE TABLE lprt_z PARTITION OF lprt FOR VALUES IN ('z');
+INSERT INTO lprt
+SELECT g, (CASE (g % 3) WHEN 0 THEN 'x' WHEN 1 THEN 'y' ELSE 'z' END)
+FROM generate_series(1, 999) g;
+
 ANALYZE cal_tenk1;
 ANALYZE cal_onek;
+ANALYZE prt1_p; ANALYZE prt1_p_p1; ANALYZE prt1_p_p2; ANALYZE prt1_p_p3; ANALYZE prt1_p_p4;
+ANALYZE prt2_p; ANALYZE prt2_p_p1; ANALYZE prt2_p_p2;
+ANALYZE lprt; ANALYZE lprt_x; ANALYZE lprt_y; ANALYZE lprt_z;
+SET enable_partitionwise_join = on;
+SET enable_partitionwise_aggregate = on;
 
 -- ---------------------------------------------------------------------
 -- Queries -- each line is one EXPLAIN that the driver compares.
@@ -405,3 +445,43 @@ EXPLAIN SELECT GROUPING(hundred), GROUPING(ten), hundred, ten, count(*) FROM cal
 EXPLAIN SELECT ARRAY[unique1, unique2] FROM cal_tenk1 WHERE unique1 < 10;
 EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 = ANY (ARRAY[1, 2, 3, 4, 5]);
 EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 < ALL (ARRAY[10, 20, 30]);
+
+-- ---------------------------------------------------------------------
+-- Partition table tests, adapted from PG regress partition_prune.sql /
+-- partition_join.sql / partition_aggregate.sql.
+-- ---------------------------------------------------------------------
+
+-- Partition pruning: equality / range / IN / IS NULL on partition key
+EXPLAIN SELECT * FROM prt1_p;
+EXPLAIN SELECT * FROM prt1_p WHERE a < 250;
+EXPLAIN SELECT * FROM prt1_p WHERE a = 500;
+EXPLAIN SELECT * FROM prt1_p WHERE a BETWEEN 200 AND 300;
+EXPLAIN SELECT * FROM prt1_p WHERE a IN (10, 300, 600);
+EXPLAIN SELECT * FROM prt1_p WHERE a < 100 OR a > 900;
+EXPLAIN SELECT * FROM prt1_p WHERE a IS NULL;
+EXPLAIN SELECT * FROM prt1_p WHERE b = 50;
+EXPLAIN SELECT count(*) FROM prt1_p WHERE a >= 500;
+
+-- LIST partition pruning
+EXPLAIN SELECT * FROM lprt WHERE c = 'x';
+EXPLAIN SELECT * FROM lprt WHERE c IN ('x', 'y');
+EXPLAIN SELECT * FROM lprt WHERE c <> 'z';
+EXPLAIN SELECT c, count(*) FROM lprt GROUP BY c;
+EXPLAIN SELECT count(*) FROM lprt WHERE c = 'x' AND a < 100;
+
+-- Partition-wise join (matching keys + boundaries)
+EXPLAIN SELECT count(*) FROM prt1_p t1 JOIN prt2_p t2 ON t1.a = t2.b;
+EXPLAIN SELECT t1.a, t2.b FROM prt1_p t1 JOIN prt2_p t2 ON t1.a = t2.b WHERE t1.b < 10;
+EXPLAIN SELECT t1.c, t1.a FROM prt1_p t1 JOIN prt2_p t2 ON t1.a = t2.b WHERE t1.a < 100;
+
+-- Partition-wise aggregate (group key = partition key)
+EXPLAIN SELECT a, count(*) FROM prt1_p GROUP BY a;
+EXPLAIN SELECT a, sum(b) FROM prt1_p WHERE a < 500 GROUP BY a;
+EXPLAIN SELECT c, count(*) FROM prt1_p GROUP BY c;
+EXPLAIN SELECT c, count(*), avg(a) FROM lprt GROUP BY c;
+EXPLAIN SELECT c, sum(a) FROM lprt WHERE a < 500 GROUP BY c;
+
+-- Cross-partition / non-key filter
+EXPLAIN SELECT * FROM prt1_p WHERE c = 'k1';
+EXPLAIN SELECT a FROM prt1_p WHERE a < 100 ORDER BY a LIMIT 10;
+EXPLAIN SELECT count(*) FROM prt1_p t1 JOIN cal_onek t2 ON t1.a = t2.unique1;
