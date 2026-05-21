@@ -2004,8 +2004,20 @@ CCostModelPG::CostComputeScalar(CMemoryPool *,	// mp
 	// pathtarget per_tuple).
 	const ULONG n_proj_ops =
 		CountQualOps(exprhdl.PexprScalarRepChild(1));
-	const DOUBLE per_row =
-		cpu_tuple_cost + cpu_operator_cost * static_cast<DOUBLE>(n_proj_ops);
+
+	// PG charges cpu_tuple_cost only when a real SubqueryScan layer exists,
+	// which in ORCA's flattened form correlates with the child being a
+	// pull-up blocker (Limit).  For projections directly above a scan
+	// (TVF/TableScan/...) PG bundles the projection into pathtarget without
+	// an extra cpu_tuple charge, so adding it here over-bills by cpu_tuple ×
+	// input_rows.
+	DOUBLE per_row =
+		cpu_operator_cost * static_cast<DOUBLE>(n_proj_ops);
+	COperator *child = exprhdl.Pop(0);
+	if (nullptr != child && COperator::EopPhysicalLimit == child->Eopid())
+	{
+		per_row += cpu_tuple_cost;
+	}
 	return CCost(pci->NumRebinds() * per_row * pci->Rows());
 }
 
