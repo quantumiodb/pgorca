@@ -648,7 +648,11 @@ CCostModelPG::CostStreamAgg(CMemoryPool *,	// mp
 					exprhdl.Pop()->Eopid());
 
 	const DOUBLE input_rows = pci->PdRows()[0];
-	const DOUBLE output_rows = pci->Rows();
+	// PG `clamp_row_est` (selfuncs.c) floors output row estimates at 1 so
+	// downstream final/emit terms always charge at least one tuple's worth
+	// of work.  ORCA's `pci->Rows()` may report 0 for a WHERE 1=2 filtered
+	// agg, mismatching PG's `cost=0.00..0.01` 1-group floor.
+	const DOUBLE output_rows = std::max(1.0, pci->Rows());
 	ULONG nAggs = 0, nArgOps = 0;
 	DedupAggsByTransfn(exprhdl, &nAggs, &nArgOps);
 	const ULONG nGroupCols = NumDistinctGroupCols(exprhdl);
@@ -693,7 +697,9 @@ CCostModelPG::CostHashAgg(CMemoryPool *,  // mp
 
 	const DOUBLE input_rows = pci->PdRows()[0];
 	const DOUBLE input_width = pci->GetWidth()[0];
-	const DOUBLE output_rows = pci->Rows();
+	// PG `clamp_row_est` floors output row estimates at 1 (selfuncs.c) so
+	// the emit/final terms charge ≥1 tuple's work even on `WHERE 1=2` paths.
+	const DOUBLE output_rows = std::max(1.0, pci->Rows());
 	ULONG nAggs = 0, nArgOps = 0;
 	DedupAggsByTransfn(exprhdl, &nAggs, &nArgOps);
 	const ULONG nGroupCols = NumDistinctGroupCols(exprhdl);
