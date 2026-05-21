@@ -31,7 +31,9 @@
 #include "gpopt/base/CDistributionSpecHashed.h"
 #include "naucrates/md/CMDIdRelStats.h"
 #include "naucrates/md/IMDRelStats.h"
+#include "gpopt/operators/CScalarAggFunc.h"
 #include "gpopt/operators/CScalarArray.h"
+#include "naucrates/md/IMDAggregate.h"
 #include "gpopt/operators/CScalarBitmapBoolOp.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
 #include "gpopt/operators/CScalarConst.h"
@@ -466,6 +468,120 @@ CountAggArgOps(CExpressionHandle &exprhdl)
 	return total;
 }
 
+// PG `get_agg_clause_costs` calls `find_compatible_pertrans` (nodeAgg.c)
+// to share a single transition-function invocation across multiple
+// aggregates that have the same (aggtransfn, args, filter, sortlist).
+// Common cases:
+//   - sum(x) + avg(x) of numeric type both use `numeric_avg_accum`
+//   - corr(a,b) + covar_pop(a,b) + regr_*(a,b) all share `float8_regr_accum`
+//
+// ORCA's previous behavior counted each aggref individually, over-billing
+// by `(extra_aggs) × cpu_op × input_rows` plus the per-aggref argument
+// evaluation cost.  Replace `NumAggsFromExprHdl` + `CountAggArgOps` with
+// this dedup-aware pair when computing transCost.per_tuple.
+//
+// Returns:
+//   `n_aggs_out`    — number of distinct transition function invocations
+//   `n_arg_ops_out` — sum of CountQualOps over args, counted once per
+//                     distinct (transfn, args) pair
+//
+// Falls back to per-aggref counting when transfn mdid is unavailable
+// (e.g. DXL-loaded MD entries without the transfn field).
+static void
+DedupAggsByTransfn(CExpressionHandle &exprhdl, ULONG *n_aggs_out,
+				   ULONG *n_arg_ops_out)
+{
+	*n_aggs_out = 0;
+	*n_arg_ops_out = 0;
+
+	if (exprhdl.Arity() < 2)
+	{
+		return;
+	}
+	CExpression *proj_list = exprhdl.PexprScalarRepChild(1);
+	if (nullptr == proj_list)
+	{
+		return;
+	}
+	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+
+	// Dedup key = transfn_mdid value combined with the hash of the agg
+	// function's child expression tree (args + direct args + order +
+	// filter).  CExpression::HashValue is stable across structurally
+	// identical trees (per ORCA's HashValue contract).
+	std::unordered_set<gpos::ULLONG> seen;
+	for (ULONG i = 0; i < proj_list->Arity(); i++)
+	{
+		CExpression *pr_el = (*proj_list)[i];
+		if (nullptr == pr_el || pr_el->Arity() == 0)
+		{
+			continue;
+		}
+		CExpression *agg_func = (*pr_el)[0];
+		if (nullptr == agg_func ||
+			COperator::EopScalarAggFunc != agg_func->Pop()->Eopid())
+		{
+			continue;
+		}
+
+		// Compute the dedup key.
+		const IMDAggregate *pmdagg = nullptr;
+		IMDId *transfn_mdid = nullptr;
+		{
+			IMDId *agg_mdid =
+				CScalarAggFunc::PopConvert(agg_func->Pop())->MDId();
+			if (nullptr != agg_mdid && agg_mdid->IsValid())
+			{
+				pmdagg = mda->RetrieveAgg(agg_mdid);
+				if (nullptr != pmdagg)
+				{
+					transfn_mdid = pmdagg->GetTransfnMdid();
+				}
+			}
+		}
+		// Hash of the agg's child expression tree captures (args, filter,
+		// sortlist) — structurally identical args produce the same hash.
+		ULONG args_hash = 0;
+		for (ULONG c = 0; c < agg_func->Arity(); c++)
+		{
+			args_hash =
+				gpos::CombineHashes(args_hash, CExpression::HashValue((*agg_func)[c]));
+		}
+
+		// Compose 64-bit key: transfn OID in low 32, args hash in high 32.
+		// Fall back to the agg mdid OID when transfn isn't plumbed (DXL),
+		// degrading to per-aggregate dedup (matches old behavior for
+		// duplicates of the same aggregate, doesn't catch sum/avg sharing).
+		gpos::ULLONG transfn_key = 0;
+		if (nullptr != transfn_mdid && transfn_mdid->IsValid())
+		{
+			transfn_key =
+				static_cast<gpos::ULLONG>(transfn_mdid->HashValue());
+		}
+		else
+		{
+			IMDId *agg_mdid =
+				CScalarAggFunc::PopConvert(agg_func->Pop())->MDId();
+			if (nullptr != agg_mdid)
+			{
+				transfn_key = static_cast<gpos::ULLONG>(agg_mdid->HashValue());
+			}
+		}
+		const gpos::ULLONG key =
+			(transfn_key << 32) ^ static_cast<gpos::ULLONG>(args_hash);
+
+		if (!seen.insert(key).second)
+		{
+			continue;  // already counted this transfn+args invocation
+		}
+		(*n_aggs_out)++;
+		for (ULONG c = 0; c < agg_func->Arity(); c++)
+		{
+			*n_arg_ops_out += CountQualOps((*agg_func)[c]);
+		}
+	}
+}
+
 //---------------------------------------------------------------------------
 //	CCostModelPG::CostScalarAgg
 //
@@ -495,8 +611,8 @@ CCostModelPG::CostScalarAgg(CMemoryPool *,	// mp
 	GPOS_ASSERT(COperator::EopPhysicalScalarAgg == exprhdl.Pop()->Eopid());
 
 	const DOUBLE input_rows = pci->PdRows()[0];
-	const ULONG nAggs = NumAggsFromExprHdl(exprhdl);
-	const ULONG nArgOps = CountAggArgOps(exprhdl);
+	ULONG nAggs = 0, nArgOps = 0;
+	DedupAggsByTransfn(exprhdl, &nAggs, &nArgOps);
 
 	CDouble trans =
 		CDouble(cpu_operator_cost) * CDouble(nAggs + nArgOps) * input_rows;
@@ -533,8 +649,8 @@ CCostModelPG::CostStreamAgg(CMemoryPool *,	// mp
 
 	const DOUBLE input_rows = pci->PdRows()[0];
 	const DOUBLE output_rows = pci->Rows();
-	const ULONG nAggs = NumAggsFromExprHdl(exprhdl);
-	const ULONG nArgOps = CountAggArgOps(exprhdl);
+	ULONG nAggs = 0, nArgOps = 0;
+	DedupAggsByTransfn(exprhdl, &nAggs, &nArgOps);
 	const ULONG nGroupCols = NumDistinctGroupCols(exprhdl);
 
 	CDouble trans = CDouble(cpu_operator_cost) *
@@ -578,8 +694,8 @@ CCostModelPG::CostHashAgg(CMemoryPool *,  // mp
 	const DOUBLE input_rows = pci->PdRows()[0];
 	const DOUBLE input_width = pci->GetWidth()[0];
 	const DOUBLE output_rows = pci->Rows();
-	const ULONG nAggs = NumAggsFromExprHdl(exprhdl);
-	const ULONG nArgOps = CountAggArgOps(exprhdl);
+	ULONG nAggs = 0, nArgOps = 0;
+	DedupAggsByTransfn(exprhdl, &nAggs, &nArgOps);
 	const ULONG nGroupCols = NumDistinctGroupCols(exprhdl);
 
 	CDouble trans = CDouble(cpu_operator_cost) *
