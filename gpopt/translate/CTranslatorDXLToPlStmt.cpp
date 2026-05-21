@@ -32,14 +32,11 @@ extern "C" {
 #include "nodes/primnodes.h"
 #include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
-#include "optimizer/cost.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/guc.h"
 #include "utils/gpdbgucs.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
-#include "utils/syscache.h"
-#include "catalog/pg_class.h"
 #include "access/tupdesc.h"
 #include "utils/rel.h"
 #include "utils/typcache.h"
@@ -65,14 +62,6 @@ extern "C" {
 #ifndef RTE_TABLEFUNCTION
 #define RTE_TABLEFUNCTION RTE_TABLEFUNC
 #endif
-}
-
-// PG cost-tuning GUCs.  Defined as globals in costsize.c; the
-// `optimizer/cost.h` declarations may be unreachable here due to
-// PGDLLIMPORT macros, so re-declare with plain extern.
-extern "C" {
-extern double seq_page_cost;
-extern double cpu_tuple_cost;
 }
 
 #include <algorithm>
@@ -4516,70 +4505,6 @@ CTranslatorDXLToPlStmt::TranslateDXLAppend(
 		child_contexts, output_context);
 
 	SetParamIds(plan);
-
-	// Recompute per-partition costs to match PG's Append plan shape.
-	// ORCA's CTranslatorExprToDXL::PdxlnAppendTableScan reuses the
-	// parent Append's cost properties for every child SeqScan, so each
-	// child reports the whole-table cost/rows instead of its own.  PG
-	// expects per-child Seq Scan cost = pages × seq_page_cost + rows ×
-	// cpu_tuple_cost, then Append.total = sum(children) + cpu_tuple_cost
-	// × 0.5 × total_rows (cost_append in costsize.c).  Walk the
-	// translated children, look up pg_class for each, and rewrite.
-	{
-		double total_child_cost = 0.0;
-		double total_child_rows = 0.0;
-		ListCell *lc;
-		foreach(lc, append->appendplans)
-		{
-			Plan *child = (Plan *) lfirst(lc);
-			Oid child_oid = InvalidOid;
-			if (IsA(child, SeqScan) || IsA(child, IndexScan) ||
-				IsA(child, IndexOnlyScan) || IsA(child, BitmapHeapScan))
-			{
-				Scan *scan = (Scan *) child;
-				if (scan->scanrelid > 0 &&
-					scan->scanrelid <=
-						(Index) list_length(m_dxl_to_plstmt_context
-												->GetRTableEntriesList()))
-				{
-					RangeTblEntry *rte =
-						(RangeTblEntry *) list_nth(
-							m_dxl_to_plstmt_context->GetRTableEntriesList(),
-							scan->scanrelid - 1);
-					if (rte->rtekind == RTE_RELATION)
-					{
-						child_oid = rte->relid;
-					}
-				}
-			}
-			if (OidIsValid(child_oid))
-			{
-				HeapTuple ctup = SearchSysCache1(RELOID,
-												 ObjectIdGetDatum(child_oid));
-				if (HeapTupleIsValid(ctup))
-				{
-					Form_pg_class crel = (Form_pg_class) GETSTRUCT(ctup);
-					double pages = (double) crel->relpages;
-					double rows = (double) crel->reltuples;
-					if (pages < 0) pages = 1.0;
-					if (rows  < 0) rows  = 1.0;
-					/* match cost_seqscan: pages × seq_page + rows × cpu_tuple */
-					child->startup_cost = 0.0;
-					child->plan_rows = rows;
-					child->total_cost =
-						pages * seq_page_cost + rows * cpu_tuple_cost;
-					ReleaseSysCache(ctup);
-				}
-			}
-			total_child_cost += child->total_cost;
-			total_child_rows += child->plan_rows;
-		}
-		/* Append local cost = 0.5 × cpu_tuple_cost × total_rows  (cost_append) */
-		plan->startup_cost = 0.0;
-		plan->plan_rows = total_child_rows;
-		plan->total_cost =
-			total_child_cost + 0.5 * cpu_tuple_cost * total_child_rows;
-	}
 
 	// cleanup
 	child_contexts->Release();

@@ -181,13 +181,23 @@
 #include "naucrates/dxl/operators/CDXLWindowFrame.h"
 #include "naucrates/dxl/operators/CDXLWindowKey.h"
 #include "naucrates/exception.h"
+#include "naucrates/md/CMDIdRelStats.h"
 #include "naucrates/md/CMDRelationCtasGPDB.h"
 #include "naucrates/md/IMDCast.h"
+#include "naucrates/md/IMDRelStats.h"
 #include "naucrates/md/IMDFunction.h"
 #include "naucrates/md/IMDScalarOp.h"
 #include "naucrates/md/IMDTypeInt4.h"
 #include "naucrates/statistics/CStatistics.h"
 #include "naucrates/traceflags/traceflags.h"
+
+// PG cost-tuning GUCs.  Defined as globals in src/backend/optimizer/path/costsize.c.
+// PdxlnAppendTableScan computes per-partition CDXLPhysicalProperties using
+// cost_seqscan's formula, so each unfolded child Scan reports its own cost.
+extern "C" {
+extern double seq_page_cost;
+extern double cpu_tuple_cost;
+}
 
 using namespace gpos;
 using namespace gpmd;
@@ -1313,6 +1323,13 @@ CTranslatorExprToDXL::PdxlnAppendTableScan(
 	pdxlnAppend->AddChild(PdxlnFilter(nullptr));
 
 	IMdIdArray *part_mdids = popATS->GetPartitionMdids();
+	// Track sum of per-partition costs so we can rewrite the parent
+	// Append's cost = sum(children) + 0.5 × cpu_tuple_cost × total_rows
+	// (PG cost_append, costsize.c).  Without this, the Append shows the
+	// pre-unfold AppendTableScan cost (which treats the root as a flat
+	// table), inflating display of pruned scans.
+	CDouble sum_child_cost(0.0);
+	CDouble sum_child_rows(0.0);
 	for (ULONG ul = 0; ul < part_mdids->Size(); ++ul)
 	{
 		IMDId *part_mdid = (*part_mdids)[ul];
@@ -1339,9 +1356,53 @@ CTranslatorExprToDXL::PdxlnAppendTableScan(
 		CDXLNode *dxlnode = GPOS_NEW(m_mp)
 			CDXLNode(m_mp, GPOS_NEW(m_mp) CDXLPhysicalTableScan(m_mp, dxl_table_descr));
 
-		// Reuse parent cost properties for each child scan
-		pdxlpropATS->AddRef();
-		dxlnode->SetProperties(pdxlpropATS);
+		// Compute per-partition properties: cost_seqscan = pages × seq_page +
+		// rows × cpu_tuple, rows = partition's own row count.  Pages come
+		// from pg_class.relpages via IMDRelStats; partitioned root has
+		// relpages=-1, leaf partitions hold the actual data.  Previously
+		// this loop reused the parent AppendTableScan's properties for
+		// every child, so EXPLAIN showed "Seq Scan ... (cost=X rows=Y)"
+		// with X/Y equal to the whole table's values.
+		CDouble part_rows = part->Rows();
+		CDouble part_pages(1.0);
+		{
+			part_mdid->AddRef();
+			CMDIdRelStats *rs_mdid =
+				GPOS_NEW(m_mp) CMDIdRelStats(CMDIdGPDB::CastMdid(part_mdid));
+			const IMDRelStats *part_stats = m_pmda->Pmdrelstats(rs_mdid);
+			if (nullptr != part_stats && part_stats->RelPages() > 0)
+			{
+				part_pages = CDouble(part_stats->RelPages());
+				// Refresh row count from the dedicated stats slot too —
+				// the IMDRelation::Rows() above may be stale for partitions.
+				if (part_stats->Rows() > CDouble(0.0))
+				{
+					part_rows = part_stats->Rows();
+				}
+			}
+			rs_mdid->Release();
+		}
+		CDouble part_cost =
+			part_pages * CDouble(seq_page_cost) +
+			part_rows * CDouble(cpu_tuple_cost);
+
+		CWStringDynamic *str_start =
+			GPOS_NEW(m_mp) CWStringDynamic(m_mp, GPOS_WSZ_LIT("0"));
+		CWStringDynamic *str_total = GPOS_NEW(m_mp) CWStringDynamic(m_mp);
+		str_total->AppendFormat(GPOS_WSZ_LIT("%f"), part_cost.Get());
+		CWStringDynamic *str_rows = GPOS_NEW(m_mp) CWStringDynamic(m_mp);
+		str_rows->AppendFormat(GPOS_WSZ_LIT("%f"), part_rows.Get());
+		// Reuse parent's width string (CDXLOperatorCost copies via refcount)
+		CWStringDynamic *str_width = GPOS_NEW(m_mp) CWStringDynamic(
+			m_mp,
+			pdxlpropATS->GetDXLOperatorCost()->GetWidthStr()->GetBuffer());
+		CDXLOperatorCost *part_dxl_cost = GPOS_NEW(m_mp) CDXLOperatorCost(
+			str_start, str_total, str_rows, str_width);
+		CDXLPhysicalProperties *part_prop =
+			GPOS_NEW(m_mp) CDXLPhysicalProperties(part_dxl_cost);
+		dxlnode->SetProperties(part_prop);
+		sum_child_cost = sum_child_cost + part_cost;
+		sum_child_rows = sum_child_rows + part_rows;
 
 		// ColRef → index in child table desc (per partition)
 		auto root_col_mapping = (*popATS->GetRootColMappingPerPart())[ul];
@@ -1360,6 +1421,31 @@ CTranslatorExprToDXL::PdxlnAppendTableScan(
 
 		// cleanup
 		part_colrefs->Release();
+	}
+
+	// Rewrite the parent Append's cost = sum(children) + 0.5 ×
+	// cpu_tuple_cost × total_rows (PG cost_append, costsize.c:120
+	// constant APPEND_CPU_COST_MULTIPLIER).  Without this the Append
+	// inherits the AppendTableScan's pre-unfold cost (root-table flat
+	// scan), which for pruned plans severely overstates the cost.
+	{
+		CDouble append_total =
+			sum_child_cost + CDouble(0.5) * CDouble(cpu_tuple_cost) *
+								 sum_child_rows;
+		CWStringDynamic *str_start =
+			GPOS_NEW(m_mp) CWStringDynamic(m_mp, GPOS_WSZ_LIT("0"));
+		CWStringDynamic *str_total = GPOS_NEW(m_mp) CWStringDynamic(m_mp);
+		str_total->AppendFormat(GPOS_WSZ_LIT("%f"), append_total.Get());
+		CWStringDynamic *str_rows = GPOS_NEW(m_mp) CWStringDynamic(m_mp);
+		str_rows->AppendFormat(GPOS_WSZ_LIT("%f"), sum_child_rows.Get());
+		CWStringDynamic *str_width = GPOS_NEW(m_mp) CWStringDynamic(
+			m_mp,
+			pdxlpropATS->GetDXLOperatorCost()->GetWidthStr()->GetBuffer());
+		CDXLOperatorCost *append_dxl_cost = GPOS_NEW(m_mp) CDXLOperatorCost(
+			str_start, str_total, str_rows, str_width);
+		CDXLPhysicalProperties *append_prop =
+			GPOS_NEW(m_mp) CDXLPhysicalProperties(append_dxl_cost);
+		pdxlnAppend->SetProperties(append_prop);
 	}
 
 	CDistributionSpec *pds = pexprATS->GetDrvdPropPlan()->Pds();
