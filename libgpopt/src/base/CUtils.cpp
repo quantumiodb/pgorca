@@ -4677,11 +4677,30 @@ CUtils::FHasOrderedAggToSplit(CExpression *pexpr)
 	GPOS_ASSERT(nullptr != pexpr);
 
 	CScalarAggFunc *popScAggFunc = CScalarAggFunc::PopConvert(pexpr->Pop());
-	return popScAggFunc->AggKind() == EaggfunckindOrderedSet &&
-		   (!FScalarConst((*(*pexpr)[1])[0]) ||
-			!FIsConstArray((*(*pexpr)[1])[0])) &&
-		   (FScalarIdent((*(*pexpr)[0])[0]) ||
-			CScalarIdent::FCastedScId((*(*pexpr)[0])[0]));
+	if (popScAggFunc->AggKind() != EaggfunckindOrderedSet)
+	{
+		return false;
+	}
+	// CScalarAggFunc has 4 children: [0]=args, [1]=direct args, [2]=order
+	// args, [3]=qual.  This check requires the regular-args list [0] and
+	// the direct-args list [1] to each have at least one expression — we
+	// peek at the first element of both below.  Ordered-set aggregates
+	// like mode() take NO direct args (only WITHIN GROUP args), so [1] is
+	// empty for them and the (*(*pexpr)[1])[0] access used to segfault.
+	// Treat those as "no ordered-agg to split" — splitting only applies
+	// to fractile aggs like percentile_cont(<expr>) where the direct arg
+	// can be a non-const expression.
+	CExpression *pexprArgs = (*pexpr)[0];
+	CExpression *pexprDirectArgs = (*pexpr)[1];
+	if (nullptr == pexprArgs || pexprArgs->Arity() == 0 ||
+		nullptr == pexprDirectArgs || pexprDirectArgs->Arity() == 0)
+	{
+		return false;
+	}
+	return (!FScalarConst((*pexprDirectArgs)[0]) ||
+			!FIsConstArray((*pexprDirectArgs)[0])) &&
+		   (FScalarIdent((*pexprArgs)[0]) ||
+			CScalarIdent::FCastedScId((*pexprArgs)[0]));
 }
 
 BOOL

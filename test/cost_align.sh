@@ -55,11 +55,41 @@ fail=0
 printf "%-3s | %-22s | %-22s | %-7s | %s\n" "#" "PG native" "ORCA pg" "diff%" "Query"
 echo "----+------------------------+------------------------+---------+----------"
 
+  # Build a single batched script per side: one psql session executes all
+  # queries with `\echo ===Qn===` markers between them.  Spawning psql -c
+  # per query (200+ for a typical run) hit transient "no output" empties
+  # when the backend hadn't finished shutting down — this approach uses
+  # exactly two psql invocations regardless of query count.
+  build_batch() {
+    local pre=$1
+    local idx=0
+    for query in "${queries[@]}"; do
+      idx=$((idx+1))
+      printf '\\echo ===Q%d===\n%s\n%s\n' "$idx" "$pre" "$query"
+    done
+  }
+  batch_pg=$(build_batch "SET pg_orca.enable_orca=off;")
+  batch_orca=$(build_batch "SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg;")
+  all_pg=$("$PSQL" -d "$PGDATABASE" -X -At <<<"$batch_pg" 2>/dev/null)
+  all_orca=$("$PSQL" -d "$PGDATABASE" -X -At <<<"$batch_orca" 2>/dev/null)
+
+  # Split per-query outputs by the markers.  Each block runs from a
+  # `===Qn===` line up to the next marker (exclusive).
+  extract_block() {
+    local input=$1
+    local marker=$2
+    echo "$input" | awk -v m="$marker" '
+      $0 == m { in_block=1; next }
+      /^===Q[0-9]+===$/ { in_block=0 }
+      in_block { print }
+    ' | grep -vE "^SET|^RESET"
+  }
+
 i=0
 for q in "${queries[@]}"; do
   i=$((i+1))
-  pg_out=$("$PSQL" -d "$PGDATABASE" -X -At -c "SET pg_orca.enable_orca=off; $q" 2>/dev/null | grep -vE "^SET|^RESET")
-  orca_out=$("$PSQL" -d "$PGDATABASE" -X -At -c "SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg; $q" 2>/dev/null | grep -vE "^SET|^RESET")
+  pg_out=$(extract_block "$all_pg" "===Q$i===")
+  orca_out=$(extract_block "$all_orca" "===Q$i===")
   # Plan shape = sequence of operator names (one per plan line, in
   # depth-first order).  Two plans are "same" only if every operator
   # on every nesting level matches — strictly more sensitive than just
