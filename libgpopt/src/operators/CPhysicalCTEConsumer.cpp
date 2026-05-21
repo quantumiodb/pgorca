@@ -208,14 +208,20 @@ CPhysicalCTEConsumer::PdsDerive(CMemoryPool *,		 // mp
 //
 //---------------------------------------------------------------------------
 CRewindabilitySpec *
-CPhysicalCTEConsumer::PrsDerive(CMemoryPool *,		 //mp
-								CExpressionHandle &	 //exprhdl
+CPhysicalCTEConsumer::PrsDerive(CMemoryPool *mp,
+								CExpressionHandle &  //exprhdl
 ) const
 {
-	GPOS_ASSERT(
-		!"Unexpected call to CTE consumer rewindability property derivation");
-
-	return nullptr;
+	// PG's CTE Scan executor (nodeCtescan.c:181) asserts that
+	// EXEC_FLAG_MARK is never set on it — it doesn't implement
+	// mark/restore.  Declare CTE Consumer as ErtRescannable (can be
+	// rescanned via the tuplestore, but no mark/restore support) so that
+	// ORCA's enforcer (CRewindabilitySpec::AppendEnforcers) injects a
+	// Spool/Material above CTE Consumer whenever a parent operator like
+	// MergeJoin requires ErtMarkRestore.  Without this, ORCA generated
+	// MergeJoin(CTE, CTE) plans that triggered SIGABRT in the executor.
+	return GPOS_NEW(mp) CRewindabilitySpec(CRewindabilitySpec::ErtRescannable,
+										   CRewindabilitySpec::EmhtNoMotion);
 }
 
 

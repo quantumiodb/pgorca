@@ -129,7 +129,7 @@ static const struct config_enum_entry optimizer_join_order_options[] = {
 /* Cost model selection (pg_orca.cost_model). */
 #define PG_ORCA_COST_MODEL_GPDB  0
 #define PG_ORCA_COST_MODEL_PG    1
-int   pg_orca_cost_model = PG_ORCA_COST_MODEL_GPDB;
+int   pg_orca_cost_model = PG_ORCA_COST_MODEL_PG;
 
 static const struct config_enum_entry pg_orca_cost_model_options[] = {
     {"gpdb", PG_ORCA_COST_MODEL_GPDB, false},
@@ -716,7 +716,7 @@ void _PG_init(void)
     DefineCustomEnumVariable(
         "pg_orca.cost_model",
         "Cost model used by ORCA (gpdb = GPDB calibration, pg = PG-aligned).",
-        NULL, &pg_orca_cost_model, PG_ORCA_COST_MODEL_GPDB,
+        NULL, &pg_orca_cost_model, PG_ORCA_COST_MODEL_PG,
         pg_orca_cost_model_options,
         PGC_USERSET, 0, NULL, NULL, NULL);
 

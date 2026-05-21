@@ -132,10 +132,23 @@ CDrvdPropPlan::CopyCTEProducerPlanProps(CMemoryPool *mp, CDrvdPropCtxt *pdpctxt,
 														   true /*must_exist*/);
 		m_pds = pdpplan->Pds()->PdsCopyWithRemappedColumns(mp, colref_mapping,
 														   true /*must_exist*/);
-		// rewindability and partition filter map do not need column remapping,
-		// we add-ref producer's properties directly
-		pdpplan->Prs()->AddRef();
-		m_prs = pdpplan->Prs();
+		// Rewindability: don't blindly inherit the producer's spec.  PG's
+		// CTE Scan executor (nodeCtescan.c:181) asserts that EXEC_FLAG_MARK
+		// is never set — it can be rescanned (via the tuplestore) but does
+		// not implement mark/restore.  Producers like Sort report
+		// ErtMarkRestore; copying that verbatim makes ORCA think it can use
+		// CTE Consumer as a MergeJoin inner child, triggering SIGABRT at
+		// runtime.  Cap the derived rewindability at ErtRescannable so a
+		// parent MarkRestore requirement triggers ORCA's enforcer to inject
+		// a Spool/Material on top of the Consumer.
+		CRewindabilitySpec *prs_producer = pdpplan->Prs();
+		CRewindabilitySpec::ERewindabilityType ert_capped =
+			(prs_producer->Ert() == CRewindabilitySpec::ErtMarkRestore ||
+			 prs_producer->Ert() == CRewindabilitySpec::ErtRewindable)
+				? CRewindabilitySpec::ErtRescannable
+				: prs_producer->Ert();
+		m_prs = GPOS_NEW(mp)
+			CRewindabilitySpec(ert_capped, prs_producer->Emht());
 
 		// no need to copy the part index map. return an empty one. This is to
 		// distinguish between a CTE consumer and the inlined expression
