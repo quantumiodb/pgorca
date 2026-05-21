@@ -485,3 +485,36 @@ EXPLAIN SELECT c, sum(a) FROM lprt WHERE a < 500 GROUP BY c;
 EXPLAIN SELECT * FROM prt1_p WHERE c = 'k1';
 EXPLAIN SELECT a FROM prt1_p WHERE a < 100 ORDER BY a LIMIT 10;
 EXPLAIN SELECT count(*) FROM prt1_p t1 JOIN cal_onek t2 ON t1.a = t2.unique1;
+
+
+-- PG regress-derived: complex IN-list, OR-join, LATERAL, DISTINCT shapes
+-- (table names mapped: tenk1→cal_tenk1, onek→cal_onek)
+
+-- from join.sql: OR-equality joins
+EXPLAIN SELECT COUNT(*) FROM cal_tenk1 t1, cal_tenk1 t2 WHERE t2.thousand = t1.tenthous OR t2.thousand = t1.unique1 OR t2.thousand = t1.unique2;
+EXPLAIN SELECT COUNT(*) FROM cal_tenk1 t1 LEFT JOIN cal_tenk1 t2 ON (t2.thousand = t1.tenthous OR t2.thousand = t1.thousand);
+EXPLAIN SELECT t1.unique1 FROM cal_tenk1 t1 LEFT JOIN (SELECT *, 42 AS phv FROM cal_tenk1 t2) ss ON t1.unique2 = ss.unique2 WHERE ss.unique1 = ss.phv AND t1.unique1 < 100;
+
+-- from subselect.sql: VALUES-based IN-lists
+EXPLAIN SELECT * FROM cal_onek WHERE unique1 IN (VALUES(10000), (2), (389), (1000), (2000), (10029)) ORDER BY unique1;
+EXPLAIN SELECT * FROM cal_onek WHERE (unique1,ten) IN (VALUES (1,1), (20,0), (99,9), (17,99)) ORDER BY unique1;
+EXPLAIN SELECT * FROM cal_onek WHERE unique1 IN (VALUES(1200), (1));
+EXPLAIN SELECT * FROM cal_onek WHERE unique1 IN (SELECT x * x FROM (VALUES(1200), (1)) AS x(x));
+EXPLAIN SELECT * FROM cal_onek WHERE unique1 IN (VALUES(1200::bigint), (1));
+EXPLAIN SELECT c.unique1, c.ten FROM cal_tenk1 c JOIN cal_onek a USING (ten) WHERE a.ten IN (VALUES (1), (2));
+EXPLAIN SELECT c.unique1, c.ten FROM cal_tenk1 c JOIN cal_onek a USING (ten) WHERE c.ten IN (VALUES (1), (2));
+EXPLAIN SELECT ten FROM cal_tenk1 WHERE sin(two) + four IN (VALUES (sin(0.5)), (2));
+EXPLAIN SELECT * FROM cal_onek t1, lateral (SELECT * FROM cal_onek t2 WHERE t2.ten IN (VALUES (t1.ten), (1))) ss;
+
+-- from select_distinct.sql: DISTINCT over various selectivities
+EXPLAIN SELECT DISTINCT hundred, two FROM cal_tenk1;
+EXPLAIN SELECT DISTINCT four FROM cal_tenk1;
+EXPLAIN SELECT DISTINCT four FROM cal_tenk1 WHERE four = 0;
+EXPLAIN SELECT DISTINCT four FROM cal_tenk1 WHERE four = 0 AND two <> 0;
+EXPLAIN SELECT DISTINCT four, 1, 2, 3 FROM cal_tenk1 WHERE four = 0;
+EXPLAIN SELECT DISTINCT four FROM cal_tenk1 WHERE four = 10;
+
+-- from aggregates.sql: GROUP BY ordering / sort-elim
+EXPLAIN SELECT count(*) FROM cal_tenk1 GROUP BY ten ORDER BY ten;
+EXPLAIN SELECT count(*) FROM cal_tenk1 GROUP BY ten, hundred ORDER BY ten, hundred;
+EXPLAIN SELECT count(*) FROM cal_tenk1 GROUP BY hundred, ten ORDER BY ten;
