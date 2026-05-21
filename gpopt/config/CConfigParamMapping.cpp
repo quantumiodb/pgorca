@@ -14,6 +14,10 @@ extern "C" {
 
 // optimizer_join_order GUC defined in pg_orca.cpp
 extern int optimizer_join_order;
+// pg_orca.enable_dynamic_tablescan GUC, also defined in pg_orca.cpp.
+// Declared at global scope (before `using namespace …`) so symbol lookup
+// finds the unmangled C-linkage global, not a namespaced overload.
+extern bool pg_orca_enable_dynamic_tablescan;
 
 #include "gpopt/config/CConfigParamMapping.h"
 #include "gpopt/xforms/CXform.h"
@@ -319,6 +323,7 @@ CConfigParamMapping::PackConfigParamInBitset(CMemoryPool *mp, ULONG xform_id)
 	// Use :: prefix to reference PG's global PGDLLIMPORT variables, which
 	// shadow the local statics of the same name.
 	enable_tablescan     = ::enable_seqscan;
+	enable_dynamic_tablescan = ::pg_orca_enable_dynamic_tablescan;
 	orca_enable_indexscan     = ::enable_indexscan;
 	orca_enable_indexonlyscan = ::enable_indexonlyscan;
 	orca_enable_bitmapscan    = ::enable_bitmapscan;

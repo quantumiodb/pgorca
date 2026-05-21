@@ -140,6 +140,18 @@ static const struct config_enum_entry pg_orca_cost_model_options[] = {
 /* xforms array: indexed by xform id, true means disabled */
 bool  optimizer_xforms[512] = {false};
 
+/*
+ * pg_orca.enable_dynamic_tablescan — when true (default), ORCA may emit
+ * a single Custom Scan (DynamicTableScan) for partitioned tables, doing
+ * partition selection at executor runtime.  When false, the xform
+ * ExfDynamicGet2DynamicTableScan is disabled so ORCA falls back to
+ * CPhysicalAppendTableScan (one child scan per surviving partition,
+ * matching PG's `Append + per-partition scans` plan shape).  Useful for
+ * EXPLAIN comparison vs. PG and for measuring cost alignment on
+ * partitioned queries.
+ */
+bool  pg_orca_enable_dynamic_tablescan = true;
+
 static bool orca_initialized = false;
 
 /*
@@ -631,6 +643,17 @@ void _PG_init(void)
         &pg_orca_trace_fallback,
         false,
         PGC_SUSET,
+        0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "pg_orca.enable_dynamic_tablescan",
+        "Allow ORCA to emit Custom Scan (DynamicTableScan) for partitioned "
+        "tables.  Set to off to force AppendTableScan (PG-style Append + "
+        "per-partition Scans) for plan-shape alignment.",
+        NULL,
+        &pg_orca_enable_dynamic_tablescan,
+        true,
+        PGC_USERSET,
         0, NULL, NULL, NULL);
 
     /* ORCA tuning GUCs */

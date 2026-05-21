@@ -72,8 +72,11 @@ echo "----+------------------------+------------------------+---------+---------
   # batch is a fresh psql session, so the setup-script SETs don't leak
   # in; prepend these explicitly.
   COMMON_GUCS="SET enable_partitionwise_join = on; SET enable_partitionwise_aggregate = on;"
+  # ORCA-only: turn off DynamicTableScan so partition queries use Append +
+  # per-partition Scans, matching PG's plan shape (and now exact cost).
+  ORCA_PARTITION_GUCS="SET pg_orca.enable_dynamic_tablescan = off;"
   batch_pg=$(build_batch "$COMMON_GUCS SET pg_orca.enable_orca=off;")
-  batch_orca=$(build_batch "$COMMON_GUCS SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg;")
+  batch_orca=$(build_batch "$COMMON_GUCS $ORCA_PARTITION_GUCS SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg;")
   all_pg=$("$PSQL" -d "$PGDATABASE" -X -At <<<"$batch_pg" 2>/dev/null)
   all_orca=$("$PSQL" -d "$PGDATABASE" -X -At <<<"$batch_orca" 2>/dev/null)
 
@@ -156,7 +159,7 @@ for q in "${queries[@]}"; do
     | sed -E 's/^[[:space:]]*->[[:space:]]*//; s/^[[:space:]]+//' \
     | grep -E "^[A-Z]" \
     | grep -vE "^(Optimizer|Output|Index Cond|Recheck Cond|Sort Key|Group Key|Hash Cond|Merge Cond|Filter|Join Filter|One-Time Filter|Subplans Removed|Workers|Heap Fetches|Window|InitPlan|SubPlan|CTE|Function Call)" \
-    | sed -E 's/[[:space:]]+(using|on)[[:space:]]+[A-Za-z_][A-Za-z_0-9.]*//g; s/[[:space:]]+$//' \
+    | sed -E 's/[[:space:]]+(using|on)[[:space:]]+[A-Za-z_][A-Za-z_0-9.]*([[:space:]]+[A-Za-z_][A-Za-z_0-9.]*)?//g; s/[[:space:]]+$//' \
     | xargs
   }
   pg_top=$(echo "$pg_out" | filter_plan)
