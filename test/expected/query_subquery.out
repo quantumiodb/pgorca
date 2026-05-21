@@ -372,18 +372,21 @@ explain (costs off) SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN
  Result
    ->  Result
          Filter: (ALL (a.j <> (SubPlan 1).col1))
-         ->  Hash Join
-               Hash Cond: (a.i = b.i)
-               ->  Seq Scan on a
-                     Filter: (i = 1)
-               ->  Hash
+         ->  Merge Join
+               Merge Cond: (a.i = b.i)
+               ->  Sort
+                     Sort Key: a.i
+                     ->  Seq Scan on a
+                           Filter: (i = 1)
+               ->  Sort
+                     Sort Key: b.i
                      ->  Seq Scan on b
                            Filter: (i = 1)
          SubPlan 1
            ->  Seq Scan on a a2
                  Filter: (j = b.j)
  Optimizer: pg_orca
-(14 rows)
+(17 rows)
 
 -- ===================================================================
 -- mpp22019_2.sql
@@ -402,21 +405,15 @@ SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.
 (0 rows)
 
 explain (costs off) SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.i = 1;
-                                                                                                                                                                      QUERY PLAN                                                                                                                                                                      
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Seq Scan on a
-   Filter: ((i = 1) AND (SubPlan 1))
+   Filter: ((i = 1) AND (ALL (j <> (SubPlan 1).col1)))
    SubPlan 1
-     ->  Result
-           ->  Result
-                 Filter: ((CASE WHEN ((sum((CASE WHEN (a.j = a2.j) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (a2.j IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (a.j IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (a.j = a2.j) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
-                 ->  Result
-                       ->  Aggregate
-                             ->  Result
-                                   ->  Seq Scan on a a2
-                                         Filter: (j = a.j)
+     ->  Seq Scan on a a2
+           Filter: (j = a.j)
  Optimizer: pg_orca
-(12 rows)
+(6 rows)
 
 -- ===================================================================
 -- mpp22601.sql
