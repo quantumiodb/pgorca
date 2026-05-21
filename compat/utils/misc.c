@@ -931,6 +931,33 @@ get_aggregate(const char *aggname, Oid oidType)
  * For single-node pg_orca, always return false.
  * ======================================================================== */
 
+/*
+ * get_agg_transfn
+ *		Look up the aggtransfn OID for an aggregate.  Used by ORCA's cost
+ *		model to dedupe aggregate calls that share the same transition
+ *		function + args (e.g. sum/avg over the same column collapse to a
+ *		single transfn invocation in PG).  Returns InvalidOid on lookup
+ *		failure.
+ */
+Oid
+get_agg_transfn(Oid aggid)
+{
+	HeapTuple	aggTuple;
+	Oid			result;
+	bool		isnull = false;
+
+	aggTuple = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggid));
+	if (!HeapTupleIsValid(aggTuple))
+		return InvalidOid;
+	result = DatumGetObjectId(SysCacheGetAttr(AGGFNOID, aggTuple,
+											  Anum_pg_aggregate_aggtransfn,
+											  &isnull));
+	ReleaseSysCache(aggTuple);
+	if (isnull)
+		return InvalidOid;
+	return result;
+}
+
 bool
 is_agg_repsafe(Oid aggid)
 {

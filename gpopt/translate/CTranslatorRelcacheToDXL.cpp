@@ -1650,9 +1650,21 @@ CTranslatorRelcacheToDXL::RetrieveAgg(CMemoryPool *mp, IMDId *mdid)
 	BOOL is_hash_agg_capable =
 		!is_ordered && gpdb::IsAggPartialCapable(agg_oid);
 
+	// Transition-function OID from pg_aggregate.  Used by CCostModelPG to
+	// dedupe aggregate calls that share (transfn, args) — matching PG
+	// `get_agg_clause_costs` / `find_compatible_pertrans` behavior.
+	IMDId *transfn_mdid = nullptr;
+	const OID transfn_oid = gpdb::GetAggTransfn(agg_oid);
+	if (InvalidOid != transfn_oid)
+	{
+		transfn_mdid =
+			GPOS_NEW(mp) CMDIdGPDB(IMDId::EmdidGeneral, transfn_oid);
+	}
+
 	CMDAggregateGPDB *pmdagg = GPOS_NEW(mp) CMDAggregateGPDB(
 		mp, mdid, mdname, result_type_mdid, intermediate_result_type_mdid,
-		is_ordered, is_splittable, is_hash_agg_capable, is_repsafe);
+		is_ordered, is_splittable, is_hash_agg_capable, is_repsafe,
+		transfn_mdid);
 	return pmdagg;
 }
 
