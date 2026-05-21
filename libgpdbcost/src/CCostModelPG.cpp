@@ -26,6 +26,8 @@
 #include "gpopt/operators/CPhysicalIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalScan.h"
+#include "gpopt/operators/CPhysicalSequenceProject.h"
+#include "gpopt/base/CDistributionSpecHashed.h"
 #include "gpopt/operators/CScalarArray.h"
 #include "gpopt/operators/CScalarBitmapBoolOp.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
@@ -1770,6 +1772,94 @@ CCostModelPG::CostComputeScalar(CMemoryPool *,	// mp
 	return CCost(pci->NumRebinds() * per_row * pci->Rows());
 }
 
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostSequenceProject
+//
+//	Port of PG cost_windowagg (costsize.c:3097):
+//	  per_row = sum_over_winfuncs(transfn + arg_eval + filter_eval)
+//	          + cpu_op × (numPartCols + numOrderCols)   -- partition/order compares
+//	          + cpu_tuple_cost                          -- general overhead
+//	  local = per_row × input_rows
+//
+//	add_function_cost for built-in window functions (rank/row_number/sum/
+//	avg/etc.) returns 1 × cpu_operator_cost.  We approximate each window
+//	function's transfn as 1 op and add CountQualOps over the wfunc's args
+//	(child 0) and filter (child 2 if present); CScalarFunc itself
+//	contributes 1 op via CountQualOps so we don't double-count.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostSequenceProject(CMemoryPool *,  // mp
+								  CExpressionHandle &exprhdl,
+								  const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalSequenceProject ==
+				exprhdl.Pop()->Eopid());
+
+	const DOUBLE input_rows = pci->PdRows()[0];
+
+	CPhysicalSequenceProject *psp =
+		CPhysicalSequenceProject::PopConvert(exprhdl.Pop());
+
+	// numPartCols: keys of the hashed distribution spec (PARTITION BY).
+	ULONG num_part_cols = 0;
+	CDistributionSpec *pds = psp->Pds();
+	if (nullptr != pds &&
+		CDistributionSpec::EdtHashed == pds->Edt())
+	{
+		CDistributionSpecHashed *pdsh =
+			CDistributionSpecHashed::PdsConvert(pds);
+		if (nullptr != pdsh->Pdrgpexpr())
+		{
+			num_part_cols = pdsh->Pdrgpexpr()->Size();
+		}
+	}
+
+	// numOrderCols: sum of sort columns across all order specs (ORDER BY).
+	ULONG num_order_cols = 0;
+	COrderSpecArray *pdrgpos = psp->Pdrgpos();
+	if (nullptr != pdrgpos)
+	{
+		for (ULONG ul = 0; ul < pdrgpos->Size(); ul++)
+		{
+			num_order_cols += (*pdrgpos)[ul]->UlSortColumns();
+		}
+	}
+
+	// Sum per-winfunc transfn + arg + filter eval ops by walking the
+	// project list (child 1).  CScalarWindowFunc has its own Eopid
+	// (not EopScalarFunc), so CountQualOps misses it; walk the tree
+	// counting any node that contributes a cpu_op per row:
+	//   - ScalarCmp / ScalarOp / ScalarFunc      — 1 op each
+	//   - ScalarWindowFunc                       — 1 op (the wfunc transfn)
+	std::function<ULONG(CExpression *)> count_wfunc_ops =
+		[&](CExpression *e) -> ULONG {
+		if (nullptr == e) return 0;
+		const COperator::EOperatorId eopid = e->Pop()->Eopid();
+		ULONG n = 0;
+		if (COperator::EopScalarCmp == eopid ||
+			COperator::EopScalarOp == eopid ||
+			COperator::EopScalarFunc == eopid ||
+			COperator::EopScalarWindowFunc == eopid)
+		{
+			n = 1;
+		}
+		for (ULONG i = 0; i < e->Arity(); i++)
+		{
+			n += count_wfunc_ops((*e)[i]);
+		}
+		return n;
+	};
+	const ULONG n_wfunc_ops =
+		count_wfunc_ops(exprhdl.PexprScalarRepChild(1));
+
+	const DOUBLE per_row = cpu_operator_cost *
+							   (static_cast<DOUBLE>(n_wfunc_ops) +
+								static_cast<DOUBLE>(num_part_cols) +
+								static_cast<DOUBLE>(num_order_cols)) +
+						   cpu_tuple_cost;
+	return CCost(pci->NumRebinds() * per_row * input_rows);
+}
+
 CCost
 CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 {
@@ -1838,6 +1928,10 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 
 		case COperator::EopPhysicalComputeScalar:
 			local = CostComputeScalar(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalSequenceProject:
+			local = CostSequenceProject(m_mp, exprhdl, pci);
 			break;
 
 		case COperator::EopPhysicalConstTableGet:

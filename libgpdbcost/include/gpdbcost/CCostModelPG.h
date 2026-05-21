@@ -89,6 +89,10 @@ private:
 								   CExpressionHandle &exprhdl,
 								   const SCostingInfo *pci);
 
+	static CCost CostSequenceProject(CMemoryPool *mp,
+									 CExpressionHandle &exprhdl,
+									 const SCostingInfo *pci);
+
 	static CCost CostConstTableGet(CMemoryPool *mp,
 								   CExpressionHandle &exprhdl,
 								   const SCostingInfo *pci);
