@@ -74,9 +74,11 @@ echo "----+------------------------+------------------------+---------+---------
   COMMON_GUCS="SET enable_partitionwise_join = on; SET enable_partitionwise_aggregate = on;"
   # ORCA-only: turn off DynamicTableScan so partition queries use Append +
   # per-partition Scans, matching PG's plan shape (and now exact cost).
-  ORCA_PARTITION_GUCS="SET pg_orca.enable_dynamic_tablescan = off;"
+  # Default partition mode: keep enable_dynamic_tablescan=on (the
+  # production default).  ORCA emits Custom Scan (DynamicTableScan)
+  # and CostScan now sums per-partition stats for cost alignment.
   batch_pg=$(build_batch "$COMMON_GUCS SET pg_orca.enable_orca=off;")
-  batch_orca=$(build_batch "$COMMON_GUCS $ORCA_PARTITION_GUCS SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg;")
+  batch_orca=$(build_batch "$COMMON_GUCS SET pg_orca.enable_orca=on; SET pg_orca.cost_model=pg;")
   all_pg=$("$PSQL" -d "$PGDATABASE" -X -At <<<"$batch_pg" 2>/dev/null)
   all_orca=$("$PSQL" -d "$PGDATABASE" -X -At <<<"$batch_orca" 2>/dev/null)
 
