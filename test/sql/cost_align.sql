@@ -320,3 +320,88 @@ EXPLAIN SELECT ten, hundred, count(*) FROM cal_tenk1 GROUP BY GROUPING SETS ((te
 EXPLAIN SELECT ten, hundred, count(*) FROM cal_tenk1 GROUP BY ROLLUP(ten, hundred);
 EXPLAIN SELECT ten, hundred, count(*) FROM cal_tenk1 GROUP BY CUBE(ten, hundred);
 EXPLAIN SELECT ten, count(*) FROM cal_tenk1 GROUP BY GROUPING SETS ((ten), ()) HAVING count(*) > 100;
+
+-- ---------------------------------------------------------------------
+-- Pattern matching: LIKE / ILIKE / regex, adapted from PG regress
+-- strings.sql / regex.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT * FROM cal_tenk1 WHERE stringu1 LIKE 'A%';
+EXPLAIN SELECT * FROM cal_tenk1 WHERE stringu1 LIKE '%XYZ%';
+EXPLAIN SELECT * FROM cal_tenk1 WHERE stringu1 LIKE 'r1_';
+EXPLAIN SELECT * FROM cal_tenk1 WHERE stringu1 NOT LIKE 'r%';
+EXPLAIN SELECT * FROM cal_tenk1 WHERE stringu1 ILIKE 'r5%';
+EXPLAIN SELECT * FROM cal_tenk1 WHERE stringu1 ~ '^r1[0-9]+$';
+EXPLAIN SELECT count(*) FROM cal_tenk1 WHERE string4 LIKE 't%';
+
+-- ---------------------------------------------------------------------
+-- NULL semantics: IS NULL / IS NOT NULL / COALESCE / NULLIF.
+-- Note: our seed data has no NULLs, but the cost path still differs.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 IS NULL;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 IS NOT NULL;
+EXPLAIN SELECT count(*) FROM cal_tenk1 WHERE stringu1 IS NULL;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE COALESCE(stringu1, 'x') = 'r5';
+EXPLAIN SELECT NULLIF(unique1, 0) FROM cal_tenk1 WHERE unique1 < 10;
+
+-- ---------------------------------------------------------------------
+-- SAOP and IN-list variations, adapted from PG regress join.sql/select.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 IN (1, 2, 3);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE hundred IN (1, 5, 10, 15, 20);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE thousand IN (10, 100, 500);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 NOT IN (1, 2, 3, 4, 5);
+
+-- ---------------------------------------------------------------------
+-- LATERAL with limit / aggregate, adapted from PG regress join.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT a.unique1, b.unique2 FROM cal_tenk1 a CROSS JOIN LATERAL (SELECT unique2 FROM cal_onek WHERE cal_onek.unique1 < a.unique1 LIMIT 1) b WHERE a.unique1 < 10;
+EXPLAIN SELECT a.unique1, l.s FROM cal_onek a, LATERAL (SELECT sum(unique2) s FROM cal_tenk1 WHERE cal_tenk1.hundred = a.hundred) l WHERE a.unique1 < 20;
+EXPLAIN SELECT * FROM cal_tenk1 a, LATERAL (SELECT * FROM cal_onek b WHERE b.unique1 = a.unique1 ORDER BY b.unique2 LIMIT 5) lim WHERE a.unique1 < 30;
+
+-- ---------------------------------------------------------------------
+-- Multi-level correlated subqueries, adapted from PG regress subselect.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT a.unique1 FROM cal_tenk1 a WHERE EXISTS (SELECT 1 FROM cal_onek b WHERE b.unique1 = a.unique1 AND EXISTS (SELECT 1 FROM cal_onek c WHERE c.unique2 = b.unique2));
+EXPLAIN SELECT a.unique1, (SELECT (SELECT max(c.unique1) FROM cal_onek c WHERE c.hundred = b.hundred) FROM cal_onek b WHERE b.unique1 = a.hundred) FROM cal_tenk1 a WHERE a.unique1 < 20;
+
+-- ---------------------------------------------------------------------
+-- CTE referenced multiple times.
+-- ---------------------------------------------------------------------
+EXPLAIN WITH t AS (SELECT * FROM cal_tenk1 WHERE hundred < 5) SELECT count(*) FROM t a, t b WHERE a.unique1 = b.unique2;
+EXPLAIN WITH t AS MATERIALIZED (SELECT * FROM cal_tenk1 WHERE hundred = 5) SELECT a.unique1, b.unique2 FROM t a JOIN t b ON a.unique2 = b.unique1;
+
+-- ---------------------------------------------------------------------
+-- ORDER BY / GROUP BY expressions.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT unique1 FROM cal_tenk1 ORDER BY unique1 + unique2;
+EXPLAIN SELECT unique1, unique2 FROM cal_tenk1 ORDER BY unique1 * 2 LIMIT 10;
+EXPLAIN SELECT hundred / 10 AS g, count(*) FROM cal_tenk1 GROUP BY hundred / 10;
+EXPLAIN SELECT count(*) FROM cal_tenk1 GROUP BY (CASE WHEN hundred < 50 THEN 'lo' ELSE 'hi' END);
+EXPLAIN SELECT * FROM cal_tenk1 ORDER BY CASE WHEN hundred < 50 THEN unique1 ELSE -unique1 END LIMIT 20;
+
+-- ---------------------------------------------------------------------
+-- VALUES list (as table) and FROM-list combinations.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT * FROM (VALUES (1), (2), (3), (4), (5)) AS v(x);
+EXPLAIN SELECT * FROM cal_tenk1 t JOIN (VALUES (1), (5), (10), (50)) AS v(x) ON t.unique1 = v.x;
+EXPLAIN SELECT v.x, count(*) FROM cal_tenk1 t JOIN (VALUES (0), (10), (50)) AS v(x) ON t.hundred = v.x GROUP BY v.x;
+
+-- ---------------------------------------------------------------------
+-- NOT IN / NOT EXISTS anti-join variants.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT * FROM cal_tenk1 WHERE hundred NOT IN (SELECT unique1 FROM cal_onek WHERE unique1 < 50);
+EXPLAIN SELECT count(*) FROM cal_onek a WHERE NOT EXISTS (SELECT 1 FROM cal_tenk1 b WHERE b.unique1 = a.unique1 AND b.hundred < 5);
+EXPLAIN SELECT * FROM cal_onek a WHERE a.unique1 NOT IN (SELECT hundred FROM cal_tenk1);
+
+-- ---------------------------------------------------------------------
+-- GROUPING() in aggregate output (with ROLLUP).
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT GROUPING(hundred), GROUPING(ten), hundred, ten, count(*) FROM cal_tenk1 GROUP BY ROLLUP(hundred, ten);
+
+-- ---------------------------------------------------------------------
+-- ARRAY constructors, slicing, ANY/ALL in WHERE.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT ARRAY[unique1, unique2] FROM cal_tenk1 WHERE unique1 < 10;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 = ANY (ARRAY[1, 2, 3, 4, 5]);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 < ALL (ARRAY[10, 20, 30]);
