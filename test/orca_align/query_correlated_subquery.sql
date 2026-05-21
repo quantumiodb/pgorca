@@ -1,0 +1,1216 @@
+-- pg_orca correlated_subquery regression tests
+-- Ported from Greenplum testrepo/query/correlated_subquery
+
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+
+-- csq_heap_00.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+drop table if exists csq_t3;
+
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+create table csq_t3(c int, d text);
+insert into csq_t3 values(1,'one');
+insert into csq_t3 values(3,'three');
+insert into csq_t3 values(5,'five');
+insert into csq_t3 values(7,'seven');
+-- end_ignore
+
+-- CSQ 01: Basic query with where clause
+select a, (select y from csq_t2 where x=a) from csq_t1 where b < 8 order by a;
+
+-- CSQ 02: Basic query with exists
+select b from csq_t1 where exists(select * from csq_t2 where y=a) order by b;
+
+-- CSQ Q3: Basic query with not exists
+select b from csq_t1 where not exists(select * from csq_t2 where y=a) order by b;
+
+-- CSQ Q4: Basic query with any
+select a, x from csq_t1, csq_t2 where csq_t1.a = any (select x) order by a, x;
+
+-- CSQ Q5
+select a, x from csq_t2, csq_t1 where csq_t1.a = (select x) order by a, x;
+
+
+-- CSQ Q6
+select a from csq_t1 where (select (y*2)>b from csq_t2 where a=x) order by a;
+
+-- CSQ Q7
+SELECT a, (SELECT d FROM csq_t3 WHERE a=c) FROM csq_t1 GROUP BY a order by a;
+
+-- CSQ Q8
+SELECT a, (SELECT (SELECT d FROM csq_t3 WHERE a=c)) FROM csq_t1 GROUP BY a order by a;
+
+
+-- csq_heap_01.sql
+
+-- start_ignore
+    drop table if exists t5;
+    CREATE TABLE t5 (val int, period text);
+    insert into t5 values(5, '2001-3');
+    insert into t5 values(10, '2001-4');
+    insert into t5 values(15, '2002-1');
+    insert into t5 values(5, '2002-2');
+    insert into t5 values(10, '2002-3');
+    insert into t5 values(15, '2002-4');
+    insert into t5 values(10, '2003-1');
+    insert into t5 values(5, '2003-2');
+    insert into t5 values(25, '2003-3');
+    insert into t5 values(5, '2003-4');
+
+    drop table if exists csq_emp;
+    create table csq_emp(name text, department text, salary numeric);
+    insert into csq_emp values('a','adept',11200.00);
+    insert into csq_emp values('b','adept',22222.00);
+    insert into csq_emp values('c','bdept',99222.00);
+    insert into csq_emp values('d','adept',23211.00);
+    insert into csq_emp values('e','adept',45222.00);
+    insert into csq_emp values('f','adept',992222.00);
+    insert into csq_emp values('g','adept',90343.00);
+    insert into csq_emp values('h','adept',11200.00);
+    insert into csq_emp values('i','bdept',11200.00);
+    insert into csq_emp values('j','adept',11200.00);
+    analyze t5;
+    analyze csq_emp;
+-- end_ignore
+
+-- CSQ Q1
+    select 
+	period, vsum
+    from 
+	(select 
+      		period,
+      		(select 
+			sum(val) 
+		from 
+			t5 
+		where 
+			period between a.period and '2002-4') 
+	as 
+		vsum
+      	from 
+		t5 a 
+	where 
+		a.period between '2002-1' and '2002-4') as vsum
+    where vsum < 45 order by period, vsum;
+
+-- Basic CSQ using where clause
+SELECT name, department, salary FROM csq_emp ea
+  WHERE salary = 
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+SELECT name, department, salary FROM csq_emp ea 
+  WHERE salary > 
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+SELECT name, department, salary FROM csq_emp ea 
+  WHERE salary < 
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+SELECT name, department, salary FROM csq_emp ea 
+  WHERE salary IN 
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+SELECT name, department, salary FROM csq_emp ea 
+  WHERE salary NOT IN 
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+SELECT name, department, salary FROM csq_emp ea 
+  WHERE  salary = ANY 
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+SELECT name, department, salary FROM csq_emp ea 
+  WHERE salary = ALL 
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+SELECT name, department, salary FROM csq_emp ea group by name, department,salary
+  HAVING avg(salary) >
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+SELECT name, department, salary FROM csq_emp ea group by name, department,salary
+  HAVING avg(salary) > ALL
+    (SELECT salary FROM csq_emp eb WHERE eb.department = ea.department) order by name, department, salary;
+
+
+
+-- csq_heap_02.sql
+
+--start_ignore
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+drop table if exists t1;
+drop table if exists t2;
+--end_ignore
+
+
+create table A(i integer, j integer);
+create table B(i integer, j integer);
+create table C(i integer, j integer);
+
+create table t1(x integer, y integer);
+create table t2(x integer, y integer);
+
+insert into A select i%10, i%20 from generate_series(0, 99) i;
+insert into B select i%100, i%200 from generate_series(0, 999)i;
+insert into C select i%1000, i%2000 from generate_series(0, 9999)i;
+analyze A,B,C;
+
+\echo '-- force_explain'
+explain (costs ON) select A.i, B.i, C.j from A, B, C where A.j = C.j;
+--select A.i, B.i, C.j from A, B, C where A.j = C.j order by A.i, B.i, C.j limit 10;
+\echo '-- force_explain'
+explain (costs ON) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
+--select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j) order by A.i, B.i, C.j limit 10;
+\echo '-- force_explain'
+explain (costs ON) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i);
+\echo '-- force_explain'
+explain (costs ON) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i and A.j = B.j);
+--select distinct(C.j) as C_j ,A.i as A_i, B.i as B_i from A, B, C where A.j = (select sum(C.j) from C where C.j = A.j and C.i = B.i) and C.j > 600 limit 10;
+\echo '-- force_explain'
+explain (costs ON) select A.i, B.i, C.j from A, B, C where A.j = C.j;
+\echo '-- force_explain'
+explain (costs ON) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j);
+\echo '-- force_explain'
+explain (costs ON) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i));
+--explain select A.i, B.i, C.j from A, B, C where A.j = (select max(C.j) from C where C.j = A.j and C.i = (select min(A.i) from A where A.i = (select min(B.i) from B where B.i = C.i)));
+--explain select A.i, B.i, C.j from A, B, C where A.j = (select min(C.j) from C where C.j = A.j and C.i = (select max(A.i) from A where A.i = (select min(B.i) from B where B.i = C.i and A.j = C.j)));
+\echo '-- force_explain'
+explain (costs ON) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A)) from A;
+\echo '-- force_explain'
+explain (costs ON) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i)) from A;
+
+--MPP-13603
+\echo '-- force_explain'
+explain (costs ON) select * from t1 where t1.x >ALL (select t2.x from t2 where abs(t2.y+t1.y) > 2 and t2.y > 20 and abs(t2.y::float) - 10 > 100.0);
+
+
+-- csq_heap_all.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+drop table if exists csq_t3;
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+create table csq_t3(c int, d text);
+insert into csq_t3 values(1,'one');
+insert into csq_t3 values(3,'three');
+insert into csq_t3 values(5,'five');
+insert into csq_t3 values(7,'seven');
+
+create table A(i integer, j integer);
+insert into A values(1,1);
+insert into A values(19,5);
+insert into A values(99,62);
+insert into A values(1,1);
+insert into A values(78,-1);
+
+create table B(i integer, j integer);
+insert into B values(1,43);
+insert into B values(88,1);
+insert into B values(-1,62);
+insert into B values(1,1);
+insert into B values(32,5);
+insert into B values(2,7);
+
+create table C(i integer, j integer);
+insert into C values(1,889);
+insert into C values(288,1);
+insert into C values(-1,625);
+insert into C values(32,65);
+insert into C values(32,62);
+insert into C values(3,-1);
+insert into C values(99,7);
+insert into C values(78,62);
+insert into C values(2,7);
+-- end_ignore
+
+-- -- -- --
+-- Basic queries with ALL clause
+-- -- -- --
+select a, x from csq_t1, csq_t2 where csq_t1.a = all (select x) order by a;
+select A.i from A where A.i = all (select B.i from B where A.i = B.i) order by A.i;
+
+select * from A,B where exists (select * from C where C.j = A.j and B.i = all (select min(C.j) from C)) order by 1,2,3,4;
+select * from A,B where exists (select * from C where C.j = A.j and B.i = all (select min(C.j) from C where C.j = 1)) order by 1,2,3,4;
+select * from A,B where exists (select * from C where C.j = A.j and B.i = all (select min(C.j) from C where C.j = B.j)) order by 1,2,3,4; -- Should fail. Skip-level correlations are not supported
+select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = all (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10; -- Should fail (Sub-query returns more than one row)
+select A.i, B.i, C.j from A, B, C where A.j = (select sum(C.j) from C where C.j = A.j and C.i = all (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j < all ( select C.j from C where not exists(select C.i from C,A where C.i = A.i and C.i =10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j = all (select C.j from C where C.j = A.j and not exists (select sum(B.i) from B where C.i = B.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+
+
+-- csq_heap_any.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+drop table if exists csq_t3;
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+create table csq_t3(c int, d text);
+insert into csq_t3 values(1,'one');
+insert into csq_t3 values(3,'three');
+insert into csq_t3 values(5,'five');
+insert into csq_t3 values(7,'seven');
+
+create table A(i integer, j integer);
+insert into A values(1,1);
+insert into A values(19,5);
+insert into A values(99,62);
+insert into A values(1,1);
+insert into A values(78,-1);
+
+create table B(i integer, j integer);
+insert into B values(1,43);
+insert into B values(88,1);
+insert into B values(-1,62);
+insert into B values(1,1);
+insert into B values(32,5);
+insert into B values(2,7);
+
+create table C(i integer, j integer);
+insert into C values(1,889);
+insert into C values(288,1);
+insert into C values(-1,625);
+insert into C values(32,65);
+insert into C values(32,62);
+insert into C values(3,-1);
+insert into C values(99,7);
+insert into C values(78,62);
+insert into C values(2,7);
+-- end_ignore
+
+-- -- -- --
+-- Basic queries with ANY clause
+-- -- -- --
+select a, x from csq_t1, csq_t2 where csq_t1.a = any (select x);
+select A.i from A where A.i = any (select B.i from B where A.i = B.i) order by A.i;
+
+select * from A where A.j = any (select C.j from C where C.j = A.j) order by 1,2;
+select * from A,B where A.j = any (select C.j from C where C.j = A.j and B.i = any (select C.i from C)) order by 1,2,3,4;
+select * from A where A.j = any (select C.j from C,B where C.j = A.j and B.i = any (select C.i from C)) order by 1,2;
+select * from A where A.j = any (select C.j from C,B where C.j = A.j and B.i = any (select C.i from C where C.i != 10 and C.i = B.i)) order by 1,2;
+select * from A,B where A.j = any (select C.j from C where C.j = A.j and B.i = any (select C.i from C where C.i != 10 and C.i = A.i)) order by 1,2,3,4; -- Not supported, should fail
+
+select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = any (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = any (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j = any ( select C.j from C where not exists(select C.i from C,A where C.i = A.i and C.i =10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j = any (select C.j from C where C.j = A.j and not exists (select sum(B.i) from B where C.i = B.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+
+
+-- csq_heap_dml.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+create table A(i integer, j integer);
+insert into A values(1,1);
+insert into A values(19,5);
+insert into A values(99,62);
+insert into A values(1,1);
+insert into A values(78,-1);
+
+create table B(i integer, j integer);
+insert into B values(1,43);
+insert into B values(88,1);
+insert into B values(-1,62);
+insert into B values(1,1);
+insert into B values(32,5);
+insert into B values(2,7);
+
+create table C(i integer, j integer);
+insert into C values(1,889);
+insert into C values(288,1);
+insert into C values(-1,625);
+insert into C values(32,65);
+insert into C values(32,62);
+insert into C values(3,-1);
+insert into C values(99,7);
+insert into C values(78,62);
+insert into C values(2,7);
+-- end_ignore
+
+-- -- -- --
+-- Basic CSQ with UPDATE statements
+-- -- -- --
+select * from csq_t1 order by a;
+update csq_t1 set a = (select y from csq_t2 where x=a) where b < 8;
+select * from csq_t1 order by a;
+update csq_t1 set a = 9999 where csq_t1.a = (select max(x) from csq_t2);
+select * from csq_t1 order by a;
+update csq_t1 set a = (select max(y) from csq_t2 where x=a) where csq_t1.a = (select min(x) from csq_t2);
+select * from csq_t1 order by a;
+update csq_t1 set a = 8888 where (select (y*2)>b from csq_t2 where a=x);
+select * from csq_t1 order by a;
+update csq_t1 set a = 3333 where csq_t1.a in (select x from csq_t2);
+select * from csq_t1 order by a;
+
+update A set i = 11111 from C where C.i = A.i and exists (select C.j from C,B where C.j = B.j and A.j < 10);
+select * from A order by A.i, A.j;
+update A set i = 22222 from C where C.i = A.i and not exists (select C.j from C,B where C.j = B.j and A.j < 10);
+select * from A order by A.i, A.j;
+
+-- -- -- --
+-- Basic CSQ with DELETE statements
+-- -- -- --
+select * from csq_t1 order by a;
+delete from csq_t1 where a <= (select min(y) from csq_t2 where x=a);
+select * from csq_t1 order by a;
+delete from csq_t1 where csq_t1.a = (select x from csq_t2);
+select * from csq_t1 order by a;
+delete from csq_t1 where exists (select (y*2)>b from csq_t2 where a=x);
+select * from csq_t1 order by a;
+delete from csq_t1  where csq_t1.a = (select x from csq_t2 where a=x);
+select * from csq_t1 order by a;
+
+delete from  A TableA where exists (select C.j from C, B where C.j = B.j and TableA.j < 10);
+select * from A order by A.i;
+delete from A TableA where not exists (select C.j from C,B where C.j = B.j and TableA.j < 10);
+select * from A order by A.i;
+
+
+
+-- csq_heap_exists.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+drop table if exists csq_t3;
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+create table csq_t3(c int, d text);
+insert into csq_t3 values(1,'one');
+insert into csq_t3 values(3,'three');
+insert into csq_t3 values(5,'five');
+insert into csq_t3 values(7,'seven');
+
+create table A(i integer, j integer);
+insert into A values(1,1);
+insert into A values(19,5);
+insert into A values(99,62);
+insert into A values(1,1);
+insert into A values(78,-1);
+
+create table B(i integer, j integer);
+insert into B values(1,43);
+insert into B values(88,1);
+insert into B values(-1,62);
+insert into B values(1,1);
+insert into B values(32,5);
+insert into B values(2,7);
+
+create table C(i integer, j integer);
+insert into C values(1,889);
+insert into C values(288,1);
+insert into C values(-1,625);
+insert into C values(32,65);
+insert into C values(32,62);
+insert into C values(3,-1);
+insert into C values(99,7);
+insert into C values(78,62);
+insert into C values(2,7);
+-- end_ignore
+
+-- -- -- -- 
+-- Basic queries with EXISTS clause
+-- -- -- --
+select b from csq_t1 where exists(select * from csq_t2 where y=a);
+select A.i from A where exists(select B.i from B where A.i = B.i) order by A.i;
+
+-- Not supported select A.i, B.i, C.j from A, B, C where exists (select C.j from C where C.j = A.j and exists (select C.i from C where C.i = A.i and C.i !=10)) order by A.i, B.i, C.j limit 20;
+select * from A where exists (select * from C where C.j = A.j) order by 1,2;
+select * from A where exists (select * from C,B where C.j = A.j and exists (select * from C where C.i = B.i)) order by 1,2;
+select * from A,B where exists (select * from C where C.j = A.j and exists (select * from C where C.i = B.i)) order by 1,2,3,4; -- Should fail, not supported
+
+-- Not supported select A.i, B.i, C.j from A, B, C where exists (select C.j from C where C.j = A.j and exists (select sum(C.i) from C where C.i = A.i and C.i !=10)) order by A.i, B.i, C.j limit 20;
+select * from A where exists (select * from B, C where C.j = A.j and exists (select sum(C.i) from C where C.i != 10 and C.i = B.i)) order by 1, 2;
+select * from A where exists (select * from C where C.j = A.j and exists (select sum(C.i) from C where C.i !=10 and C.i = A.i)) order by 1, 2; -- Should fail, not supported
+
+
+select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and exists (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 20;
+select A.i, B.i, C.j from A, B, C where exists (select C.j from C where C.j = A.j and exists (select sum(B.i) from B where C.i = B.i and C.i !=10)) order by A.i, B.i, C.j limit 20;
+
+-- Not supported select A.i, B.i, C.j from A, B, C where exists(select C.j from C where C.j = A.j and not exists (select sum(B.i) from B where A.i = B.i and A.i !=10)) order by A.i, B.i, C.j limit 20;
+select * from A where exists (select * from C where C.j = A.j and not exists (select sum(B.i) from B where B.i = C.i));
+
+-- Not supported select A.i, B.i, C.j from A, B, C where exists(select * from C where C.i = A.i and exists (select C.j where C.j = B.j and A.j < 10)) order by A.i, B.i, C.j limit 20;
+select * from A where exists (select * from C where C.i = A.i and exists (select * from B where C.j = B.j and B.j < 10)) order by 1,2;
+select * from A where exists (select * from C where C.i = A.i and exists (select * from B where C.j = B.j and A.j < 10)); -- Should fail, not supported
+select * from A where exists (select * from C where C.i = A.i and not exists (select * from B where C.j = B.j and B.j < 10)) order by 1,2;
+
+select * from A,B,C where C.i = A.i and exists (select C.j where C.j = B.j and A.j < 10);
+-- -- -- --
+-- Basic queries with NOT EXISTS clause
+-- -- -- --
+select b from csq_t1 where not exists(select * from csq_t2 where y=a);
+select A.i from A where not exists(select B.i from B where A.i = B.i) order by A.i;
+
+-- Not supported select A.i, B.i, C.j from A, B, C where exists (select C.j from C where C.j = A.j and not exists (select C.i from C where C.i = A.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+select * from A where not exists (select * from C,B where C.j = A.j and exists (select * from C where C.i = B.i and C.j < B.j)) order by 1,2;
+select * from A where exists (select * from C,B where C.j = A.j and not exists (select * from C where C.i = B.i and C.j < B.j)) order by 1,2;
+select * from A where exists (select * from C,B where C.j = A.j and exists (select * from C where C.i = B.i and C.j < B.j)) order by 1,2;
+
+select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and not exists (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and not exists (select sum(B.i) from B where C.i = B.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+select C.j from C where not exists (select max(B.i) from B  where C.i = B.i having max(B.i) is not null) order by C.j;
+select C.j from C where not exists (select max(B.i) from B  where C.i = B.i offset 1000) order by C.j;
+select C.j from C where not exists (select rank() over (order by B.i) from B  where C.i = B.i) order by C.j;
+
+
+-- csq_heap_having.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+drop table if exists csq_t3;
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+drop table if exists csq_emp;
+create table csq_emp(name text, department text, salary numeric);
+insert into csq_emp values('a','adept',11200.00);
+insert into csq_emp values('b','adept',22222.00);
+insert into csq_emp values('c','bdept',99222.00);
+
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+create table csq_t3(c int, d text);
+insert into csq_t3 values(1,'one');
+insert into csq_t3 values(3,'three');
+insert into csq_t3 values(5,'five');
+insert into csq_t3 values(7,'seven');
+
+create table A(i integer, j integer);
+insert into A values(1,1);
+insert into A values(19,5);
+insert into A values(99,62);
+insert into A values(1,1);
+insert into A values(78,-1);
+
+create table B(i integer, j integer);
+insert into B values(1,43);
+insert into B values(88,1);
+insert into B values(-1,62);
+insert into B values(1,1);
+insert into B values(32,5);
+insert into B values(2,7);
+
+create table C(i integer, j integer);
+insert into C values(1,889);
+insert into C values(288,1);
+insert into C values(-1,625);
+insert into C values(32,65);
+insert into C values(32,62);
+insert into C values(3,-1);
+insert into C values(99,7);
+insert into C values(78,62);
+insert into C values(2,7);
+-- end_ignore
+
+-- -- -- --
+-- Basic queries with HAVING clause
+-- -- -- -- 
+select A.i from A group by A.i having min(A.i) not in (select B.i from B where A.i = B.i) order by A.i;
+select A.i, B.i, C.j from A, B, C group by A.j,A.i,B.i,C.j having max(A.j) = any(select max(C.j) from C where C.j = A.j) order by A.i, B.i, C.j limit 10; 
+select A.i, B.i, C.j from A, B, C where exists (select C.j from C group by C.j having max(C.j) = all (select min(B.j) from B)) order by A.i, B.i, C.j limit 10;
+SELECT name, department, salary FROM csq_emp ea group by name, department,salary
+  HAVING avg(salary) >
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department);
+
+
+-- csq_heap_in.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+drop table if exists csq_t3;
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+create table csq_t3(c int, d text);
+insert into csq_t3 values(1,'one');
+insert into csq_t3 values(3,'three');
+insert into csq_t3 values(5,'five');
+insert into csq_t3 values(7,'seven');
+
+create table A(i integer, j integer);
+insert into A values(1,1);
+insert into A values(19,5);
+insert into A values(99,62);
+insert into A values(1,1);
+insert into A values(78,-1);
+
+create table B(i integer, j integer);
+insert into B values(1,43);
+insert into B values(88,1);
+insert into B values(-1,62);
+insert into B values(1,1);
+insert into B values(32,5);
+insert into B values(2,7);
+
+create table C(i integer, j integer);
+insert into C values(1,889);
+insert into C values(288,1);
+insert into C values(-1,625);
+insert into C values(32,65);
+insert into C values(32,62);
+insert into C values(3,-1);
+insert into C values(99,7);
+insert into C values(78,62);
+insert into C values(2,7);
+-- end_ignore
+
+-- -- -- --
+-- Basic queries with IN clause
+-- -- -- --
+select a, x from csq_t1, csq_t2 where csq_t1.a in (select x);
+select A.i from A where A.i in (select B.i from B where A.i = B.i) order by A.i;
+-- Not supported select A.i, B.i, C.j from A, B, C where exists (select C.j from C where C.j = A.j and B.i in (select C.i from C where C.i = A.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+select * from B where exists (select * from C,A where C.j = A.j and B.i in (select C.i from C where C.i = A.i and C.i != 10)) order by 1, 2;
+
+select * from B where exists (select * from C,A where C.j = A.j and B.i in (select C.i from C where C.i = A.i and C.i != 10)) order by 1, 2;
+
+-- Not supported select A.i, B.i, C.j from A, B, C where not exists (select C.j from C where C.j = A.j and B.i in (select C.i from C where C.i = A.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+select * from B where not exists (select * from C,A where C.j = A.j and B.i in (select C.i from C where C.i = A.i and C.i != 10)) order by 1,2;
+select * from A where not exists (select * from C,B where C.j = A.j and B.i in (select C.i from C where C.i = B.i and C.i != 10));
+
+select * from B where not exists (select * from C,A where C.j = A.j and B.i in (select C.i from C where C.i = A.i and C.i != 10)) order by 1,2;
+select * from A where not exists (select * from C,B where C.j = A.j and B.i in (select C.i from C where C.i = B.i and C.i != 10));
+
+select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i in (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10; 
+select A.i, B.i, C.j from A, B, C where A.j in (select C.j from C where C.j = A.j and C.i in (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10; 
+select A.i, B.i, C.j from A, B, C where A.j = any(select sum(C.j) from C where C.j = A.j and C.i in (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j in ( select C.j from C where exists(select C.i from C,A where C.i = A.i and C.i =10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j in (select C.j from C where C.j = A.j and not exists (select sum(B.i) from B where C.i = B.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+
+-- -- -- --
+-- Basic queries with NOT IN clause
+-- -- -- --
+select a, x from csq_t1, csq_t2 where csq_t1.a not in (select x) order by a,x;
+select A.i from A where A.i not in (select B.i from B where A.i = B.i) order by A.i;
+-- Not supported select A.i, B.i, C.j from A, B, C where exists (select C.j from C where C.j = A.j and B.i not in (select C.i from C where C.i = A.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+select * from A where exists (select * from B,C where C.j = A.j and B.i not in (select sum(C.i) from C where C.i = B.i and C.i != 10)) order by 1,2;
+select * from A,B where exists (select * from C where C.j = A.j and B.i not in (select C.i from C where C.i != 10)) order by 1,2,3,4;
+
+select * from A where exists (select * from B,C where C.j = A.j and B.i not in (select sum(C.i) from C where C.i = B.i and C.i != 10)) order by 1,2;
+select * from A,B where exists (select * from C where C.j = A.j and B.i not in (select C.i from C where C.i != 10)) order by 1,2,3,4;
+
+-- Not supported select A.i, B.i, C.j from A, B, C where not exists (select C.j from C where C.j = A.j and B.i not in (select C.i from C where C.i = A.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+select * from B where not exists (select * from A,C where C.j = A.j and B.i in (select max(C.i) from C where C.i = A.i and C.i != 10)) order by 1, 2;
+select * from B where not exists (select * from A,C where C.j = A.j and B.i not in (select max(C.i) from C where C.i = A.i and C.i != 10)) order by 1, 2;
+select * from A where not exists (select * from B,C where C.j = A.j and B.i not in (select max(C.i) from C where C.i = B.i and C.i != 10)) order by 1, 2;
+
+
+select * from B where not exists (select * from A,C where C.j = A.j and B.i in (select max(C.i) from C where C.i = A.i and C.i != 10)) order by 1, 2;
+select * from B where not exists (select * from A,C where C.j = A.j and B.i not in (select max(C.i) from C where C.i = A.i and C.i != 10)) order by 1, 2;
+select * from A where not exists (select * from B,C where C.j = A.j and B.i not in (select max(C.i) from C where C.i = B.i and C.i != 10)) order by 1, 2;
+
+select A.i, B.i, C.j from A, B, C where A.j not in (select C.j from C where C.j = A.j and C.i not in (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10; 
+select A.i, B.i, C.j from A, B, C where A.j = any(select sum(C.j) from C where C.j = A.j and C.i not in (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j not in ( select C.j from C where exists(select C.i from C,A where C.i = A.i and C.i =10)) order by A.i, B.i, C.j limit 10;
+select A.i, B.i, C.j from A, B, C where A.j not in (select C.j from C where C.j = A.j and not exists (select sum(B.i) from B where C.i = B.i and C.i !=10)) order by A.i, B.i, C.j limit 10;
+select A.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i in (select B.i from B where C.i = B.i and B.i !=10)) order by A.j limit 10;
+
+-- MPP-14222
+select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i not in (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10;
+select A.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i not in (select B.i from B where C.i = B.i and B.i !=10)) order by A.j limit 10;
+
+
+
+-- csq_heap_multiplecolumns.sql
+
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+create table A(i integer, j integer);
+create table B(i integer, j integer);
+create table C(i integer, j integer);
+
+insert into A values(1,1);
+insert into A values(2,1);
+insert into A values(24,98);
+insert into A values(1,98);
+
+insert into B values(1,1);
+insert into B values(3,6);
+
+insert into C values(1,18);
+insert into C values(3,27);
+insert into C values(3,98);
+
+select A.i, B.i from A, B where (A.i,A.j) = (select B.i,B.j from B where B.i = A.i) order by A.i, B.i;
+select A.i, B.i from A, B where (A.i,A.j) = all(select B.i,B.j from B where B.i = A.i) order by A.i, B.i;
+select A.i, B.i from A, B where not exists (select B.i,B.j from B where B.i = A.i) order by A.i, B.i;
+select A.i, B.i from A, B where (A.i,A.j) in (select B.i,B.j from B where B.i = A.i) order by A.i, B.i;
+
+select A.i, B.i,C.i from A, B, C where (A.i,B.i) = any (select A.i, B.i from A,B where A.i = C.i and B.i = C.i) order by A.i, B.i, C.i;
+select A.i, B.i,C.i from A, B, C where not exists (select A.i, B.i from A,B where A.i = C.i and B.i = C.i) order by A.i, B.i, C.i;
+select A.i, B.i,C.i from A, B, C where (A.i,B.i) in (select A.i, B.i from A,B where A.i = C.i and B.i = C.i) order by A.i, B.i, C.i;
+
+-- Not supported select A.i, B.i,C.i from A, B, C where (A.i,B.i) = any (select A.i, B.i from A,B where A.i < C.i and B.i = C.i and (A.i,B.i) in (select A.i, B.i from A,B where A.j = C.j)) order by A.i, B.i, C.i;
+select * from A,B,C where (A.i,B.i) = any (select A.i, B.i from A,B where A.i < C.i and B.i = C.i and C.i not in (select A.i from A where A.j = 1 and A.j = B.j)) order by 1,2,3,4,5,6;
+
+select A.i as A_i, B.i as B_i,C.i as C_i from A, B, C where (A.i,B.i) = (select A.i, B.i from A,B where A.i = C.i and B.i = C.i) order by A_i, B_i, C_i; -- Should fail
+
+
+
+-- csq_heap_multirowsubquery.sql
+
+--start_ignore
+drop table if exists Employee;
+drop table if exists product;
+drop table if exists product_order;
+drop table if exists job;
+--end_ignore
+
+-- Multi-row queries (See http://www.java2s.com/Tutorial/Oracle/0040__Query-Select/0680__Multiple-Row-Subquery.htm)
+-- Using IN clause with multi-row subqueries
+create table Employee(
+      ID                 VARCHAR(4)         NOT NULL,
+      First_Name         VARCHAR(10),
+      Last_Name          VARCHAR(10),
+      Start_Date         DATE,
+      End_Date           DATE,
+      Salary             Decimal(8,2),
+      City               VARCHAR(10),
+      Description        VARCHAR(15)
+   );
+
+insert into Employee(ID, First_Name, Last_Name, Start_Date, End_Date, Salary, City, Description) 
+    values ('01','Jason', 'Martin', to_date('19960725','YYYYMMDD'), to_date('20060725','YYYYMMDD'), 1234.56, 'Toronto',  'Programmer');
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary,  City, Description)
+    values ('02','Alison',   'Mathews', to_date('19760321','YYYYMMDD'), to_date('19860221','YYYYMMDD'), 6661.78, 'Vancouver','Tester');
+insert into Employee(ID, First_Name, Last_Name, Start_Date, End_Date, Salary, City, Description)
+    values('03','James',    'Smith',   to_date('19781212','YYYYMMDD'), to_date('19900315','YYYYMMDD'), 6544.78, 'Vancouver','Tester');
+insert into Employee(ID, First_Name, Last_Name, Start_Date, End_Date, Salary, City, Description)
+    values('04','Celia',    'Rice',    to_date('19821024','YYYYMMDD'), to_date('19990421','YYYYMMDD'), 2344.78, 'Vancouver','Manager');
+insert into Employee(ID, First_Name, Last_Name, Start_Date, End_Date, Salary, City, Description)
+    values('05','Robert',   'Black',   to_date('19840115','YYYYMMDD'), to_date('19980808','YYYYMMDD'), 2334.78, 'Vancouver','Tester');
+insert into Employee(ID, First_Name, Last_Name, Start_Date, End_Date, Salary, City, Description)
+    values('06','Linda',    'Green',   to_date('19870730','YYYYMMDD'), to_date('19960104','YYYYMMDD'), 4322.78,'New York',  'Tester');
+insert into Employee(ID, First_Name, Last_Name, Start_Date, End_Date, Salary, City, Description)
+    values('07','David',    'Larry',   to_date('19901231','YYYYMMDD'), to_date('19980212','YYYYMMDD'), 7897.78,'New York',  'Manager');
+insert into Employee(ID, First_Name, Last_Name, Start_Date, End_Date, Salary, City, Description)
+    values('08','James',    'Cat',     to_date('19960917','YYYYMMDD'), to_date('20020415','YYYYMMDD'), 1232.78,'Vancouver', 'Tester');
+
+select count(*) from Employee;
+
+SELECT id, first_name FROM employee WHERE id IN 
+    (SELECT id FROM employee WHERE first_name LIKE '%e%') order by id;
+
+
+drop table Employee;
+
+-- Using UPDATE  (Update products that aren't selling)
+CREATE TABLE product (
+         product_name     VARCHAR(25) PRIMARY KEY,
+         product_price    decimal(4,2),
+         quantity_on_hand decimal(5,0),
+         last_stock_date  DATE
+    );
+
+CREATE TABLE product_order (
+         product_name  VARCHAR(25),
+         salesperson   VARCHAR(3),
+         order_date    DATE,
+         quantity      decimal(4,2)
+    );
+
+INSERT INTO product_order VALUES ('Product 1', 'CA', '14-JUL-03', 1);
+INSERT INTO product_order VALUES ('Product 2', 'BB', '14-JUL-03', 75);
+INSERT INTO product_order VALUES ('Product 3', 'GA', '14-JUL-03', 2);
+INSERT INTO product_order VALUES ('Product 4', 'GA', '15-JUL-03', 8);
+INSERT INTO product_order VALUES ('Product 4', 'GA', '15-JUL-03', 8);
+INSERT INTO product_order VALUES ('Product 6', 'CA', '16-JUL-03', 5);
+INSERT INTO product_order VALUES ('Product 7', 'CA', '17-JUL-03', 1);
+
+INSERT INTO product VALUES ('Product 1', 99,  1,    '15-JAN-03');
+INSERT INTO product VALUES ('Product 2', 75,  1000, '15-JAN-02');
+INSERT INTO product VALUES ('Product 3', 50,  100,  '15-JAN-03');
+INSERT INTO product VALUES ('Product 4', 25,  10000, null);
+INSERT INTO product VALUES ('Product 5', 9.95,1234, '15-JAN-04');
+INSERT INTO product VALUES ('Product 6', 45,  1,    TO_DATE('December 31, 2008, 11:30 P.M.','Month dd, YYYY, HH:MI P.M.'));
+
+select count(*) from product;
+
+UPDATE product SET product_price = product_price * .9 
+    where product_name NOT IN (SELECT DISTINCT product_name FROM product_order);
+
+SELECT * FROM  product order by product_name;
+
+drop table product;
+drop table product_order;
+
+-- Show products that aren't selling
+CREATE TABLE product (
+         product_name     VARCHAR(25) PRIMARY KEY,
+         product_price    decimal(4,2),
+         quantity_on_hand decimal(5,0),
+         last_stock_date  DATE
+    );
+
+CREATE TABLE product_order (
+         product_name  VARCHAR(25),
+         salesperson   VARCHAR(3),
+         order_date    DATE,
+         quantity      decimal(4,2)
+    );
+
+INSERT INTO product_order VALUES ('Product 1', 'CA', '14-JUL-03', 1);
+INSERT INTO product_order VALUES ('Product 2', 'BB', '14-JUL-03', 75);
+INSERT INTO product_order VALUES ('Product 3', 'GA', '14-JUL-03', 2);
+INSERT INTO product_order VALUES ('Product 4', 'GA', '15-JUL-03', 8);
+ INSERT INTO product_order VALUES ('Product 5', 'LB', '15-JUL-03', 20);
+INSERT INTO product_order VALUES ('Product 6', 'CA', '16-JUL-03', 5);
+INSERT INTO product_order VALUES ('Product 7', 'CA', '17-JUL-03', 1);
+
+INSERT INTO product VALUES ('Product 1', 99,  1,    '15-JAN-03');
+INSERT INTO product VALUES ('Product 2', 75,  1000, '15-JAN-02');
+INSERT INTO product VALUES ('Product 3', 50,  100,  '15-JAN-03');
+INSERT INTO product VALUES ('Product 4', 25,  10000, null);
+INSERT INTO product VALUES ('Product 5', 9.95,1234, '15-JAN-04');
+INSERT INTO product VALUES ('Product 6', 45,  1,    TO_DATE('December 31, 2008, 11:30 P.M.','Month dd, YYYY, HH:MI P.M.'));
+
+SELECT * FROM product_order ORDER BY product_name;
+SELECT * FROM product
+	 WHERE  product_name NOT IN (SELECT DISTINCT product_name FROM product_order)
+	 ORDER BY product_name;
+
+drop table product;
+drop table product_order;
+
+-- Uses NOT IN to check if an id is not in the list of id values in the employee table
+create table Employee(
+      EMPNO         INTEGER,
+      ENAME         VARCHAR(15),
+      HIREDATE      DATE,
+      ORIG_SALARY   INTEGER,
+      CURR_SALARY   INTEGER,
+      REGION        VARCHAR(1),
+      MANAGER_ID    INTEGER
+    );
+
+create table job (
+      EMPNO         INTEGER,
+      jobtitle      VARCHAR(20)
+    );
+
+insert into job (EMPNO, Jobtitle) values (1,'Tester');
+insert into job (EMPNO, Jobtitle) values (2,'Accountant');
+insert into job (EMPNO, Jobtitle) values (3,'Developer');
+insert into job (EMPNO, Jobtitle) values (4,'COder');
+insert into job (EMPNO, Jobtitle) values (5,'Director');
+insert into job (EMPNO, Jobtitle) values (6,'Mediator');
+insert into job (EMPNO, Jobtitle) values (7,'Proffessor');
+insert into job (EMPNO, Jobtitle) values (8,'Programmer');
+insert into job (EMPNO, Jobtitle) values (9,'Developer');
+
+insert into Employee(EMPNO, EName, HIREDATE, ORIG_SALARY, CURR_SALARY, REGION, MANAGER_ID)
+    values (1, 'Jason', to_date('19960725','YYYYMMDD'), 1234, 8767, 'E', 2);
+
+insert into Employee(EMPNO, EName, HIREDATE, ORIG_SALARY, CURR_SALARY, REGION, MANAGER_ID)
+    values (2, 'John', to_date('19970715','YYYYMMDD'), 2341, 3456, 'W', 3);
+
+insert into Employee(EMPNO,  EName,   HIREDATE, ORIG_SALARY, CURR_SALARY, REGION, MANAGER_ID)
+    values (3, 'Joe', to_date('19860125','YYYYMMDD'), 4321, 5654, 'E', 3);
+
+insert into Employee(EMPNO, EName, HIREDATE, ORIG_SALARY, CURR_SALARY, REGION, MANAGER_ID)
+    values (4, 'Tom', to_date('20060913','YYYYMMDD'), 2413, 6787, 'W', 4);
+
+insert into Employee(EMPNO,  EName,   HIREDATE, ORIG_SALARY, CURR_SALARY, REGION, MANAGER_ID)
+    values (5, 'Jane', to_date('20050417','YYYYMMDD'), 7654, 4345, 'E',4);
+
+insert into Employee(EMPNO,  EName, HIREDATE, ORIG_SALARY, CURR_SALARY, REGION, MANAGER_ID)
+    values (6, 'James', to_date('20040718','YYYYMMDD'), 5679, 6546, 'W', 5);
+
+insert into Employee(EMPNO, EName, HIREDATE, ORIG_SALARY, CURR_SALARY, REGION, MANAGER_ID)
+    values (7, 'Jodd', to_date('20030720','YYYYMMDD'), 5438, 7658, 'E', 6);
+
+insert into Employee(EMPNO, EName, HIREDATE, ORIG_SALARY, CURR_SALARY, REGION)
+    values (8, 'Joke', to_date('20020101','YYYYMMDD'), 8765, 4543, 'W');
+
+insert into Employee(EMPNO, EName, HIREDATE, ORIG_SALARY, CURR_SALARY, REGION)
+    values (9, 'Jack',  to_date('20010829','YYYYMMDD'), 7896, 1232, 'E');
+
+SELECT empno, ename
+  FROM employee
+  WHERE empno NOT IN (SELECT empno FROM job);
+
+drop table employee;
+drop table job;
+
+-- Multiple Column Subqueries
+create table Employee(
+      ID                 VARCHAR(4) NOT NULL,
+      First_Name         VARCHAR(10),
+      Last_Name          VARCHAR(10),
+      Start_Date         DATE,
+      End_Date           DATE,
+      Salary             DECIMAL(8,2),
+      City               VARCHAR(10),
+      Description        VARCHAR(15)
+   );
+
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary,  City, Description)
+     values ('01','Jason',    'Martin',  to_date('19960725','YYYYMMDD'), to_date('20060725','YYYYMMDD'), 1234.56, 'Toronto',  'Programmer');
+
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary,  City, Description)
+     values('02','Alison',   'Mathews', to_date('19760321','YYYYMMDD'), to_date('19860221','YYYYMMDD'), 6661.78, 'Vancouver','Tester');
+
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary,  City, Description)
+     values('03','James',    'Smith',   to_date('19781212','YYYYMMDD'), to_date('19900315','YYYYMMDD'), 6544.78, 'Vancouver','Tester');
+
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary,  City, Description)
+     values('04','Celia',    'Rice',    to_date('19821024','YYYYMMDD'), to_date('19990421','YYYYMMDD'), 2344.78, 'Vancouver','Manager');
+
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary,  City, Description)
+     values('05','Robert',   'Black',   to_date('19840115','YYYYMMDD'), to_date('19980808','YYYYMMDD'), 2334.78, 'Vancouver','Tester');
+
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary, City,  Description)
+     values('06','Linda',    'Green',   to_date('19870730','YYYYMMDD'), to_date('19960104','YYYYMMDD'), 4322.78,'New York',  'Tester');
+
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary, City,  Description)
+     values('07','David',    'Larry',   to_date('19901231','YYYYMMDD'), to_date('19980212','YYYYMMDD'), 7897.78,'New York',  'Manager');
+
+insert into Employee(ID,  First_Name, Last_Name, Start_Date, End_Date, Salary, City, Description)
+     values('08','James', 'Cat', to_date('19960917','YYYYMMDD'), to_date('20020415','YYYYMMDD'), 1232.78,'Vancouver', 'Tester');
+
+SELECT id, first_name, salary from employee
+    where (id, salary) IN
+        (SELECT id, MIN(salary) FROM employee GROUP BY id) order by id;
+
+drop table Employee;
+
+
+-- csq_heap_selectlist.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+drop table if exists csq_t3;
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+create table csq_t3(c int, d text);
+insert into csq_t3 values(1,'one');
+insert into csq_t3 values(3,'three');
+insert into csq_t3 values(5,'five');
+insert into csq_t3 values(7,'seven');
+
+create table A(i integer, j integer);
+insert into A values(1,1);
+insert into A values(19,5);
+insert into A values(99,62);
+insert into A values(1,1);
+insert into A values(78,-1);
+
+create table B(i integer, j integer);
+insert into B values(1,43);
+insert into B values(88,1);
+insert into B values(-1,62);
+insert into B values(1,1);
+insert into B values(32,5);
+insert into B values(2,7);
+
+create table C(i integer, j integer);
+insert into C values(1,889);
+insert into C values(288,1);
+insert into C values(-1,625);
+insert into C values(32,65);
+insert into C values(32,62);
+insert into C values(3,-1);
+insert into C values(99,7);
+insert into C values(78,62);
+insert into C values(2,7);
+-- end_ignore
+
+-- -- -- --
+-- Basic queries in SELECT list
+-- -- -- --
+select A.i, (select C.j from C group by C.j having max(C.j) = any (select min(B.j) from B)) as C_j from A,B,C where A.i = 99 order by A.i, C_j limit 10;
+select (select avg(x) from csq_t1, csq_t2 where csq_t1.a = any (select x)) as avg_x from csq_t1 order by 1;
+
+
+-- csq_heap_where.sql
+
+-- start_ignore
+drop table if exists csq_t1;
+drop table if exists csq_t2;
+drop table if exists csq_t3;
+drop table if exists A;
+drop table if exists B;
+drop table if exists C;
+
+
+create table csq_t1(a int, b int);
+insert into csq_t1 values (1,2);
+insert into csq_t1 values (3,4);
+insert into csq_t1 values (5,6);
+insert into csq_t1 values (7,8);
+
+create table csq_t2(x int,y int);
+insert into csq_t2 values(1,1);
+insert into csq_t2 values(3,9);
+insert into csq_t2 values(5,25);
+insert into csq_t2 values(7,49);
+
+create table csq_t3(c int, d text);
+insert into csq_t3 values(1,'one');
+insert into csq_t3 values(3,'three');
+insert into csq_t3 values(5,'five');
+insert into csq_t3 values(7,'seven');
+
+create table A(i integer, j integer);
+insert into A values(1,1);
+insert into A values(19,5);
+insert into A values(99,62);
+insert into A values(1,1);
+insert into A values(78,-1);
+
+create table B(i integer, j integer);
+insert into B values(1,43);
+insert into B values(88,1);
+insert into B values(-1,62);
+insert into B values(1,1);
+insert into B values(32,5);
+insert into B values(2,7);
+
+create table C(i integer, j integer);
+insert into C values(1,889);
+insert into C values(288,1);
+insert into C values(-1,625);
+insert into C values(32,65);
+insert into C values(32,62);
+insert into C values(3,-1);
+insert into C values(99,7);
+insert into C values(78,62);
+insert into C values(2,7);
+-- end_ignore
+
+-- -- -- --
+-- Basic queries with WHERE clause
+-- -- -- --
+select a, (select y from csq_t2 where x=a) from csq_t1 where b < 8 order by a;
+select a, x from csq_t2, csq_t1 where csq_t1.a = (select x) order by a;
+select a from csq_t1 where (select (y*2)>b from csq_t2 where a=x) order by a;
+SELECT a, (SELECT d FROM csq_t3 WHERE a=c) FROM csq_t1 GROUP BY a order by a;
+
+
+-- csq_mpp12793.sql
+
+--start_ignore
+drop table if exists t1;
+--end_ignore
+
+CREATE OR REPLACE FUNCTION f(a int) RETURNS int AS $$ select $1 $$ LANGUAGE SQL;
+CREATE TABLE t1(a int);
+INSERT INTO t1 VALUES (1);
+\echo '-- force_explain'
+explain (costs ON) SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
+SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
+\echo '-- force_explain'
+explain (costs ON) SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
+SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
+\echo '-- force_explain'
+explain (costs ON) SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
+SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
+
+
+-- csq_mpp13626.sql
+
+-- Repro 1
+drop table if exists with_test1 cascade;
+create table with_test1 (i int, t text, value int);
+insert into with_test1 select i%10, 'text' || i%20, i%30 from generate_series(0, 99) i;
+drop table if exists with_test2 cascade;
+create table with_test2 (i int, t text, value int);
+insert into with_test2 select i%100, 'text' || i%200, i%300 from generate_series(0, 999) i;
+
+insert into with_test2
+select i, i || '', total
+from (select i, sum(value) as total from with_test1 group by i) as tmp;
+
+select with_test2.* from with_test2
+where value < any (select sum(value) from with_test1 group by i having i = with_test2.i) order by i, t, value;
+
+-- Repro 2
+drop table if exists csq_emp;
+    create table csq_emp(name text, department text, salary numeric);
+    insert into csq_emp values('a','adept',11200.00);
+    insert into csq_emp values('b','adept',22222.00);
+    insert into csq_emp values('c','bdept',99222.00);
+    insert into csq_emp values('d','adept',23211.00);
+    insert into csq_emp values('e','adept',45222.00);
+    insert into csq_emp values('f','adept',992222.00);
+    insert into csq_emp values('g','adept',90343.00);
+    insert into csq_emp values('h','adept',11200.00);
+    insert into csq_emp values('i','bdept',11200.00);
+    insert into csq_emp values('j','adept',11200.00);
+
+SELECT name, department, salary FROM csq_emp ea
+  WHERE salary IN
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department;
+
+SELECT name, department, salary FROM csq_emp ea
+  WHERE  salary = ANY
+    (SELECT MAX(salary) FROM csq_emp eb WHERE eb.department = ea.department) order by name, department;
+
+-- Repro 3
+drop table if exists with_test1 cascade;
+create table with_test1 (i int, t text, value int);
+insert into with_test1 select i%10, 'text' || i%20, i%30 from generate_series(0, 99) i;
+drop table if exists with_test2 cascade;
+create table with_test2 (i int, t text, value int);
+insert into with_test2 select i%100, 'text' || i%200, i%300 from generate_series(0, 999) i;
+
+insert into with_test2
+select i, i || '', total
+from (select i, sum(value) as total from with_test1 group by i) as tmp;
+
+select with_test2.* from with_test2
+where value < all (select sum(value) from with_test1 group by i having i = with_test2.i) order by i, t, value;
+
+
+
+-- csq_mpp24370_setup.sql
+-- start_ignore
+DROP TABLE IF EXISTS t1 CASCADE;
+DROP TABLE IF EXISTS t2 CASCADE;
+DROP TABLE IF EXISTS x CASCADE;
+-- end_ignore
+
+CREATE TABLE t1 (a int, b int);
+CREATE TABLE t2 (a int, b int);
+CREATE TABLE x (a int);
+
+
+-- csq_mpp24370.sql
+
+explain (costs ON) select * from x where a=  (select sum(t1.a)  from t1 inner join (select x.a as outer_ref, * from t2) as foo on (foo.a=t1.a+ outer_ref)  group by foo.a);
+
+
+
+-- csq_mpp24370_teardown.sql
+DROP TABLE t1;
+DROP TABLE t2;
+DROP TABLE x;
+

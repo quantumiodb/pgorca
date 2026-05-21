@@ -1,0 +1,183 @@
+-- pg_orca static partition pruning regression tests
+-- Ported from testrepo/partitioning/partitionselect/sql/
+-- Tests ORCA static partition pruning correctness across multiple column types
+-- using compound OR predicates on the partition key.
+
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+SET enable_mergejoin TO off;
+
+-- ===================================================================
+-- INT4 partition pruning (expected: 2 of 9 partitions selected)
+-- ===================================================================
+
+CREATE TABLE INT4_TBL (f1 int4, f2 int4) PARTITION BY RANGE (f1);
+CREATE TABLE INT4_TBL_p1 PARTITION OF INT4_TBL FOR VALUES FROM (1) TO (2);
+CREATE TABLE INT4_TBL_p2 PARTITION OF INT4_TBL FOR VALUES FROM (2) TO (3);
+CREATE TABLE INT4_TBL_p3 PARTITION OF INT4_TBL FOR VALUES FROM (3) TO (4);
+CREATE TABLE INT4_TBL_p4 PARTITION OF INT4_TBL FOR VALUES FROM (4) TO (5);
+CREATE TABLE INT4_TBL_p5 PARTITION OF INT4_TBL FOR VALUES FROM (5) TO (6);
+CREATE TABLE INT4_TBL_p6 PARTITION OF INT4_TBL FOR VALUES FROM (6) TO (7);
+CREATE TABLE INT4_TBL_p7 PARTITION OF INT4_TBL FOR VALUES FROM (7) TO (8);
+CREATE TABLE INT4_TBL_p8 PARTITION OF INT4_TBL FOR VALUES FROM (8) TO (9);
+CREATE TABLE INT4_TBL_p9 PARTITION OF INT4_TBL FOR VALUES FROM (9) TO (10);
+
+-- Expected: 2 partitions selected (p1: [1,2) and p5: [5,6))
+EXPLAIN (costs ON) SELECT * FROM INT4_TBL
+WHERE
+(f1>=1 AND f1<2 AND f2<3)
+OR
+(f1>=5 AND f1<6 AND f2<1);
+
+DROP TABLE INT4_TBL;
+
+-- ===================================================================
+-- INT4 out-of-range partition pruning (expected: 0 of 9 partitions selected)
+-- ===================================================================
+
+CREATE TABLE INT4_TBL (f1 int4, f2 int4) PARTITION BY RANGE (f1);
+CREATE TABLE INT4_TBL_p1 PARTITION OF INT4_TBL FOR VALUES FROM (1) TO (2);
+CREATE TABLE INT4_TBL_p2 PARTITION OF INT4_TBL FOR VALUES FROM (2) TO (3);
+CREATE TABLE INT4_TBL_p3 PARTITION OF INT4_TBL FOR VALUES FROM (3) TO (4);
+CREATE TABLE INT4_TBL_p4 PARTITION OF INT4_TBL FOR VALUES FROM (4) TO (5);
+CREATE TABLE INT4_TBL_p5 PARTITION OF INT4_TBL FOR VALUES FROM (5) TO (6);
+CREATE TABLE INT4_TBL_p6 PARTITION OF INT4_TBL FOR VALUES FROM (6) TO (7);
+CREATE TABLE INT4_TBL_p7 PARTITION OF INT4_TBL FOR VALUES FROM (7) TO (8);
+CREATE TABLE INT4_TBL_p8 PARTITION OF INT4_TBL FOR VALUES FROM (8) TO (9);
+CREATE TABLE INT4_TBL_p9 PARTITION OF INT4_TBL FOR VALUES FROM (9) TO (10);
+
+-- Expected: 0 partitions selected (predicate entirely outside range [1,10))
+EXPLAIN (costs ON) SELECT * FROM INT4_TBL
+WHERE
+(f1>=10 AND f1<14 AND f2<3)
+OR
+(f1>=15 AND f1<16 AND f2<3);
+
+DROP TABLE INT4_TBL;
+
+-- ===================================================================
+-- INT4 within-range partition pruning (expected: 4 of 9 partitions selected)
+-- ===================================================================
+
+CREATE TABLE INT4_TBL (f1 int4, f2 int4) PARTITION BY RANGE (f1);
+CREATE TABLE INT4_TBL_p1 PARTITION OF INT4_TBL FOR VALUES FROM (1) TO (2);
+CREATE TABLE INT4_TBL_p2 PARTITION OF INT4_TBL FOR VALUES FROM (2) TO (3);
+CREATE TABLE INT4_TBL_p3 PARTITION OF INT4_TBL FOR VALUES FROM (3) TO (4);
+CREATE TABLE INT4_TBL_p4 PARTITION OF INT4_TBL FOR VALUES FROM (4) TO (5);
+CREATE TABLE INT4_TBL_p5 PARTITION OF INT4_TBL FOR VALUES FROM (5) TO (6);
+CREATE TABLE INT4_TBL_p6 PARTITION OF INT4_TBL FOR VALUES FROM (6) TO (7);
+CREATE TABLE INT4_TBL_p7 PARTITION OF INT4_TBL FOR VALUES FROM (7) TO (8);
+CREATE TABLE INT4_TBL_p8 PARTITION OF INT4_TBL FOR VALUES FROM (8) TO (9);
+CREATE TABLE INT4_TBL_p9 PARTITION OF INT4_TBL FOR VALUES FROM (9) TO (10);
+
+-- Expected: 4 partitions selected (p1,p2,p3: [1,4) and p5: [5,6))
+EXPLAIN (costs ON) SELECT * FROM INT4_TBL
+WHERE
+(f1>=1 AND f1<4 AND f2<3)
+OR
+(f1>=5 AND f1<6 AND f2<3);
+
+DROP TABLE INT4_TBL;
+
+-- ===================================================================
+-- FLOAT8 partition pruning (expected: 2 of 9 partitions selected)
+-- ===================================================================
+
+CREATE TABLE FLOAT8_TBL (f2 float8, f1 float8) PARTITION BY RANGE (f1);
+CREATE TABLE FLOAT8_TBL_p1 PARTITION OF FLOAT8_TBL FOR VALUES FROM (1) TO (2);
+CREATE TABLE FLOAT8_TBL_p2 PARTITION OF FLOAT8_TBL FOR VALUES FROM (2) TO (3);
+CREATE TABLE FLOAT8_TBL_p3 PARTITION OF FLOAT8_TBL FOR VALUES FROM (3) TO (4);
+CREATE TABLE FLOAT8_TBL_p4 PARTITION OF FLOAT8_TBL FOR VALUES FROM (4) TO (5);
+CREATE TABLE FLOAT8_TBL_p5 PARTITION OF FLOAT8_TBL FOR VALUES FROM (5) TO (6);
+CREATE TABLE FLOAT8_TBL_p6 PARTITION OF FLOAT8_TBL FOR VALUES FROM (6) TO (7);
+CREATE TABLE FLOAT8_TBL_p7 PARTITION OF FLOAT8_TBL FOR VALUES FROM (7) TO (8);
+CREATE TABLE FLOAT8_TBL_p8 PARTITION OF FLOAT8_TBL FOR VALUES FROM (8) TO (9);
+CREATE TABLE FLOAT8_TBL_p9 PARTITION OF FLOAT8_TBL FOR VALUES FROM (9) TO (10);
+
+-- Expected: 2 partitions selected (p1: [1,2) and p5: [5,6))
+EXPLAIN (costs ON) SELECT * FROM FLOAT8_TBL
+WHERE
+(f1>=1 AND f1<2 AND f2<3)
+OR
+(f1>=5 AND f1<6 AND f2<3);
+
+DROP TABLE FLOAT8_TBL;
+
+-- ===================================================================
+-- NUMERIC partition pruning (expected: 2 of 9 partitions selected)
+-- ===================================================================
+
+CREATE TABLE num_data_big_rangep (f2 int4, f1 numeric(1000,800)) PARTITION BY RANGE (f1);
+CREATE TABLE num_data_big_rangep_p1 PARTITION OF num_data_big_rangep FOR VALUES FROM (1) TO (2);
+CREATE TABLE num_data_big_rangep_p2 PARTITION OF num_data_big_rangep FOR VALUES FROM (2) TO (3);
+CREATE TABLE num_data_big_rangep_p3 PARTITION OF num_data_big_rangep FOR VALUES FROM (3) TO (4);
+CREATE TABLE num_data_big_rangep_p4 PARTITION OF num_data_big_rangep FOR VALUES FROM (4) TO (5);
+CREATE TABLE num_data_big_rangep_p5 PARTITION OF num_data_big_rangep FOR VALUES FROM (5) TO (6);
+CREATE TABLE num_data_big_rangep_p6 PARTITION OF num_data_big_rangep FOR VALUES FROM (6) TO (7);
+CREATE TABLE num_data_big_rangep_p7 PARTITION OF num_data_big_rangep FOR VALUES FROM (7) TO (8);
+CREATE TABLE num_data_big_rangep_p8 PARTITION OF num_data_big_rangep FOR VALUES FROM (8) TO (9);
+CREATE TABLE num_data_big_rangep_p9 PARTITION OF num_data_big_rangep FOR VALUES FROM (9) TO (10);
+
+-- Expected: 2 partitions selected (p1: [1,2) and p5: [5,6))
+EXPLAIN (costs ON) SELECT * FROM num_data_big_rangep
+WHERE
+(f1>=1 AND f1<2 AND f2<3)
+OR
+(f1>=5 AND f1<6 AND f2<3);
+
+DROP TABLE num_data_big_rangep;
+
+-- ===================================================================
+-- DATE partition pruning (expected: 2 of 12 monthly partitions selected)
+-- ===================================================================
+
+CREATE TABLE DATE_TBL_MONTH_rangep (f1 date, f2 date) PARTITION BY RANGE (f1);
+CREATE TABLE DATE_TBL_MONTH_rangep_p01 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-01-01') TO ('2000-02-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p02 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-02-01') TO ('2000-03-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p03 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-03-01') TO ('2000-04-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p04 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-04-01') TO ('2000-05-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p05 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-05-01') TO ('2000-06-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p06 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-06-01') TO ('2000-07-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p07 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-07-01') TO ('2000-08-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p08 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-08-01') TO ('2000-09-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p09 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-09-01') TO ('2000-10-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p10 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-10-01') TO ('2000-11-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p11 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-11-01') TO ('2000-12-01');
+CREATE TABLE DATE_TBL_MONTH_rangep_p12 PARTITION OF DATE_TBL_MONTH_rangep FOR VALUES FROM ('2000-12-01') TO ('2001-01-01');
+
+-- Expected: 2 partitions selected (p01: Jan 2000 and p03: Mar 2000)
+EXPLAIN (costs ON) SELECT * FROM DATE_TBL_MONTH_rangep
+WHERE
+(f1>='2000-01-01' AND f1<'2000-02-01' AND f2<'2000-02-01')
+OR
+(f1>='2000-03-01' AND f1<'2000-04-01' AND f2>='2000-01-01');
+
+DROP TABLE DATE_TBL_MONTH_rangep;
+
+-- ===================================================================
+-- TIMESTAMP partition pruning (expected: 2 of 12 monthly partitions selected)
+-- ===================================================================
+
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep (f1 timestamp, f2 timestamp) PARTITION BY RANGE (f1);
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p01 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-01-01') TO ('2000-02-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p02 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-02-01') TO ('2000-03-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p03 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-03-01') TO ('2000-04-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p04 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-04-01') TO ('2000-05-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p05 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-05-01') TO ('2000-06-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p06 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-06-01') TO ('2000-07-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p07 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-07-01') TO ('2000-08-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p08 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-08-01') TO ('2000-09-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p09 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-09-01') TO ('2000-10-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p10 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-10-01') TO ('2000-11-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p11 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-11-01') TO ('2000-12-01');
+CREATE TABLE TIMESTAMP_TBL_MONTH_rangep_p12 PARTITION OF TIMESTAMP_TBL_MONTH_rangep FOR VALUES FROM ('2000-12-01') TO ('2001-01-01');
+
+-- Expected: 2 partitions selected (p01: Jan 2000 and p03: Mar 2000)
+EXPLAIN (costs ON) SELECT * FROM TIMESTAMP_TBL_MONTH_rangep
+WHERE
+(f1>='2000-01-01' AND f1<'2000-02-01' AND f2<'2000-02-01')
+OR
+(f1>='2000-03-01' AND f1<'2000-04-01' AND f2>='2000-01-01');
+
+DROP TABLE TIMESTAMP_TBL_MONTH_rangep;

@@ -1,0 +1,371 @@
+-- pg_orca subquery regression tests
+-- Ported from Greenplum testrepo/query/subquery
+
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+
+-- ===================================================================
+-- mpp19814.sql
+-- MPP-19814: subquery referencing aggregate over partitioned table
+-- ===================================================================
+
+DROP TABLE IF EXISTS p CASCADE;
+DROP TABLE IF EXISTS r;
+CREATE TABLE p(a int, b int) PARTITION BY RANGE(b);
+CREATE TABLE p_p1 PARTITION OF p FOR VALUES FROM (1) TO (5);
+CREATE TABLE p_p2 PARTITION OF p FOR VALUES FROM (5) TO (10);
+CREATE TABLE r (a int, b int);
+INSERT INTO p SELECT i,i FROM generate_series(1,9)i;
+INSERT INTO r SELECT i,i FROM generate_series(1,9)i;
+
+-- @description MPP-19814
+SELECT a FROM r WHERE b < ( SELECT 0.5 * sum(a) FROM p WHERE b >= 3) ORDER BY 1;
+
+-- ===================================================================
+-- mpp20451.sql
+-- MPP-20451: Error during mutation of subquery with distinct and outer references
+-- ===================================================================
+
+DROP TABLE IF EXISTS r;
+DROP TABLE IF EXISTS s;
+
+create table r(a int, b int);
+create table s(a int, b int);
+
+insert into r values (1,1);
+insert into r values (2,1);
+insert into r values (2,NULL);
+insert into r values (NULL,0);
+insert into r values (NULL,NULL);
+
+insert into s values (2,2);
+insert into s values (1,0);
+insert into s values (1,1);
+
+-- @description MPP-20451: Error during mutation of subquery with distinct and outer references
+select * from r where a = (select x.a from (select distinct a from s where s.b = r.b) x);
+
+-- ===================================================================
+-- mpp20600.sql
+-- MPP-20600: Error when using subquery: no parameter found for initplan subquery
+-- ===================================================================
+
+drop table if exists mpp20600_t1;
+drop table if exists mpp20600_t2;
+drop table if exists mpp20600_t3;
+
+create table mpp20600_t1(a int,b int);
+create table mpp20600_t2(a int,b int);
+create table mpp20600_t3(like mpp20600_t1);
+
+select * from mpp20600_t1 where a=1 and a=2 and a > (select mpp20600_t2.b from mpp20600_t2);
+select * from mpp20600_t1 where a<1 and a>2 and a > (select mpp20600_t2.b from mpp20600_t2);
+select * from mpp20600_t3 where a in ( select a from mpp20600_t1 where a<1 and a>2 and a > (select mpp20600_t2.b from mpp20600_t2));
+select * from mpp20600_t3 where a <1 and a=1 and a in ( select a from mpp20600_t1 where a > (select mpp20600_t2.b from mpp20600_t2));
+select * from mpp20600_t1 where a <1 and a=1 and a in ( select a from mpp20600_t1 where a > (select mpp20600_t2.b from mpp20600_t2));
+select * from mpp20600_t1 where a = (select a FROM mpp20600_t2 where mpp20600_t2.b > (select max(b) from mpp20600_t3 group by b) and mpp20600_t2.b=1 and mpp20600_t2.b=2);
+
+drop table if exists mpp20600_t1;
+drop table if exists mpp20600_t2;
+drop table if exists mpp20600_t3;
+
+-- ===================================================================
+-- mpp21085.sql
+-- MPP-21085: correlated subquery calling SQL function
+-- ===================================================================
+
+DROP FUNCTION IF EXISTS csq_f(a int);
+CREATE FUNCTION csq_f(a int) RETURNS int AS $$ select $1 $$ LANGUAGE SQL;
+DROP TABLE IF EXISTS csq_r;
+CREATE TABLE csq_r(a int);
+INSERT INTO csq_r VALUES (1);
+
+-- @description MPP-21085
+SELECT * FROM csq_r WHERE a IN (SELECT * FROM csq_f(csq_r.a));
+
+-- ===================================================================
+-- mpp21239.sql
+-- MPP-21239: CTranslatorExprToDXL crash for subquery in Select List
+-- ===================================================================
+
+drop table if exists mpp21239_t1;
+drop table if exists mpp21239_t2;
+
+create table mpp21239_t1(i int, j int);
+create table mpp21239_t2(i int, j int);
+
+insert into mpp21239_t1 select i, i%5 from generate_series(1,10)i;
+insert into mpp21239_t2 values (1, 10);
+
+SELECT current_database();
+
+-- @description MPP-21239: CTranslatorExprToDXL crash for subquery in Select List
+explain (costs ON) select mpp21239_t1.i, (select mpp21239_t1.i from mpp21239_t2) from mpp21239_t1;
+select mpp21239_t1.i, (select mpp21239_t1.i from mpp21239_t2) from mpp21239_t1 order by 1, 2;
+
+-- ===================================================================
+-- mpp21701_1.sql
+-- MPP-21701: Algebrizer falls back when grouping column has subqueries with outer references (1)
+-- ===================================================================
+
+drop table if exists foo;
+drop table if exists bar;
+create table foo (a int, b int);
+create table bar (c int, d int);
+
+insert into foo values (2,1);
+insert into foo values (2,3);
+insert into foo values (3,1);
+
+insert into bar values (1,1);
+insert into bar values (2,3);
+insert into bar values (2,1);
+
+-- @description MPP-21701 (1)
+select * from foo where a in (select count(*) + 1 from bar group by c + (select b)) order by 1, 2;
+
+-- ===================================================================
+-- mpp21701_2.sql
+-- MPP-21701: Algebrizer falls back when grouping column has subqueries with outer references (2)
+-- ===================================================================
+
+drop table if exists foo;
+drop table if exists bar;
+create table foo (a int, b int);
+create table bar (c int, d int);
+
+insert into foo values (2,1);
+insert into foo values (2,3);
+insert into foo values (3,1);
+
+insert into bar values (1,1);
+insert into bar values (2,3);
+insert into bar values (2,1);
+
+-- @description MPP-21701 (2)
+select * from foo where a in (select count(*) + 1 from bar group by c + b) order by 1, 2;
+
+-- ===================================================================
+-- mpp21701_3.sql
+-- MPP-21701: Algebrizer falls back when grouping column has subqueries with outer references (3)
+-- ===================================================================
+
+drop table if exists foo;
+drop table if exists bar;
+drop table if exists m1;
+create table foo (a int, b int);
+create table bar (c int, d int);
+create table m1 ();
+alter table m1 add column a int;
+
+insert into foo values (2,1);
+insert into foo values (2,3);
+insert into foo values (3,1);
+
+insert into bar values (1,1);
+insert into bar values (2,3);
+insert into bar values (2,1);
+
+insert into m1 values(1);
+
+-- @description MPP-21701 (3)
+select * from foo where a in (select count(*) + 1 from bar group by c + (select foo.b from m1 limit 1)) order by 1, 2;
+
+-- ===================================================================
+-- mpp21701_4.sql
+-- MPP-21701: Algebrizer falls back when grouping column has subqueries with outer references (4)
+-- ===================================================================
+
+drop table if exists foo;
+drop table if exists bar;
+drop table if exists m1;
+create table foo (a int, b int);
+create table bar (c int, d int);
+create table m1 ();
+alter table m1 add column a int;
+
+insert into foo values (2,1);
+insert into foo values (2,3);
+insert into foo values (3,1);
+
+insert into bar values (1,1);
+insert into bar values (2,3);
+insert into bar values (2,1);
+
+insert into m1 values(1);
+
+-- @description MPP-21701 (4)
+select * from foo where a in (select count(*) + 1 from bar group by c + (select foo.b from (select a from m1) x(x1) limit 1)) order by 1, 2;
+
+-- ===================================================================
+-- mpp21701_5.sql
+-- MPP-21701: Algebrizer falls back when grouping column has subqueries with outer references (5)
+-- ===================================================================
+
+drop table if exists foo;
+drop table if exists bar;
+drop table if exists m1;
+create table foo (a int, b int);
+create table bar (c int, d int);
+create table m1 ();
+alter table m1 add column a int;
+
+insert into foo values (2,1);
+insert into foo values (2,3);
+insert into foo values (3,1);
+
+insert into bar values (1,1);
+insert into bar values (2,3);
+insert into bar values (2,1);
+
+insert into m1 values(1);
+
+-- @description MPP-21701 (5)
+select * from foo where a in (select count(*) + 1 from bar group by c + (select x1 from (select foo.b from m1) x(x1) limit 1)) order by 1, 2;
+
+-- ===================================================================
+-- mpp21805.sql
+-- MPP-21805: Wrong results for ALL subquery with LIMIT 1
+-- ===================================================================
+
+drop table if exists t;
+drop table if exists s;
+
+create table t(a int, b int);
+insert into t values (1,4),(0,3);
+
+create table s(i int, j int);
+
+-- @description MPP-21805 Wrong results for ALL subquery with LIMIT 1
+select * from t where a < all (select i from s limit 1) order by a;
+
+-- ===================================================================
+-- mpp21805-1.sql
+-- MPP-21805: Wrong results for ALL subquery with LIMIT 1 (variant 1)
+-- ===================================================================
+
+drop table if exists t;
+drop table if exists s;
+
+create table t(a int, b int);
+insert into t values (1,4),(0,3);
+
+create table s(i int, j int);
+
+-- @description MPP-21805 variant 1: ALL subquery without LIMIT
+select * from t where a < all (select i from s) order by a;
+
+-- ===================================================================
+-- mpp21805-2.sql
+-- MPP-21805: Wrong results for ALL subquery with LIMIT 1 (variant 2)
+-- ===================================================================
+
+drop table if exists t;
+drop table if exists s;
+
+create table t(a int, b int);
+insert into t values (1,4),(0,3);
+
+create table s(i int, j int);
+
+-- @description MPP-21805 variant 2: ALL subquery with LIMIT 2
+select * from t where a < all (select i from s limit 2) order by a;
+
+-- ===================================================================
+-- mpp21805-3.sql
+-- MPP-21805: Wrong results for ALL subquery with LIMIT 1 (variant 3)
+-- ===================================================================
+
+drop table if exists t;
+drop table if exists s;
+
+create table t(a int, b int);
+insert into t values (1,4),(0,3);
+
+create table s(i int, j int);
+
+-- @description MPP-21805 variant 3: ALL subquery without LIMIT
+select * from t where a < all (select i from s) order by a;
+
+-- ===================================================================
+-- mpp22019_1.sql
+-- MPP-22019: Direct Dispatch caused reader gang process hanging (1)
+-- ===================================================================
+
+DROP TABLE IF EXISTS a;
+DROP TABLE IF EXISTS b;
+CREATE TABLE a(i INT, j INT);
+INSERT INTO a(SELECT i, i * i FROM generate_series(1, 10) AS i);
+CREATE TABLE b(i INT, j INT);
+INSERT INTO b(SELECT i, i * i FROM generate_series(1, 10) AS i);
+
+-- @description MPP-22019 Direct Dispatch caused reader gang process hanging (1)
+SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = b.j) and a.i = 1;
+explain (costs ON) SELECT a.* FROM a INNER JOIN b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = b.j) and a.i = 1;
+
+-- ===================================================================
+-- mpp22019_2.sql
+-- MPP-22019: Direct Dispatch caused reader gang process hanging (2)
+-- ===================================================================
+
+DROP TABLE IF EXISTS a;
+DROP TABLE IF EXISTS b;
+CREATE TABLE a(i INT, j INT);
+INSERT INTO a(SELECT i, i * i FROM generate_series(1, 10) AS i);
+CREATE TABLE b(i INT, j INT);
+INSERT INTO b(SELECT i, i * i FROM generate_series(1, 10) AS i);
+
+-- @description MPP-22019 Direct Dispatch caused reader gang process hanging (2)
+SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.i = 1;
+explain (costs ON) SELECT a.* FROM a  WHERE a.j NOT IN (SELECT j FROM a a2 where a2.j = a.j) and a.i = 1;
+
+-- ===================================================================
+-- mpp22601.sql
+-- MPP-22601: Prohibit plans with Motions above outer references
+-- ===================================================================
+
+drop table if exists foo;
+
+create table foo(a integer, b integer);
+
+insert into foo values(1,1);
+insert into foo values(2,2);
+
+-- @description MPP-22601: Prohibit plans with Motions above outer references
+select (select a from foo inner1 where inner1.a=outer1.a  union select b from foo inner2 where inner2.b=outer1.b) from foo outer1;
+
+-- ===================================================================
+-- mpp23242.sql
+-- MPP-23242: subqueries with unnest with IN or NOT IN predicates
+-- ===================================================================
+
+-- @description MPP-23242 Test using of subqueries with unnest with IN or NOT IN predicates
+select 1 where 22 not in (SELECT unnest(array[1,2]));
+
+select 1 where 22 in (SELECT unnest(array[1,2]));
+
+select 1 where 22  in (SELECT unnest(array[1,2,22]));
+
+select 1 where 22 not in (SELECT unnest(array[1,2,22]));
+
+-- ===================================================================
+-- Cleanup
+-- ===================================================================
+
+DROP TABLE IF EXISTS p CASCADE;
+DROP TABLE IF EXISTS r;
+DROP TABLE IF EXISTS s;
+DROP TABLE IF EXISTS mpp20600_t1;
+DROP TABLE IF EXISTS mpp20600_t2;
+DROP TABLE IF EXISTS mpp20600_t3;
+DROP FUNCTION IF EXISTS csq_f(a int);
+DROP TABLE IF EXISTS csq_r;
+DROP TABLE IF EXISTS mpp21239_t1;
+DROP TABLE IF EXISTS mpp21239_t2;
+DROP TABLE IF EXISTS foo;
+DROP TABLE IF EXISTS bar;
+DROP TABLE IF EXISTS m1;
+DROP TABLE IF EXISTS t;
+DROP TABLE IF EXISTS a;
+DROP TABLE IF EXISTS b;
