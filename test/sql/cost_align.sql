@@ -161,3 +161,44 @@ EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2 JOIN 
 EXPLAIN SELECT DISTINCT a.hundred FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2;
 EXPLAIN SELECT count(*) FROM cal_tenk1 a WHERE a.unique1 IN (SELECT unique2 FROM cal_onek WHERE unique1 < 100);
 EXPLAIN SELECT * FROM cal_tenk1 a JOIN cal_tenk1 b ON a.unique2 = b.unique2 WHERE a.unique1 = 5;
+
+-- ---------------------------------------------------------------------
+-- Aggregate-focused cases, adapted from PG regress aggregates.sql.
+-- Mix of scalar aggs, group-by, having, filter, multi-agg, agg+join,
+-- agg+distinct, agg+ordering, rollup/grouping sets.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT avg(ten) FROM cal_onek;
+EXPLAIN SELECT sum(unique1) FROM cal_tenk1;
+EXPLAIN SELECT max(hundred), min(hundred) FROM cal_tenk1;
+EXPLAIN SELECT stddev_pop(unique1) FROM cal_tenk1;
+EXPLAIN SELECT var_samp(unique1) FROM cal_tenk1;
+EXPLAIN SELECT avg(unique1::numeric) FROM cal_tenk1;
+EXPLAIN SELECT count(*), sum(unique1), avg(unique2)::numeric(10,2), max(hundred), min(ten) FROM cal_tenk1;
+EXPLAIN SELECT ten, sum(unique1) FROM cal_onek GROUP BY ten ORDER BY ten;
+EXPLAIN SELECT hundred, count(*), avg(unique1) FROM cal_tenk1 GROUP BY hundred;
+EXPLAIN SELECT hundred, count(*), avg(unique1) FROM cal_tenk1 GROUP BY hundred ORDER BY hundred;
+EXPLAIN SELECT hundred, count(*), avg(unique1) FROM cal_tenk1 GROUP BY hundred HAVING count(*) > 50;
+EXPLAIN SELECT ten, hundred, count(*) FROM cal_onek GROUP BY ten, hundred;
+EXPLAIN SELECT ten, hundred, count(*) FROM cal_onek GROUP BY ROLLUP(ten, hundred);
+EXPLAIN SELECT ten, hundred, count(*) FROM cal_onek GROUP BY CUBE(ten, hundred);
+EXPLAIN SELECT ten, hundred, count(*) FROM cal_onek GROUP BY GROUPING SETS ((ten), (hundred), ());
+EXPLAIN SELECT count(DISTINCT unique1) FROM cal_tenk1;
+EXPLAIN SELECT count(DISTINCT hundred) FROM cal_tenk1 WHERE unique1 < 1000;
+EXPLAIN SELECT count(*) FILTER (WHERE hundred < 50) FROM cal_tenk1;
+EXPLAIN SELECT count(*) FILTER (WHERE hundred < 50), count(*) FILTER (WHERE hundred >= 50) FROM cal_tenk1;
+EXPLAIN SELECT hundred, count(*) FILTER (WHERE ten = 0) FROM cal_tenk1 GROUP BY hundred;
+EXPLAIN SELECT array_agg(unique1 ORDER BY unique1) FROM cal_onek WHERE hundred = 5;
+EXPLAIN SELECT string_agg(stringu1::text, ',' ORDER BY unique1) FROM cal_tenk1 WHERE unique1 < 10;
+EXPLAIN SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY unique1) FROM cal_tenk1;
+EXPLAIN SELECT mode() WITHIN GROUP (ORDER BY hundred) FROM cal_tenk1;
+EXPLAIN SELECT count(*), avg(unique1) FROM cal_tenk1 GROUP BY GROUPING SETS ((hundred), (ten));
+EXPLAIN SELECT a.hundred, count(*), avg(b.unique1) FROM cal_tenk1 a JOIN cal_onek b ON a.unique1 = b.unique2 GROUP BY a.hundred;
+EXPLAIN SELECT a.hundred, count(*) FILTER (WHERE b.unique1 < 100) FROM cal_tenk1 a JOIN cal_onek b ON a.hundred = b.hundred GROUP BY a.hundred;
+EXPLAIN SELECT sum(s.cnt) FROM (SELECT hundred, count(*) AS cnt FROM cal_tenk1 GROUP BY hundred) s;
+EXPLAIN SELECT max(unique1) FROM cal_tenk1 WHERE unique1 < 100;
+EXPLAIN SELECT min(unique1) FROM cal_tenk1;
+EXPLAIN SELECT bool_and(unique1 < 9999), bool_or(unique1 = 0) FROM cal_tenk1;
+EXPLAIN SELECT count(*) FROM cal_tenk1 WHERE unique1 IN (SELECT max(unique1) FROM cal_onek);
+EXPLAIN SELECT corr(unique1, unique2), covar_pop(unique1, unique2) FROM cal_tenk1;
+EXPLAIN SELECT hundred, ten, count(*) FROM cal_tenk1 GROUP BY hundred, ten HAVING sum(unique1) > 1000;
+EXPLAIN SELECT hundred FROM cal_tenk1 GROUP BY hundred HAVING count(*) > 90 ORDER BY hundred LIMIT 10;
