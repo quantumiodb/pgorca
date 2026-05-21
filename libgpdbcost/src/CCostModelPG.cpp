@@ -23,11 +23,14 @@
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CPhysicalAgg.h"
 #include "gpopt/operators/CPhysicalHashJoin.h"
+#include "gpopt/operators/CPhysicalDynamicScan.h"
 #include "gpopt/operators/CPhysicalIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalScan.h"
 #include "gpopt/operators/CPhysicalSequenceProject.h"
 #include "gpopt/base/CDistributionSpecHashed.h"
+#include "naucrates/md/CMDIdRelStats.h"
+#include "naucrates/md/IMDRelStats.h"
 #include "gpopt/operators/CScalarArray.h"
 #include "gpopt/operators/CScalarBitmapBoolOp.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
@@ -204,7 +207,7 @@ CCostModelPG::CostChildren(CMemoryPool *,  // mp
 //	the base per-tuple CPU.
 //---------------------------------------------------------------------------
 CCost
-CCostModelPG::CostScan(CMemoryPool *,  // mp
+CCostModelPG::CostScan(CMemoryPool *mp,
 					   CExpressionHandle &exprhdl,
 					   const SCostingInfo *pci)
 {
@@ -216,6 +219,63 @@ CCostModelPG::CostScan(CMemoryPool *,  // mp
 				COperator::EopPhysicalAppendTableScan == pop->Eopid() ||
 				COperator::EopPhysicalForeignScan == pop->Eopid() ||
 				COperator::EopPhysicalDynamicForeignScan == pop->Eopid());
+
+	// Partitioned scans (DynamicTableScan / AppendTableScan): the root
+	// table has pg_class.relpages = -1, so reading PstatsBaseTable
+	// returns a stale or fallback value that ignores static partition
+	// pruning.  Sum the selected partitions' RelPages and Rows directly
+	// from IMDRelStats — `GetPartitionMdids()` already reflects whatever
+	// static pruning ORCA applied at planning time.  Without this fix,
+	// `EXPLAIN ... WHERE part_key = N` shows the full-table cost
+	// regardless of how many partitions actually need scanning.
+	const COperator::EOperatorId eop = pop->Eopid();
+	if (COperator::EopPhysicalDynamicTableScan == eop ||
+		COperator::EopPhysicalAppendTableScan == eop ||
+		COperator::EopPhysicalDynamicForeignScan == eop)
+	{
+		CPhysicalDynamicScan *pdyn = CPhysicalDynamicScan::PopConvert(pop);
+		IMdIdArray *part_mdids = pdyn->GetPartitionMdids();
+		if (nullptr != part_mdids && part_mdids->Size() > 0)
+		{
+			CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+			CDouble total_pages(0.0);
+			CDouble total_rows(0.0);
+			BOOL got_any = false;
+			for (ULONG ul = 0; ul < part_mdids->Size(); ul++)
+			{
+				IMDId *part_mdid = (*part_mdids)[ul];
+				part_mdid->AddRef();
+				CMDIdRelStats *rs_mdid = GPOS_NEW(mp)
+					CMDIdRelStats(CMDIdGPDB::CastMdid(part_mdid));
+				const IMDRelStats *ps = mda->Pmdrelstats(rs_mdid);
+				if (nullptr != ps && ps->RelPages() > 0)
+				{
+					total_pages = total_pages + CDouble(ps->RelPages());
+					total_rows = total_rows + ps->Rows();
+					got_any = true;
+				}
+				rs_mdid->Release();
+			}
+			if (got_any && total_pages > CDouble(0.0))
+			{
+				const CDouble io = total_pages * CDouble(seq_page_cost);
+				// pci->Rows() is the *output* row count after any
+				// pushed-down filter; CPU is on input tuples (sum from
+				// stats) so use total_rows but cap at pci->Rows() ×
+				// (total_rows / sum_unpruned_rows) approximation — for
+				// now use total_rows directly to match the per-partition
+				// SeqScan formula PG would use.
+				const CDouble cpu = total_rows * CDouble(cpu_tuple_cost);
+				// Append overhead: APPEND_CPU_COST_MULTIPLIER × cpu_tuple
+				// × output_rows (costsize.c cost_append); pci->Rows()
+				// reflects the post-filter selectivity.
+				const CDouble append =
+					CDouble(0.5) * CDouble(cpu_tuple_cost) * pci->Rows();
+				return CCost(pci->NumRebinds() *
+							 (io + cpu + append).Get());
+			}
+		}
+	}
 
 	IStatistics *base_stats = CPhysicalScan::PopConvert(pop)->PstatsBaseTable();
 	CDouble pages = CDouble(CStatistics::CastStats(base_stats)->RelPages());
