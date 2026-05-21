@@ -61,6 +61,16 @@ public:
 
 	// is aggregate replicate slice execution safe
 	virtual BOOL IsAggRepSafe() const = 0;
+
+	// mdid of the transition function (pg_aggregate.aggtransfn).  Returned
+	// pointer is owned by the cache object — do not release.  May be
+	// nullptr for cache entries created from DXL (since DXL does not
+	// serialize this field); cost-model code must tolerate that.
+	virtual IMDId *
+	GetTransfnMdid() const
+	{
+		return nullptr;
+	}
 };
 }  // namespace gpmd
 

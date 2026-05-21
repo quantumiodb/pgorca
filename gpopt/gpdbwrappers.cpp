@@ -997,6 +997,18 @@ gpdb::IsRepSafeAgg(Oid aggid)
 	return false;
 }
 
+Oid
+gpdb::GetAggTransfn(Oid aggid)
+{
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_aggregate */
+		return get_agg_transfn(aggid);
+	}
+	GP_WRAP_END;
+	return InvalidOid;
+}
+
 bool
 gpdb::IsAggPartialCapable(Oid aggid)
 {

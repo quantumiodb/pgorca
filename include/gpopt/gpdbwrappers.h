@@ -222,6 +222,9 @@ bool IsOrderedAgg(Oid aggid);
 
 bool IsRepSafeAgg(Oid aggid);
 
+// aggtransfn OID from pg_aggregate, or InvalidOid on lookup failure
+Oid GetAggTransfn(Oid aggid);
+
 // does aggregate have a combine function (and serial/deserial functions, if needed)
 bool IsAggPartialCapable(Oid aggid);
 

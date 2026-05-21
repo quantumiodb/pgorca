@@ -75,6 +75,9 @@ Oid     get_agg_transtype(Oid aggid);
 /* is_agg_ordered (from lsyscache.c) */
 bool    is_agg_ordered(Oid aggid);
 
+/* get_agg_transfn (from lsyscache.c) */
+Oid     get_agg_transfn(Oid aggid);
+
 /* get_aggregate (from lsyscache.c) */
 Oid     get_aggregate(const char *aggname, Oid oidType);
 

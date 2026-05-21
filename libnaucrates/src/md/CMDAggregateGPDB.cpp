@@ -33,7 +33,8 @@ CMDAggregateGPDB::CMDAggregateGPDB(CMemoryPool *mp, IMDId *mdid,
 								   CMDName *mdname, IMDId *result_type_mdid,
 								   IMDId *intermediate_result_type_mdid,
 								   BOOL fOrdered, BOOL is_splittable,
-								   BOOL is_hash_agg_capable, BOOL is_repsafe)
+								   BOOL is_hash_agg_capable, BOOL is_repsafe,
+								   IMDId *transfn_mdid)
 	: m_mp(mp),
 	  m_mdid(mdid),
 	  m_mdname(mdname),
@@ -42,7 +43,8 @@ CMDAggregateGPDB::CMDAggregateGPDB(CMemoryPool *mp, IMDId *mdid,
 	  m_is_ordered(fOrdered),
 	  m_is_splittable(is_splittable),
 	  m_hash_agg_capable(is_hash_agg_capable),
-	  m_is_repsafe(is_repsafe)
+	  m_is_repsafe(is_repsafe),
+	  m_mdid_transfn(transfn_mdid)
 {
 	GPOS_ASSERT(mdid->IsValid());
 }
@@ -60,6 +62,10 @@ CMDAggregateGPDB::~CMDAggregateGPDB()
 	m_mdid->Release();
 	m_mdid_type_intermediate->Release();
 	m_mdid_type_result->Release();
+	if (nullptr != m_mdid_transfn)
+	{
+		m_mdid_transfn->Release();
+	}
 	GPOS_DELETE(m_mdname);
 	if (nullptr != m_dxl_str)
 	{
