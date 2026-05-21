@@ -18,9 +18,94 @@
 #include "gpopt/base/CUtils.h"
 #include "gpopt/metadata/CName.h"
 #include "gpopt/operators/CExpressionHandle.h"
+#include "gpopt/operators/CScalarConst.h"
+#include "naucrates/base/IDatum.h"
+#include "naucrates/md/CMDIdGPDB.h"
 #include "naucrates/statistics/CStatistics.h"
 
 using namespace gpopt;
+using namespace gpmd;
+
+namespace
+{
+// PG generate_series() OIDs (pg_proc.dat):
+//   1066: generate_series(int4, int4)
+//   1067: generate_series(int4, int4, int4)
+//   1068: generate_series(int8, int8)
+//   1069: generate_series(int8, int8, int8)
+// PG handles these via prosupport functions (generate_series_int4_support /
+// _int8_support) that compute `(stop - start) / step + 1` when all args are
+// Const.  ORCA defaults set-returning functions to 1000 rows; for
+// generate_series this is often off by 10× or more, distorting plans built
+// over generate_series-fed CTEs / FROM-clauses.
+//
+// Return -1 to signal "not handled, use the default".
+static CDouble
+EstimateGenerateSeriesRows(IMDId *func_mdid, CExpressionHandle &exprhdl)
+{
+	if (nullptr == func_mdid)
+	{
+		return CDouble(-1.0);
+	}
+	const OID oid = CMDIdGPDB::CastMdid(func_mdid)->Oid();
+	if (oid != 1066 && oid != 1067 && oid != 1068 && oid != 1069)
+	{
+		return CDouble(-1.0);
+	}
+	const ULONG arity = exprhdl.Arity();
+	if (arity < 2)
+	{
+		return CDouble(-1.0);
+	}
+	CExpression *e_start = exprhdl.PexprScalarRepChild(0);
+	CExpression *e_stop = exprhdl.PexprScalarRepChild(1);
+	if (nullptr == e_start || nullptr == e_stop)
+	{
+		return CDouble(-1.0);
+	}
+	if (COperator::EopScalarConst != e_start->Pop()->Eopid() ||
+		COperator::EopScalarConst != e_stop->Pop()->Eopid())
+	{
+		return CDouble(-1.0);
+	}
+	IDatum *d_start = CScalarConst::PopConvert(e_start->Pop())->GetDatum();
+	IDatum *d_stop = CScalarConst::PopConvert(e_stop->Pop())->GetDatum();
+	if (d_start->IsNull() || d_stop->IsNull())
+	{
+		return CDouble(-1.0);
+	}
+	const LINT start = d_start->GetLINTMapping();
+	const LINT stop = d_stop->GetLINTMapping();
+
+	LINT step = 1;
+	if (arity >= 3)
+	{
+		CExpression *e_step = exprhdl.PexprScalarRepChild(2);
+		if (nullptr != e_step &&
+			COperator::EopScalarConst == e_step->Pop()->Eopid())
+		{
+			IDatum *d_step =
+				CScalarConst::PopConvert(e_step->Pop())->GetDatum();
+			if (!d_step->IsNull())
+			{
+				step = d_step->GetLINTMapping();
+			}
+		}
+	}
+	if (step == 0)
+	{
+		return CDouble(-1.0);
+	}
+	const LINT diff = stop - start;
+	// Empty series — PG returns 0 rows, but ORCA stats clamp to >= 1.
+	if ((step > 0 && diff < 0) || (step < 0 && diff > 0))
+	{
+		return CDouble(1.0);
+	}
+	const LINT n = diff / step + 1;
+	return CDouble(static_cast<double>(n));
+}
+}  // namespace
 
 
 //---------------------------------------------------------------------------
@@ -324,7 +409,8 @@ CLogicalTVF::PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	CDouble rows(1.0);
 	if (m_returns_set)
 	{
-		rows = CStatistics::DefaultRelationRows;
+		const CDouble est = EstimateGenerateSeriesRows(m_func_mdid, exprhdl);
+		rows = (est >= 0.0) ? est : CStatistics::DefaultRelationRows;
 	}
 
 	return PstatsDeriveDummy(mp, exprhdl, rows);
