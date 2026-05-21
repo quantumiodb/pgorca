@@ -261,18 +261,21 @@ analyze A,B,C;
 \echo '-- force_explain'
 -- force_explain
 explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = C.j;
-        QUERY PLAN         
----------------------------
- Hash Join
-   Hash Cond: (a.j = c.j)
+           QUERY PLAN            
+---------------------------------
+ Merge Join
+   Merge Cond: (a.j = c.j)
    ->  Nested Loop
          Join Filter: true
-         ->  Seq Scan on a
+         ->  Sort
+               Sort Key: a.j
+               ->  Seq Scan on a
          ->  Seq Scan on b
-   ->  Hash
+   ->  Sort
+         Sort Key: c.j
          ->  Seq Scan on c
  Optimizer: pg_orca
-(9 rows)
+(12 rows)
 
 --select A.i, B.i, C.j from A, B, C where A.j = C.j order by A.i, B.i, C.j limit 10;
 \echo '-- force_explain'
@@ -341,18 +344,21 @@ explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j fr
 \echo '-- force_explain'
 -- force_explain
 explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = C.j;
-        QUERY PLAN         
----------------------------
- Hash Join
-   Hash Cond: (a.j = c.j)
+           QUERY PLAN            
+---------------------------------
+ Merge Join
+   Merge Cond: (a.j = c.j)
    ->  Nested Loop
          Join Filter: true
-         ->  Seq Scan on a
+         ->  Sort
+               Sort Key: a.j
+               ->  Seq Scan on a
          ->  Seq Scan on b
-   ->  Hash
+   ->  Sort
+         Sort Key: c.j
          ->  Seq Scan on c
  Optimizer: pg_orca
-(9 rows)
+(12 rows)
 
 \echo '-- force_explain'
 -- force_explain
@@ -402,19 +408,19 @@ explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j fr
 \echo '-- force_explain'
 -- force_explain
 explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A)) from A;
-                     QUERY PLAN                     
-----------------------------------------------------
+                        QUERY PLAN                        
+----------------------------------------------------------
  Result
    SubPlan 1
-     ->  Seq Scan on a
-   ->  Hash Right Join
-         Hash Cond: (c.j = a_1.j)
-         ->  HashAggregate
-               Group Key: c.j
-               ->  Seq Scan on c
-                     Filter: (i = (SubPlan 1).col1)
+     ->  Seq Scan on a a_1
+   ->  Hash Left Join
+         Hash Cond: (a.j = c.j)
+         ->  Seq Scan on a
          ->  Hash
-               ->  Seq Scan on a a_1
+               ->  HashAggregate
+                     Group Key: c.j
+                     ->  Seq Scan on c
+                           Filter: (i = (SubPlan 1).col1)
  Optimizer: pg_orca
 (12 rows)
 
@@ -3419,17 +3425,15 @@ explain (costs off) select * from x where a=  (select sum(t1.a)  from t1 inner j
    Filter: (a = (SubPlan 1))
    SubPlan 1
      ->  Result
-           ->  GroupAggregate
+           ->  HashAggregate
                  Group Key: t2.a
                  ->  Nested Loop
                        Join Filter: (t2.a = (t1.a + (x.a)))
                        ->  Result
-                             ->  Sort
-                                   Sort Key: t2.a
-                                   ->  Seq Scan on t2
+                             ->  Seq Scan on t2
                        ->  Seq Scan on t1
  Optimizer: pg_orca
-(14 rows)
+(12 rows)
 
 -- csq_mpp24370_teardown.sql
 DROP TABLE t1;

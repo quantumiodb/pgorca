@@ -2374,26 +2374,26 @@ create table bar (x int, y int);
 -- @description MPP-22085 Enabling CTE inlining reduces plan space
 -- pg_orca: removed: set optimizer_cte_inlining=off;
 explain with v as (select x,y from bar) select v1.x from v v1, v v2 where v1.x = v2.x;
-                                QUERY PLAN                                
---------------------------------------------------------------------------
- Hash Join  (cost=0.00..862.90 rows=2260 width=4)
-   Hash Cond: (x = x)
-   ->  CTE Scan on cte  (cost=0.00..431.02 rows=2260 width=4)
-   ->  Hash  (cost=431.02..431.02 rows=2260 width=4)
-         ->  CTE Scan on cte cte_1  (cost=0.00..431.02 rows=2260 width=4)
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Merge Join  (cost=0.00..135.60 rows=2260 width=4)
+   Merge Cond: (x = x)
+   ->  CTE Scan on cte  (cost=0.00..45.20 rows=2260 width=4)
+   ->  Materialize  (cost=0.00..56.50 rows=2260 width=4)
+         ->  CTE Scan on cte cte_1  (cost=0.00..45.20 rows=2260 width=4)
  Optimizer: pg_orca
 (6 rows)
 
 SET optimizer_cte_inlining = on;
 SET optimizer_cte_inlining_bound = 1000;
 explain with v as (select x,y from bar) select v1.x from v v1, v v2 where v1.x = v2.x;
-                                QUERY PLAN                                
---------------------------------------------------------------------------
- Hash Join  (cost=0.00..862.98 rows=2260 width=4)
-   Hash Cond: (bar.x = bar_1.x)
-   ->  Seq Scan on bar  (cost=0.00..431.04 rows=2260 width=4)
-   ->  Hash  (cost=431.04..431.04 rows=2260 width=4)
-         ->  Seq Scan on bar bar_1  (cost=0.00..431.04 rows=2260 width=4)
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Merge Join  (cost=0.00..135.60 rows=2260 width=4)
+   Merge Cond: (x = x)
+   ->  CTE Scan on cte  (cost=0.00..45.20 rows=2260 width=4)
+   ->  Materialize  (cost=0.00..56.50 rows=2260 width=4)
+         ->  CTE Scan on cte cte_1  (cost=0.00..45.20 rows=2260 width=4)
  Optimizer: pg_orca
 (6 rows)
 

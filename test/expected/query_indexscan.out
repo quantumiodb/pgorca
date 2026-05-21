@@ -9,10 +9,10 @@ insert into mpp23383 select g,g from generate_series(1,1000) g;
 create index mpp23383_b on mpp23383(b);
 -- bfv_mpp23383_nonpartitioned.sql
 EXPLAIN (COSTS OFF) select * from mpp23383 where b='1';
-               QUERY PLAN                
------------------------------------------
- Index Scan using mpp23383_b on mpp23383
-   Index Cond: ((b)::text = '1'::text)
+            QUERY PLAN             
+-----------------------------------
+ Seq Scan on mpp23383
+   Filter: ((b)::text = '1'::text)
  Optimizer: pg_orca
 (3 rows)
 
@@ -23,10 +23,10 @@ select * from mpp23383 where b='1';
 (1 row)
 
 EXPLAIN (COSTS OFF) select * from mpp23383 where '1'=b;
-               QUERY PLAN                
------------------------------------------
- Index Scan using mpp23383_b on mpp23383
-   Index Cond: ((b)::text = '1'::text)
+            QUERY PLAN             
+-----------------------------------
+ Seq Scan on mpp23383
+   Filter: ((b)::text = '1'::text)
  Optimizer: pg_orca
 (3 rows)
 
@@ -37,13 +37,13 @@ select * from mpp23383 where '1'=b;
 (1 row)
 
 EXPLAIN (COSTS OFF) select * from mpp23383 where '2'> b order by a limit 10;
-                     QUERY PLAN                      
------------------------------------------------------
+                  QUERY PLAN                   
+-----------------------------------------------
  Limit
    ->  Sort
          Sort Key: a
-         ->  Index Scan using mpp23383_b on mpp23383
-               Index Cond: ((b)::text < '2'::text)
+         ->  Seq Scan on mpp23383
+               Filter: ((b)::text < '2'::text)
  Optimizer: pg_orca
 (6 rows)
 
@@ -63,15 +63,17 @@ select * from mpp23383 where '2'> b order by a limit 10;
 (10 rows)
 
 EXPLAIN (COSTS OFF) select * from mpp23383 where b between '1' and '2' order by a limit 10;
-                                    QUERY PLAN                                     
------------------------------------------------------------------------------------
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
  Limit
    ->  Sort
          Sort Key: a
-         ->  Index Scan using mpp23383_b on mpp23383
-               Index Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+         ->  Bitmap Heap Scan on mpp23383
+               Recheck Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+               ->  Bitmap Index Scan on mpp23383_b
+                     Index Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
  Optimizer: pg_orca
-(6 rows)
+(8 rows)
 
 select * from mpp23383 where b between '1' and '2' order by a limit 10;
  a  | b  
@@ -90,13 +92,12 @@ select * from mpp23383 where b between '1' and '2' order by a limit 10;
 
 -- predicates on both index and non-index key
 EXPLAIN (COSTS OFF) select * from mpp23383 where b='1' and a='1';
-               QUERY PLAN                
------------------------------------------
- Index Scan using mpp23383_b on mpp23383
-   Index Cond: ((b)::text = '1'::text)
-   Filter: (a = 1)
+                   QUERY PLAN                    
+-------------------------------------------------
+ Seq Scan on mpp23383
+   Filter: (((b)::text = '1'::text) AND (a = 1))
  Optimizer: pg_orca
-(4 rows)
+(3 rows)
 
 select * from mpp23383 where b='1' and a='1';
  a | b 
@@ -130,14 +131,18 @@ create index idx_c on mpp23383_partitioned_p1(c);
 create index idx_cd on mpp23383_partitioned_p2(c,d);
 -- end_ignore
 explain (costs off) select * from mpp23383_partitioned where b='1';
-             QUERY PLAN             
-------------------------------------
- Custom Scan (DynamicTableScan)
-   Filter: ((b)::text = '1'::text)
-   Root Table: mpp23383_partitioned
-   Partitions Selected: 2
- Optimizer: pg_orca
-(5 rows)
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Append
+   ->  Bitmap Heap Scan on mpp23383_partitioned_p1 mpp23383_partitioned_1
+         Recheck Cond: ((b)::text = '1'::text)
+         ->  Bitmap Index Scan on mpp23383_partitioned_p1_b_idx
+               Index Cond: ((b)::text = '1'::text)
+   ->  Bitmap Heap Scan on mpp23383_partitioned_p2 mpp23383_partitioned_2
+         Recheck Cond: ((b)::text = '1'::text)
+         ->  Bitmap Index Scan on mpp23383_partitioned_p2_b_idx
+               Index Cond: ((b)::text = '1'::text)
+(9 rows)
 
 select * from mpp23383_partitioned where b='1';
  a | b | c | d 
@@ -146,14 +151,18 @@ select * from mpp23383_partitioned where b='1';
 (1 row)
 
 explain (costs off) select * from mpp23383_partitioned where '1'=b;
-             QUERY PLAN             
-------------------------------------
- Custom Scan (DynamicTableScan)
-   Filter: ((b)::text = '1'::text)
-   Root Table: mpp23383_partitioned
-   Partitions Selected: 2
- Optimizer: pg_orca
-(5 rows)
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Append
+   ->  Bitmap Heap Scan on mpp23383_partitioned_p1 mpp23383_partitioned_1
+         Recheck Cond: ('1'::text = (b)::text)
+         ->  Bitmap Index Scan on mpp23383_partitioned_p1_b_idx
+               Index Cond: ((b)::text = '1'::text)
+   ->  Bitmap Heap Scan on mpp23383_partitioned_p2 mpp23383_partitioned_2
+         Recheck Cond: ('1'::text = (b)::text)
+         ->  Bitmap Index Scan on mpp23383_partitioned_p2_b_idx
+               Index Cond: ((b)::text = '1'::text)
+(9 rows)
 
 select * from mpp23383_partitioned where '1'=b;
  a | b | c | d 
@@ -162,16 +171,16 @@ select * from mpp23383_partitioned where '1'=b;
 (1 row)
 
 explain (costs off) select * from mpp23383_partitioned where '2'> b order by a limit 10;
-                   QUERY PLAN                   
-------------------------------------------------
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
  Limit
    ->  Sort
-         Sort Key: a
-         ->  Custom Scan (DynamicTableScan)
-               Filter: ((b)::text < '2'::text)
-               Root Table: mpp23383_partitioned
-               Partitions Selected: 2
- Optimizer: pg_orca
+         Sort Key: mpp23383_partitioned.a
+         ->  Append
+               ->  Seq Scan on mpp23383_partitioned_p1 mpp23383_partitioned_1
+                     Filter: ('2'::text > (b)::text)
+               ->  Seq Scan on mpp23383_partitioned_p2 mpp23383_partitioned_2
+                     Filter: ('2'::text > (b)::text)
 (8 rows)
 
 select * from mpp23383_partitioned where '2'> b order by a limit 10;
@@ -190,17 +199,21 @@ select * from mpp23383_partitioned where '2'> b order by a limit 10;
 (10 rows)
 
 explain (costs off) select * from mpp23383_partitioned where b between '1' and '2' order by a limit 10;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
  Limit
    ->  Sort
-         Sort Key: a
-         ->  Custom Scan (DynamicTableScan)
-               Filter: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
-               Root Table: mpp23383_partitioned
-               Partitions Selected: 2
- Optimizer: pg_orca
-(8 rows)
+         Sort Key: mpp23383_partitioned.a
+         ->  Append
+               ->  Bitmap Heap Scan on mpp23383_partitioned_p1 mpp23383_partitioned_1
+                     Recheck Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+                     ->  Bitmap Index Scan on mpp23383_partitioned_p1_b_idx
+                           Index Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+               ->  Bitmap Heap Scan on mpp23383_partitioned_p2 mpp23383_partitioned_2
+                     Recheck Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+                     ->  Bitmap Index Scan on mpp23383_partitioned_p2_b_idx
+                           Index Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+(12 rows)
 
 select * from mpp23383_partitioned where b between '1' and '2' order by a limit 10;
  a  | b  | c  | d  
@@ -280,14 +293,18 @@ create index idx_c on mpp23383_partitioned_p1(c);
 create index idx_cd on mpp23383_partitioned_p2(c,d);
 -- bfv_mpp23383_partitioned.sql
 explain (costs off) select * from mpp23383_partitioned where b='1';
-             QUERY PLAN             
-------------------------------------
- Custom Scan (DynamicTableScan)
-   Filter: ((b)::text = '1'::text)
-   Root Table: mpp23383_partitioned
-   Partitions Selected: 2
- Optimizer: pg_orca
-(5 rows)
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Append
+   ->  Bitmap Heap Scan on mpp23383_partitioned_p1 mpp23383_partitioned_1
+         Recheck Cond: ((b)::text = '1'::text)
+         ->  Bitmap Index Scan on mpp23383_partitioned_p1_b_idx
+               Index Cond: ((b)::text = '1'::text)
+   ->  Bitmap Heap Scan on mpp23383_partitioned_p2 mpp23383_partitioned_2
+         Recheck Cond: ((b)::text = '1'::text)
+         ->  Bitmap Index Scan on mpp23383_partitioned_p2_b_idx
+               Index Cond: ((b)::text = '1'::text)
+(9 rows)
 
 select * from mpp23383_partitioned where b='1';
  a | b | c | d 
@@ -296,14 +313,18 @@ select * from mpp23383_partitioned where b='1';
 (1 row)
 
 explain (costs off) select * from mpp23383_partitioned where '1'=b;
-             QUERY PLAN             
-------------------------------------
- Custom Scan (DynamicTableScan)
-   Filter: ((b)::text = '1'::text)
-   Root Table: mpp23383_partitioned
-   Partitions Selected: 2
- Optimizer: pg_orca
-(5 rows)
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Append
+   ->  Bitmap Heap Scan on mpp23383_partitioned_p1 mpp23383_partitioned_1
+         Recheck Cond: ('1'::text = (b)::text)
+         ->  Bitmap Index Scan on mpp23383_partitioned_p1_b_idx
+               Index Cond: ((b)::text = '1'::text)
+   ->  Bitmap Heap Scan on mpp23383_partitioned_p2 mpp23383_partitioned_2
+         Recheck Cond: ('1'::text = (b)::text)
+         ->  Bitmap Index Scan on mpp23383_partitioned_p2_b_idx
+               Index Cond: ((b)::text = '1'::text)
+(9 rows)
 
 select * from mpp23383_partitioned where '1'=b;
  a | b | c | d 
@@ -312,16 +333,16 @@ select * from mpp23383_partitioned where '1'=b;
 (1 row)
 
 explain (costs off) select * from mpp23383_partitioned where '2'> b order by a limit 10;
-                   QUERY PLAN                   
-------------------------------------------------
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
  Limit
    ->  Sort
-         Sort Key: a
-         ->  Custom Scan (DynamicTableScan)
-               Filter: ((b)::text < '2'::text)
-               Root Table: mpp23383_partitioned
-               Partitions Selected: 2
- Optimizer: pg_orca
+         Sort Key: mpp23383_partitioned.a
+         ->  Append
+               ->  Seq Scan on mpp23383_partitioned_p1 mpp23383_partitioned_1
+                     Filter: ('2'::text > (b)::text)
+               ->  Seq Scan on mpp23383_partitioned_p2 mpp23383_partitioned_2
+                     Filter: ('2'::text > (b)::text)
 (8 rows)
 
 select * from mpp23383_partitioned where '2'> b order by a limit 10;
@@ -340,17 +361,21 @@ select * from mpp23383_partitioned where '2'> b order by a limit 10;
 (10 rows)
 
 explain (costs off) select * from mpp23383_partitioned where b between '1' and '2' order by a limit 10;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
  Limit
    ->  Sort
-         Sort Key: a
-         ->  Custom Scan (DynamicTableScan)
-               Filter: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
-               Root Table: mpp23383_partitioned
-               Partitions Selected: 2
- Optimizer: pg_orca
-(8 rows)
+         Sort Key: mpp23383_partitioned.a
+         ->  Append
+               ->  Bitmap Heap Scan on mpp23383_partitioned_p1 mpp23383_partitioned_1
+                     Recheck Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+                     ->  Bitmap Index Scan on mpp23383_partitioned_p1_b_idx
+                           Index Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+               ->  Bitmap Heap Scan on mpp23383_partitioned_p2 mpp23383_partitioned_2
+                     Recheck Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+                     ->  Bitmap Index Scan on mpp23383_partitioned_p2_b_idx
+                           Index Cond: (((b)::text >= '1'::text) AND ((b)::text <= '2'::text))
+(12 rows)
 
 select * from mpp23383_partitioned where b between '1' and '2' order by a limit 10;
  a  | b  | c  | d  
@@ -434,19 +459,19 @@ set enable_indexscan=on;
 explain analyze select a, b from test where b=10 order by b desc;
                                                       QUERY PLAN                                                       
 -----------------------------------------------------------------------------------------------------------------------
- Sort  (cost=0.00..0.14 rows=40 width=8) (actual time=0.049..0.049 rows=4.00 loops=1)
+ Sort  (cost=0.00..10.11 rows=40 width=8) (actual time=0.062..0.063 rows=4.00 loops=1)
    Sort Key: b DESC
    Sort Method: quicksort  Memory: 25kB
    Buffers: shared hit=1 read=2
-   ->  Index Scan using test_b on test  (cost=0.00..0.13 rows=40 width=8) (actual time=0.045..0.045 rows=4.00 loops=1)
+   ->  Index Scan using test_b on test  (cost=0.00..8.95 rows=40 width=8) (actual time=0.055..0.057 rows=4.00 loops=1)
          Index Cond: (b = 10)
          Index Searches: 1
          Buffers: shared hit=1 read=2
  Planning:
    Buffers: shared hit=38
- Planning Time: 2.439 ms
+ Planning Time: 1.495 ms
  Optimizer: pg_orca
- Execution Time: 0.056 ms
+ Execution Time: 0.079 ms
 (13 rows)
 
 -- end_ignore

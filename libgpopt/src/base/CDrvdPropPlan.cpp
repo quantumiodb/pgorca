@@ -134,18 +134,21 @@ CDrvdPropPlan::CopyCTEProducerPlanProps(CMemoryPool *mp, CDrvdPropCtxt *pdpctxt,
 														   true /*must_exist*/);
 		// Rewindability: don't blindly inherit the producer's spec.  PG's
 		// CTE Scan executor (nodeCtescan.c:181) asserts that EXEC_FLAG_MARK
-		// is never set — it can be rescanned (via the tuplestore) but does
-		// not implement mark/restore.  Producers like Sort report
-		// ErtMarkRestore; copying that verbatim makes ORCA think it can use
-		// CTE Consumer as a MergeJoin inner child, triggering SIGABRT at
-		// runtime.  Cap the derived rewindability at ErtRescannable so a
-		// parent MarkRestore requirement triggers ORCA's enforcer to inject
-		// a Spool/Material on top of the Consumer.
+		// is never set — it can be rewound (tuplestore_rescan re-reads from
+		// the start) but does not implement mark/restore.  Producers like
+		// Sort report ErtMarkRestore; copying that verbatim makes ORCA
+		// think it can use CTE Consumer as a MergeJoin inner child,
+		// triggering SIGABRT at runtime.
+		//
+		// Cap the derived rewindability at ErtRewindable so a parent
+		// MarkRestore requirement triggers ORCA's enforcer to inject a
+		// Spool/Material above the Consumer; NL Join and similar
+		// Rewindable-required parents remain satisfied without a spurious
+		// extra Material.
 		CRewindabilitySpec *prs_producer = pdpplan->Prs();
 		CRewindabilitySpec::ERewindabilityType ert_capped =
-			(prs_producer->Ert() == CRewindabilitySpec::ErtMarkRestore ||
-			 prs_producer->Ert() == CRewindabilitySpec::ErtRewindable)
-				? CRewindabilitySpec::ErtRescannable
+			(prs_producer->Ert() == CRewindabilitySpec::ErtMarkRestore)
+				? CRewindabilitySpec::ErtRewindable
 				: prs_producer->Ert();
 		m_prs = GPOS_NEW(mp)
 			CRewindabilitySpec(ert_capped, prs_producer->Emht());
