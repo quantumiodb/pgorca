@@ -721,12 +721,30 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 	const DOUBLE inner_total_cost = pci->PdCost()[1];
 	const DOUBLE inner_rebinds = pci->PdRebinds()[1];
 
-	// Extra rescans beyond what the inner child cost already accounts for.
+	// Detect "cheap to rescan" inner sides — CTE Scan reads from a
+	// materialized tuplestore, so PG's cost_nestloop bills the rescan at
+	// rescan_cost (~ 2 × cpu_tuple_cost × rows), not at full inner_total.
+	// Without this, ORCA's extra_rescan = (outer-1) × inner.total overshoots
+	// by several hundred percent on CTE-driven NL joins.
+	COperator *inner_op = exprhdl.Pop(1);
+	const BOOL inner_cheap_rescan =
+		(nullptr != inner_op &&
+		 COperator::EopPhysicalCTEConsumer == inner_op->Eopid());
+
 	DOUBLE extra_rescan = 0.0;
 	if (inner_rebinds > 0.0 && outer_rows > inner_rebinds)
 	{
-		const DOUBLE per_exec = inner_total_cost / inner_rebinds;
-		extra_rescan = (outer_rows - inner_rebinds) * per_exec;
+		const DOUBLE n_extra = outer_rows - inner_rebinds;
+		if (inner_cheap_rescan)
+		{
+			// PG cost_ctescan rescan: 2 × cpu_tuple_cost × inner_rows per pass.
+			extra_rescan = n_extra * 2.0 * cpu_tuple_cost * inner_rows;
+		}
+		else
+		{
+			const DOUBLE per_exec = inner_total_cost / inner_rebinds;
+			extra_rescan = n_extra * per_exec;
+		}
 	}
 
 	// CPU cost: scan inner_rows for each outer_row, evaluating join qual.
@@ -1888,6 +1906,55 @@ CCostModelPG::CostConstTableGet(CMemoryPool *,	// mp
 }
 
 //---------------------------------------------------------------------------
+//	CCostModelPG::CostCTEConsumer
+//
+//	Port of PG cost_ctescan (costsize.c:1707).  PG charges 2 × cpu_tuple
+//	per row of CTE-Scan output: one for tuplestore manipulation
+//	(tuplestore_gettupleslot) plus the standard per-tuple cost.
+//	  cpu_per_tuple = cpu_tuple_cost + cpu_tuple_cost
+//	  local         = cpu_per_tuple × rows
+//	The CTE Producer subquery's cost is paid separately (in PG as an
+//	InitPlan added to the outer plan total).  ORCA wires the same
+//	through CPhysicalSequence: see CostSequence which sums CTEProducer
+//	+ main plan via CostChildren.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostCTEConsumer(CMemoryPool *,  // mp
+							  CExpressionHandle &exprhdl,
+							  const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalCTEConsumer ==
+				exprhdl.Pop()->Eopid());
+	(void) exprhdl;
+
+	const DOUBLE rows = pci->Rows();
+	const DOUBLE cpu_per_tuple = 2.0 * cpu_tuple_cost;
+	return CCost(pci->NumRebinds() * cpu_per_tuple * rows);
+}
+
+//---------------------------------------------------------------------------
+//	CCostModelPG::CostCTEProducer
+//
+//	No direct PG analog (the CTE subquery is planned independently as
+//	an InitPlan/SubPlan, then materialized into a tuplestore).  Charge
+//	the tuplestore-write cost: cpu_tuple × rows.  Children
+//	(the CTE subquery) are summed via CostChildren — that part is the
+//	subquery's own optimized cost.
+//---------------------------------------------------------------------------
+CCost
+CCostModelPG::CostCTEProducer(CMemoryPool *,  // mp
+							  CExpressionHandle &exprhdl,
+							  const SCostingInfo *pci)
+{
+	GPOS_ASSERT(COperator::EopPhysicalCTEProducer ==
+				exprhdl.Pop()->Eopid());
+	(void) exprhdl;
+
+	const DOUBLE rows = pci->Rows();
+	return CCost(pci->NumRebinds() * cpu_tuple_cost * rows);
+}
+
+//---------------------------------------------------------------------------
 //	CCostModelPG::CostComputeScalar
 //
 //	ORCA's CPhysicalComputeScalar evaluates a per-row projection.  PG has
@@ -2084,6 +2151,14 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 
 		case COperator::EopPhysicalConstTableGet:
 			local = CostConstTableGet(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalCTEConsumer:
+			local = CostCTEConsumer(m_mp, exprhdl, pci);
+			break;
+
+		case COperator::EopPhysicalCTEProducer:
+			local = CostCTEProducer(m_mp, exprhdl, pci);
 			break;
 
 		case COperator::EopPhysicalInnerHashJoin:
