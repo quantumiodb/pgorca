@@ -37,6 +37,7 @@
 #include "gpopt/operators/CScalarConst.h"
 #include "gpopt/operators/CScalarIdent.h"
 #include <functional>
+#include <unordered_set>
 #include "naucrates/md/CMDIdColStats.h"
 #include "naucrates/md/CMDIdGPDB.h"
 #include "naucrates/md/IMDColStats.h"
@@ -405,6 +406,29 @@ NumAggsFromExprHdl(CExpressionHandle &exprhdl)
 	return proj_list->Arity();
 }
 
+// PG's cost_agg uses numGroupCols deduplicated across the projection
+// (parse_agg.c canonicalizes GROUP BY before costing).  ORCA's
+// PdrgpcrGroupingCols can carry duplicates — e.g. when CTranslatorQueryToDXL
+// expands SELECT DISTINCT into a GROUP BY that lists the same column twice
+// for multi-aggregate DISTINCT.  Count by pointer identity in a set so we
+// match PG's per-distinct-column hash-key compare charge.
+static ULONG
+NumDistinctGroupCols(CExpressionHandle &exprhdl)
+{
+	const CColRefArray *cols =
+		CPhysicalAgg::PopConvert(exprhdl.Pop())->PdrgpcrGroupingCols();
+	if (nullptr == cols)
+	{
+		return 0;
+	}
+	std::unordered_set<const CColRef *> uniq;
+	for (ULONG i = 0; i < cols->Size(); i++)
+	{
+		uniq.insert((*cols)[i]);
+	}
+	return static_cast<ULONG>(uniq.size());
+}
+
 // Count operator-cost ops inside every aggregate's argument list,
 // matching PG cost_qual_eval over aggref->args + aggref->aggfilter.
 // For `avg(unique1::numeric)` this returns 1 (the cast); for
@@ -511,8 +535,7 @@ CCostModelPG::CostStreamAgg(CMemoryPool *,	// mp
 	const DOUBLE output_rows = pci->Rows();
 	const ULONG nAggs = NumAggsFromExprHdl(exprhdl);
 	const ULONG nArgOps = CountAggArgOps(exprhdl);
-	const ULONG nGroupCols =
-		CPhysicalAgg::PopConvert(exprhdl.Pop())->PdrgpcrGroupingCols()->Size();
+	const ULONG nGroupCols = NumDistinctGroupCols(exprhdl);
 
 	CDouble trans = CDouble(cpu_operator_cost) *
 					CDouble(nAggs + nArgOps + nGroupCols) * input_rows;
@@ -557,8 +580,7 @@ CCostModelPG::CostHashAgg(CMemoryPool *,  // mp
 	const DOUBLE output_rows = pci->Rows();
 	const ULONG nAggs = NumAggsFromExprHdl(exprhdl);
 	const ULONG nArgOps = CountAggArgOps(exprhdl);
-	const ULONG nGroupCols =
-		CPhysicalAgg::PopConvert(exprhdl.Pop())->PdrgpcrGroupingCols()->Size();
+	const ULONG nGroupCols = NumDistinctGroupCols(exprhdl);
 
 	CDouble trans = CDouble(cpu_operator_cost) *
 					CDouble(nAggs + nArgOps + nGroupCols) * input_rows;
