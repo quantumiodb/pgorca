@@ -38,6 +38,7 @@
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
 #include "gpopt/operators/CScalarConst.h"
 #include "gpopt/operators/CScalarIdent.h"
+#include "gpopt/base/CColRefTable.h"
 #include <functional>
 #include <unordered_set>
 #include "naucrates/md/CMDIdColStats.h"
@@ -1142,6 +1143,54 @@ IndexPagesFetched(DOUBLE tuples_fetched, DOUBLE pages, DOUBLE index_pages_in)
 	return pages_fetched;
 }
 
+// Walk an index condition tree and check whether any CScalarIdent references
+// the leading key column of the index *on the inner side* of the scan.  PG's
+// btcostestimate only credits selectivity to clauses that constrain the
+// leading key; clauses on a non-leading key (e.g. ps_suppkey when the index
+// is on (ps_partkey, ps_suppkey)) cannot use the btree's sort order to skip
+// ranges, so the btree must be scanned end-to-end for each probe.  Returning
+// false here triggers a full-index-scan cost penalty in CostIndexScan.
+//
+// scan_rel_mdid identifies the relation the IndexScan is over; an index
+// condition like (ps_suppkey = supplier.s_suppkey) references colrefs from
+// two different tables, and only the one belonging to scan_rel_mdid
+// (the partsupp side) is meaningful for the leading-key check.
+static BOOL
+IndexCondCoversLeadingKey(CExpression *expr, INT leading_attno,
+						  IMDId *scan_rel_mdid)
+{
+	if (nullptr == expr)
+	{
+		return false;
+	}
+	if (COperator::EopScalarIdent == expr->Pop()->Eopid())
+	{
+		const CColRef *cr = CScalarIdent::PopConvert(expr->Pop())->Pcr();
+		if (nullptr != cr && CColRef::EcrtTable == cr->Ecrt())
+		{
+			IMDId *cr_rel_mdid = cr->GetMdidTable();
+			if (nullptr != cr_rel_mdid && nullptr != scan_rel_mdid &&
+				cr_rel_mdid->Equals(scan_rel_mdid))
+			{
+				CColRefTable *crt =
+					CColRefTable::PcrConvert(const_cast<CColRef *>(cr));
+				if (crt->AttrNum() == leading_attno)
+				{
+					return true;
+				}
+			}
+		}
+	}
+	for (ULONG i = 0; i < expr->Arity(); i++)
+	{
+		if (IndexCondCoversLeadingKey((*expr)[i], leading_attno, scan_rel_mdid))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 //---------------------------------------------------------------------------
 //	CCostModelPG::CostIndexScan
 //
@@ -1229,21 +1278,49 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 			// with the same descriptor-access pattern.
 			break;
 	}
+	BOOL leading_key_used = true;  // assume covered if no index metadata
 	if (nullptr != index_mdid)
 	{
 		const IMDIndex *index = mda->RetrieveIndex(index_mdid);
 		if (index->Keys() > 0)
 		{
-			// KeyAt(0) is the attno of the leading index key.  Construct
-			// the CMDIdColStats lookup key on the supplied pool.
-			const ULONG leading_attno = index->KeyAt(0);
-			IMDId *rel_mdid = pscan->Ptabdesc()->MDId();
+			// IMDIndex::KeyAt(0) is the 0-based POSITION of the leading
+			// key in the relation's column array (set by
+			// CTranslatorRelcacheToDXL::GetAttributePosition), not the
+			// pg_attribute.attnum.  Convert to the real attnum via the
+			// table descriptor so we can compare against
+			// CColRefTable::AttrNum() in the index condition walker.
+			const ULONG leading_pos = index->KeyAt(0);
+			CTableDescriptor *ptabdesc = pscan->Ptabdesc();
+			const CColumnDescriptorArray *pdrgpcd = ptabdesc->Pdrgpcoldesc();
+			INT leading_attno = -1;
+			if (nullptr != pdrgpcd && leading_pos < pdrgpcd->Size())
+			{
+				leading_attno = (*pdrgpcd)[leading_pos]->AttrNum();
+			}
+
+			// Correlation comes from pg_statistic of the leading column.
+			IMDId *rel_mdid = ptabdesc->MDId();
 			rel_mdid->AddRef();
 			CMDIdColStats *colstats_mdid = GPOS_NEW(mp) CMDIdColStats(
-				CMDIdGPDB::CastMdid(rel_mdid), leading_attno);
+				CMDIdGPDB::CastMdid(rel_mdid), leading_pos);
 			const IMDColStats *col_stats = mda->Pmdcolstats(colstats_mdid);
 			correlation = col_stats->Correlation().Get();
 			colstats_mdid->Release();
+
+			// Check whether the index condition actually references the
+			// leading key column.  PG's btcostestimate only credits
+			// btree-sort-order skip optimisation when the leading key is
+			// constrained; a clause on (say) only ps_suppkey of a
+			// (ps_partkey, ps_suppkey) index forces the executor to walk
+			// the entire btree per probe.
+			if (leading_attno > 0)
+			{
+				CExpression *pexprIdxCondPeek =
+					exprhdl.PexprScalarRepChild(0);
+				leading_key_used = IndexCondCoversLeadingKey(
+					pexprIdxCondPeek, leading_attno, ptabdesc->MDId());
+			}
 		}
 		index_pages_from_md = static_cast<DOUBLE>(index->IndexPages());
 	}
@@ -1367,7 +1444,24 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// floored at 1 (every probe hits at least the leaf).  Under loop_count
 	// > 1, PG amortizes index page IO across rebinds via Mackert-Lohman;
 	// approximate with the same total/loop_count pro-rating used for heap.
-	DOUBLE index_pages_per_scan = std::ceil(selectivity * index_pages);
+	//
+	// When the index condition does not constrain the leading key (e.g. a
+	// (ps_partkey, ps_suppkey) btree probed only on ps_suppkey), the
+	// executor must walk the entire index per probe — selectivity does NOT
+	// shrink the index page count.  Charge full index_pages instead of the
+	// selectivity-scaled count.  This matches the actual runtime cost of
+	// non-leading-key IndexScans (observed at 28 ms/loop on partsupp_pkey
+	// in TPC-H Q2 where ORCA was previously selecting this shape because
+	// the cost looked artificially low).
+	DOUBLE index_pages_per_scan;
+	if (!leading_key_used)
+	{
+		index_pages_per_scan = index_pages;
+	}
+	else
+	{
+		index_pages_per_scan = std::ceil(selectivity * index_pages);
+	}
 	if (index_pages_per_scan < 1.0)
 	{
 		index_pages_per_scan = 1.0;
