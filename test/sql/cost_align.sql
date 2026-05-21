@@ -240,3 +240,83 @@ EXPLAIN SELECT hundred, sum(unique1) OVER (PARTITION BY hundred), avg(unique2) O
 EXPLAIN SELECT row_number() OVER (), unique1 FROM cal_tenk1;
 EXPLAIN SELECT count(*) OVER (ORDER BY unique1 ROWS BETWEEN 100 PRECEDING AND 100 FOLLOWING) FROM cal_tenk1;
 EXPLAIN SELECT hundred, sum(unique1) FILTER (WHERE ten = 0) OVER (PARTITION BY hundred) FROM cal_tenk1;
+
+-- ---------------------------------------------------------------------
+-- Set operations, adapted from PG regress union.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT unique1 FROM cal_tenk1 UNION SELECT unique1 FROM cal_onek;
+EXPLAIN SELECT unique1 FROM cal_tenk1 UNION ALL SELECT unique1 FROM cal_onek;
+EXPLAIN SELECT unique1 FROM cal_tenk1 INTERSECT SELECT unique1 FROM cal_onek;
+EXPLAIN SELECT unique1 FROM cal_tenk1 INTERSECT ALL SELECT unique1 FROM cal_onek;
+EXPLAIN SELECT unique1 FROM cal_tenk1 EXCEPT SELECT unique1 FROM cal_onek;
+EXPLAIN SELECT unique1 FROM cal_tenk1 EXCEPT ALL SELECT unique1 FROM cal_onek;
+EXPLAIN SELECT hundred, count(*) FROM (SELECT hundred FROM cal_tenk1 UNION ALL SELECT hundred FROM cal_onek) s GROUP BY hundred;
+EXPLAIN SELECT unique1 FROM cal_tenk1 WHERE hundred = 5 UNION ALL SELECT unique1 FROM cal_onek WHERE hundred = 5;
+
+-- ---------------------------------------------------------------------
+-- CTE and recursive CTE, adapted from PG regress with.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN WITH t AS (SELECT * FROM cal_tenk1 WHERE hundred = 5) SELECT count(*) FROM t;
+EXPLAIN WITH t AS (SELECT hundred, count(*) AS c FROM cal_tenk1 GROUP BY hundred) SELECT * FROM t WHERE c > 50;
+EXPLAIN WITH t AS MATERIALIZED (SELECT * FROM cal_tenk1 WHERE unique1 < 100) SELECT count(*) FROM t JOIN cal_onek ON t.unique1 = cal_onek.unique2;
+EXPLAIN WITH t AS NOT MATERIALIZED (SELECT * FROM cal_tenk1 WHERE unique1 < 100) SELECT count(*) FROM t;
+EXPLAIN WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 10) SELECT * FROM r;
+EXPLAIN WITH a AS (SELECT * FROM cal_tenk1 WHERE unique1 < 100), b AS (SELECT * FROM cal_onek WHERE unique1 < 100) SELECT a.unique1, b.unique2 FROM a JOIN b ON a.unique1 = b.unique1;
+EXPLAIN WITH t AS (SELECT unique1, hundred FROM cal_tenk1) SELECT hundred, count(*) FROM t WHERE unique1 < 500 GROUP BY hundred;
+
+-- ---------------------------------------------------------------------
+-- Subselect and correlated subqueries, adapted from PG regress subselect.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 = (SELECT max(unique1) FROM cal_onek);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 < (SELECT avg(unique1) FROM cal_onek);
+EXPLAIN SELECT unique1, (SELECT count(*) FROM cal_onek WHERE cal_onek.unique1 < cal_tenk1.unique1) AS c FROM cal_tenk1 WHERE unique1 < 10;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE EXISTS (SELECT 1 FROM cal_onek WHERE cal_onek.unique1 = cal_tenk1.hundred);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE NOT EXISTS (SELECT 1 FROM cal_onek WHERE cal_onek.unique1 = cal_tenk1.hundred);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 = ANY (SELECT unique1 FROM cal_onek WHERE unique1 < 100);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 = ALL (ARRAY[(SELECT max(unique1) FROM cal_onek)]);
+EXPLAIN SELECT * FROM cal_tenk1 WHERE unique1 > ALL (SELECT unique1 FROM cal_onek WHERE hundred = 5);
+EXPLAIN SELECT * FROM (SELECT unique1, unique2 FROM cal_tenk1) s WHERE s.unique1 < 10;
+EXPLAIN SELECT * FROM (SELECT hundred, count(*) c FROM cal_tenk1 GROUP BY hundred) s WHERE c > 90;
+
+-- ---------------------------------------------------------------------
+-- DISTINCT (basic) and DISTINCT ON, adapted from PG regress
+-- select_distinct.sql / select_distinct_on.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT DISTINCT hundred FROM cal_tenk1;
+EXPLAIN SELECT DISTINCT hundred, ten FROM cal_tenk1;
+EXPLAIN SELECT DISTINCT hundred FROM cal_tenk1 ORDER BY hundred;
+EXPLAIN SELECT DISTINCT unique1 FROM cal_tenk1 WHERE unique1 < 100;
+EXPLAIN SELECT DISTINCT ON (hundred) hundred, unique1 FROM cal_tenk1 ORDER BY hundred, unique1;
+EXPLAIN SELECT DISTINCT ON (hundred) hundred, unique1 FROM cal_tenk1 ORDER BY hundred, unique1 DESC;
+EXPLAIN SELECT DISTINCT ON (hundred, ten) hundred, ten, unique1 FROM cal_tenk1 ORDER BY hundred, ten, unique1;
+
+-- ---------------------------------------------------------------------
+-- CASE expressions, adapted from PG regress case.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT CASE WHEN hundred < 50 THEN 'lo' ELSE 'hi' END FROM cal_tenk1;
+EXPLAIN SELECT CASE hundred WHEN 0 THEN 'zero' WHEN 1 THEN 'one' ELSE 'many' END FROM cal_tenk1;
+EXPLAIN SELECT sum(CASE WHEN ten = 5 THEN unique1 ELSE 0 END) FROM cal_tenk1;
+EXPLAIN SELECT hundred, sum(CASE WHEN ten < 5 THEN 1 ELSE 0 END) FROM cal_tenk1 GROUP BY hundred;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE CASE WHEN hundred < 50 THEN unique1 ELSE unique2 END < 100;
+EXPLAIN SELECT COALESCE(NULLIF(unique1, 0), -1) FROM cal_tenk1 WHERE unique1 < 10;
+
+-- ---------------------------------------------------------------------
+-- LIMIT/OFFSET, adapted from PG regress limit.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT * FROM cal_tenk1 ORDER BY unique1 OFFSET 100 LIMIT 10;
+EXPLAIN SELECT * FROM cal_tenk1 ORDER BY unique1 LIMIT 10 OFFSET 1000;
+EXPLAIN SELECT * FROM cal_tenk1 ORDER BY unique1 OFFSET 9990;
+EXPLAIN SELECT * FROM cal_tenk1 ORDER BY hundred LIMIT 1;
+EXPLAIN SELECT * FROM cal_tenk1 OFFSET 0 LIMIT 0;
+EXPLAIN SELECT * FROM cal_tenk1 LIMIT NULL;
+EXPLAIN SELECT * FROM cal_tenk1 LIMIT ALL;
+EXPLAIN SELECT * FROM cal_tenk1 WHERE hundred = 5 ORDER BY unique1 LIMIT 5;
+EXPLAIN SELECT count(*) FROM (SELECT * FROM cal_tenk1 ORDER BY unique1 LIMIT 100 OFFSET 50) s;
+
+-- ---------------------------------------------------------------------
+-- GROUPING SETS expansion, adapted from PG regress groupingsets.sql.
+-- ---------------------------------------------------------------------
+EXPLAIN SELECT ten, hundred, count(*) FROM cal_tenk1 GROUP BY GROUPING SETS ((ten), (hundred), ());
+EXPLAIN SELECT ten, hundred, count(*) FROM cal_tenk1 GROUP BY ROLLUP(ten, hundred);
+EXPLAIN SELECT ten, hundred, count(*) FROM cal_tenk1 GROUP BY CUBE(ten, hundred);
+EXPLAIN SELECT ten, count(*) FROM cal_tenk1 GROUP BY GROUPING SETS ((ten), ()) HAVING count(*) > 100;

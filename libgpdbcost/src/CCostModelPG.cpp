@@ -31,6 +31,7 @@
 #include "gpopt/operators/CScalarArray.h"
 #include "gpopt/operators/CScalarBitmapBoolOp.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
+#include "gpopt/operators/CScalarConst.h"
 #include "gpopt/operators/CScalarIdent.h"
 #include <functional>
 #include "naucrates/md/CMDIdColStats.h"
@@ -277,6 +278,13 @@ CountSAOPScans(CExpression *pexprIdxCond)
 // in an expression tree.  Used to approximate PG's qpqual_cost.per_tuple,
 // which charges one cpu_operator_cost per OpExpr/FuncExpr.  BoolOp /
 // Ident / Const contribute nothing.
+//
+// PG's cost_qual_eval_walker also bills CoerceViaIO casts, MinMax,
+// NullIf, and the per-arm cost of CASE/COALESCE.  Include the scalar
+// counterparts so agg argument expressions like `unique1::numeric` or
+// `CASE WHEN ten = 5 THEN unique1 ELSE 0 END` get the right per-tuple
+// charge — previously these collapsed to 0 ops and ORCA under-counted
+// per-row agg cost by 25-50 ms for 10k-row aggregations.
 static ULONG
 CountQualOps(CExpression *expr)
 {
@@ -286,9 +294,24 @@ CountQualOps(CExpression *expr)
 	}
 	ULONG n = 0;
 	const COperator::EOperatorId eopid = expr->Pop()->Eopid();
+	// Match PG cost_qual_eval_walker (costsize.c:4867+): OpExpr/FuncExpr/
+	// DistinctExpr/NullIfExpr/CoerceViaIO/ArrayCoerceExpr/MinMaxExpr/
+	// CoerceToDomain each cost 1 cpu_op.  CaseExpr/CoalesceExpr/SubLink
+	// are pure routing and add nothing themselves — PG walks into their
+	// arms and bills the contained ops.  ScalarArrayOpExpr is per-array-
+	// element but we only count it as 1 here (matches existing SAOP
+	// handling in CostIndexScan / CostBitmapTableScan, which scale by
+	// num_sa_scans separately).
 	if (COperator::EopScalarCmp == eopid ||
 		COperator::EopScalarOp == eopid ||
-		COperator::EopScalarFunc == eopid)
+		COperator::EopScalarFunc == eopid ||
+		COperator::EopScalarCast == eopid ||
+		COperator::EopScalarCoerceToDomain == eopid ||
+		COperator::EopScalarCoerceViaIO == eopid ||
+		COperator::EopScalarArrayCoerceExpr == eopid ||
+		COperator::EopScalarNullIf == eopid ||
+		COperator::EopScalarMinMax == eopid ||
+		COperator::EopScalarArrayCmp == eopid)
 	{
 		n = 1;
 	}
@@ -322,6 +345,43 @@ NumAggsFromExprHdl(CExpressionHandle &exprhdl)
 	return proj_list->Arity();
 }
 
+// Count operator-cost ops inside every aggregate's argument list,
+// matching PG cost_qual_eval over aggref->args + aggref->aggfilter.
+// For `avg(unique1::numeric)` this returns 1 (the cast); for
+// `sum(CASE WHEN ten = 5 THEN unique1 ELSE 0 END)` returns 2 (the
+// comparison + the if node).  Without this, ORCA undercounts
+// transCost.per_tuple and underestimates per-row agg cost by ~25/agg.
+static ULONG
+CountAggArgOps(CExpressionHandle &exprhdl)
+{
+	if (exprhdl.Arity() < 2)
+	{
+		return 0;
+	}
+	CExpression *proj_list = exprhdl.PexprScalarRepChild(1);
+	if (nullptr == proj_list)
+	{
+		return 0;
+	}
+	ULONG total = 0;
+	for (ULONG i = 0; i < proj_list->Arity(); i++)
+	{
+		CExpression *pr_el = (*proj_list)[i];
+		if (nullptr == pr_el || pr_el->Arity() == 0) continue;
+		CExpression *agg_func = (*pr_el)[0];
+		if (nullptr == agg_func ||
+			COperator::EopScalarAggFunc != agg_func->Pop()->Eopid())
+			continue;
+		// Walk the agg's children (args / direct args / order / qual);
+		// CountQualOps skips Ident/Const/BoolOp so plain `sum(col)` adds 0.
+		for (ULONG c = 0; c < agg_func->Arity(); c++)
+		{
+			total += CountQualOps((*agg_func)[c]);
+		}
+	}
+	return total;
+}
+
 //---------------------------------------------------------------------------
 //	CCostModelPG::CostScalarAgg
 //
@@ -352,9 +412,10 @@ CCostModelPG::CostScalarAgg(CMemoryPool *,	// mp
 
 	const DOUBLE input_rows = pci->PdRows()[0];
 	const ULONG nAggs = NumAggsFromExprHdl(exprhdl);
+	const ULONG nArgOps = CountAggArgOps(exprhdl);
 
 	CDouble trans =
-		CDouble(cpu_operator_cost) * CDouble(nAggs) * input_rows;
+		CDouble(cpu_operator_cost) * CDouble(nAggs + nArgOps) * input_rows;
 	CDouble final_per_tuple = CDouble(cpu_operator_cost) * CDouble(nAggs);
 	CDouble emit = CDouble(cpu_tuple_cost);	 // 1 output row
 
@@ -389,11 +450,12 @@ CCostModelPG::CostStreamAgg(CMemoryPool *,	// mp
 	const DOUBLE input_rows = pci->PdRows()[0];
 	const DOUBLE output_rows = pci->Rows();
 	const ULONG nAggs = NumAggsFromExprHdl(exprhdl);
+	const ULONG nArgOps = CountAggArgOps(exprhdl);
 	const ULONG nGroupCols =
 		CPhysicalAgg::PopConvert(exprhdl.Pop())->PdrgpcrGroupingCols()->Size();
 
 	CDouble trans = CDouble(cpu_operator_cost) *
-					CDouble(nAggs + nGroupCols) * input_rows;
+					CDouble(nAggs + nArgOps + nGroupCols) * input_rows;
 	CDouble final_per_tuple =
 		CDouble(cpu_operator_cost) * CDouble(nAggs) * output_rows;
 	CDouble emit = CDouble(cpu_tuple_cost) * output_rows;
@@ -434,11 +496,12 @@ CCostModelPG::CostHashAgg(CMemoryPool *,  // mp
 	const DOUBLE input_width = pci->GetWidth()[0];
 	const DOUBLE output_rows = pci->Rows();
 	const ULONG nAggs = NumAggsFromExprHdl(exprhdl);
+	const ULONG nArgOps = CountAggArgOps(exprhdl);
 	const ULONG nGroupCols =
 		CPhysicalAgg::PopConvert(exprhdl.Pop())->PdrgpcrGroupingCols()->Size();
 
 	CDouble trans = CDouble(cpu_operator_cost) *
-					CDouble(nAggs + nGroupCols) * input_rows;
+					CDouble(nAggs + nArgOps + nGroupCols) * input_rows;
 	CDouble final_per_tuple =
 		CDouble(cpu_operator_cost) * CDouble(nAggs) * output_rows;
 	CDouble emit = CDouble(cpu_tuple_cost) * output_rows;
@@ -1157,7 +1220,32 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 	{
 		return CCost(0.0);
 	}
-	DOUBLE ratio = output_rows / input_rows;
+
+	// PG's adjust_limit_rows_costs scans (offset_est + count_est) tuples
+	// from the subpath: outer Limit reads past OFFSET, returns COUNT.
+	// CPhysicalLimit child[1] is the offset scalar expression; if it's a
+	// ScalarConst with a positive value, fold it into the effective
+	// scanned-rows count.  Without this, OFFSET 100 LIMIT 10 over a
+	// 10000-row Index Scan reports 0.001 ratio instead of 0.011.
+	DOUBLE offset_rows = 0.0;
+	{
+		CExpression *pexprOffset = exprhdl.PexprScalarExactChild(1);
+		if (nullptr != pexprOffset &&
+			COperator::EopScalarConst == pexprOffset->Pop()->Eopid())
+		{
+			CScalarConst *psc = CScalarConst::PopConvert(pexprOffset->Pop());
+			IDatum *datum = psc->GetDatum();
+			if (nullptr != datum && datum->IsDatumMappableToLINT())
+			{
+				LINT lOff = datum->GetLINTMapping();
+				if (lOff > 0)
+				{
+					offset_rows = static_cast<DOUBLE>(lOff);
+				}
+			}
+		}
+	}
+	DOUBLE ratio = (output_rows + offset_rows) / input_rows;
 	if (ratio > 1.0) ratio = 1.0;
 	if (ratio < 0.0) ratio = 0.0;
 
