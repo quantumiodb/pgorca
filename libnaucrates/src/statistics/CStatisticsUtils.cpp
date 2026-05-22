@@ -1576,9 +1576,29 @@ CStatisticsUtils::MaxNumGroupsForGivenSrcGprCols(
 	// (a) For columns from the same table, they will be damped based on the formula in DNumOfDistVal
 	// (b) If the group by has columns from multiple tables, they will again be damped by the formula
 	// in DNumOfDistVal when we compute the final group by cardinality
+	CDouble cumulative_ndvs = GetCumulativeNDVs(stats_config, ndvs);
+
+	// PG estimate_num_groups (selfuncs.c:3712) clamps multi-column group
+	// estimates at min(input_rows × 0.1, max(per-column NDV)) because the
+	// columns are assumed to be at least partially correlated.  ORCA's
+	// damping-factor product overcounts under correlation (e.g. 100 × 10 ×
+	// 0.75^2 = 562 for cal_onek (ten, hundred) where the true joint NDV is
+	// 100).  Apply PG's clamp here while per-column ndvs are still visible.
+	if (ndvs->Size() > 1)
+	{
+		CDouble max_ndv = *(*ndvs)[0];
+		for (ULONG idx = 1; idx < ndvs->Size(); idx++)
+		{
+			if (*(*ndvs)[idx] > max_ndv) max_ndv = *(*ndvs)[idx];
+		}
+		CDouble clamp = input_rows * CDouble(0.1);
+		if (clamp < max_ndv) clamp = max_ndv;
+		if (clamp > input_rows) clamp = input_rows;
+		if (cumulative_ndvs > clamp) cumulative_ndvs = clamp;
+	}
+
 	CDouble groups =
-		std::min(std::max(CStatistics::MinRows.Get(),
-						  GetCumulativeNDVs(stats_config, ndvs).Get()),
+		std::min(std::max(CStatistics::MinRows.Get(), cumulative_ndvs.Get()),
 				 std::min(input_rows.Get(), upper_bound_ndvs.Get()));
 	ndvs->Release();
 
