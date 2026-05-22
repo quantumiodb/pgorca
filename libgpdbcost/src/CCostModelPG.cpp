@@ -849,10 +849,14 @@ CCostModelPG::CostFilter(CMemoryPool *,	 // mp
 //	  run += cpu_per_tuple * (outer_rows * inner_rows)
 //	approximating qual_cost.per_tuple as cpu_operator_cost × n_qual_cols.
 //
-//	Semi/anti joins (early termination on first match) are not modeled
-//	separately; the full Cartesian count is used.  Overestimates anti
-//	joins; plan-choice impact is usually contained because the same shape
-//	wins under both models.
+//	Semi/anti joins (early termination on first match) follow PG's
+//	final_cost_nestloop SEMI branch (costsize.c:3389): matched outer rows
+//	scan only inner_scan_frac = 2/(match_count+1) of the inner per probe,
+//	while unmatched outer rows either touch a single (empty) index lookup
+//	(when inner is an IndexScan covering the join cond) or scan the full
+//	inner (non-indexed).  Without this Q4-style EXISTS over a
+//	well-indexed inner is overcosted by ~3×, biasing the optimizer toward
+//	HashJoin+HashAggregate dedup plans that build the entire inner.
 //---------------------------------------------------------------------------
 CCost
 CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
@@ -863,6 +867,7 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 
 	const DOUBLE outer_rows = pci->PdRows()[0];
 	const DOUBLE inner_rows = pci->PdRows()[1];
+	const DOUBLE output_rows = pci->Rows();
 	const DOUBLE inner_total_cost = pci->PdCost()[1];
 	const DOUBLE inner_rebinds = pci->PdRebinds()[1];
 
@@ -876,8 +881,105 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 		(nullptr != inner_op &&
 		 COperator::EopPhysicalCTEConsumer == inner_op->Eopid());
 
+	const COperator::EOperatorId nl_op_id = exprhdl.Pop()->Eopid();
+	const BOOL is_semi =
+		(COperator::EopPhysicalLeftSemiNLJoin == nl_op_id ||
+		 COperator::EopPhysicalLeftSemiIndexNLJoin == nl_op_id ||
+		 COperator::EopPhysicalCorrelatedLeftSemiNLJoin == nl_op_id ||
+		 COperator::EopPhysicalCorrelatedInLeftSemiNLJoin == nl_op_id);
+	const BOOL is_anti =
+		(COperator::EopPhysicalLeftAntiSemiNLJoin == nl_op_id ||
+		 COperator::EopPhysicalLeftAntiSemiNLJoinNotIn == nl_op_id ||
+		 COperator::EopPhysicalLeftAntiSemiIndexNLJoin == nl_op_id ||
+		 COperator::EopPhysicalCorrelatedLeftAntiSemiNLJoin == nl_op_id ||
+		 COperator::EopPhysicalCorrelatedNotInLeftAntiSemiNLJoin == nl_op_id);
+	const BOOL is_semi_or_anti = is_semi || is_anti;
+
+	// Inner is "indexed" (analogue of PG's has_indexed_join_quals) when the
+	// physical operator under the NL is an IndexScan/IndexOnlyScan, or when
+	// the NL itself is a CPhysicalInner/SemiIndexNLJoin shape (where the
+	// xform guarantees the join cond is an index probe).
+	const BOOL inner_is_indexed_scan =
+		(nullptr != inner_op &&
+		 (COperator::EopPhysicalIndexScan == inner_op->Eopid() ||
+		  COperator::EopPhysicalIndexOnlyScan == inner_op->Eopid()));
+	const BOOL is_index_nl =
+		(COperator::EopPhysicalInnerIndexNLJoin == nl_op_id ||
+		 COperator::EopPhysicalLeftOuterIndexNLJoin == nl_op_id ||
+		 COperator::EopPhysicalLeftSemiIndexNLJoin == nl_op_id ||
+		 COperator::EopPhysicalLeftAntiSemiIndexNLJoin == nl_op_id);
+	const BOOL has_indexed_join_quals =
+		inner_is_indexed_scan || is_index_nl;
+
 	DOUBLE extra_rescan = 0.0;
-	if (inner_rebinds > 0.0 && outer_rows > inner_rebinds)
+	DOUBLE ntuples = outer_rows * inner_rows;
+	if (is_semi_or_anti && outer_rows > 0.0 && inner_rows > 0.0)
+	{
+		// PG: match_count ≈ avg # matches per *matched* outer row;
+		// inner_rows in ORCA's NL inner stats is per-probe expected
+		// matches (CJoinStatsProcessor scales by 1/outer_rows), so it's
+		// the closest analogue.  Clamp ≥ 1.0 to match PG (Max(1.0, ...)).
+		const DOUBLE match_count = std::max(1.0, inner_rows);
+		const DOUBLE inner_scan_frac = 2.0 / (match_count + 1.0);
+
+		// PG's outer_match_frac = jselec (SEMI selectivity) = fraction of
+		// outer rows producing ≥ 1 SEMI output row.  For SEMI joins the
+		// output cardinality already equals matched outer count, so
+		// output/outer captures jselec exactly.  ANTI is the complement:
+		// output_rows = unmatched_outers, so jselec = 1 - output/outer.
+		DOUBLE outer_match_frac;
+		if (is_anti)
+		{
+			outer_match_frac = (outer_rows > 0.0)
+				? std::max(0.0, 1.0 - output_rows / outer_rows)
+				: 0.0;
+		}
+		else
+		{
+			outer_match_frac = (outer_rows > 0.0)
+				? std::min(1.0, output_rows / outer_rows)
+				: 1.0;
+		}
+		const DOUBLE outer_matched = outer_rows * outer_match_frac;
+		const DOUBLE outer_unmatched = outer_rows - outer_matched;
+
+		// Override the default extra_rescan computation with PG's SEMI cost.
+		// per_exec is the amortized inner cost per probe.
+		DOUBLE per_exec = 0.0;
+		if (inner_cheap_rescan)
+		{
+			per_exec = 2.0 * cpu_tuple_cost * inner_rows;
+		}
+		else if (inner_rebinds > 0.0)
+		{
+			per_exec = inner_total_cost / inner_rebinds;
+		}
+
+		if (has_indexed_join_quals)
+		{
+			// Matched: inner_scan_frac of a probe.
+			// Unmatched: index returns 0 rows → 1/inner_rows of a probe
+			// (PG: inner_rescan_run_cost / inner_path_rows).
+			extra_rescan = outer_matched * per_exec * inner_scan_frac +
+						   outer_unmatched * per_exec / std::max(1.0, inner_rows);
+		}
+		else
+		{
+			// Matched: scan_frac of probe.  Unmatched: full probe.
+			extra_rescan = outer_matched * per_exec * inner_scan_frac +
+						   outer_unmatched * per_exec;
+		}
+
+		// CPU qual-eval count: only the tuples actually inspected before
+		// early stop, mirroring PG's ntuples = outer_matched × inner ×
+		// scan_frac + (non-indexed case) outer_unmatched × inner.
+		ntuples = outer_matched * inner_rows * inner_scan_frac;
+		if (!has_indexed_join_quals)
+		{
+			ntuples += outer_unmatched * inner_rows;
+		}
+	}
+	else if (inner_rebinds > 0.0 && outer_rows > inner_rebinds)
 	{
 		const DOUBLE n_extra = outer_rows - inner_rebinds;
 		if (inner_cheap_rescan)
@@ -898,7 +1000,6 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 	const DOUBLE cpu_per_tuple =
 		cpu_tuple_cost +
 		cpu_operator_cost * static_cast<DOUBLE>(n_qual_ops);
-	const DOUBLE ntuples = outer_rows * inner_rows;
 	const DOUBLE cpu_cost = cpu_per_tuple * ntuples;
 
 	return CCost(pci->NumRebinds() * (extra_rescan + cpu_cost));
