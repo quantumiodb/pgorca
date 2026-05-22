@@ -29,6 +29,9 @@
 #include "gpopt/operators/CPhysicalScan.h"
 #include "gpopt/operators/CPhysicalSequenceProject.h"
 #include "gpopt/base/CDistributionSpecHashed.h"
+#include "gpopt/search/CGroup.h"
+#include "gpopt/search/CGroupExpression.h"
+#include "gpopt/search/CGroupProxy.h"
 #include "naucrates/md/CMDIdRelStats.h"
 #include "naucrates/md/IMDRelStats.h"
 #include "gpopt/operators/CScalarAggFunc.h"
@@ -849,6 +852,57 @@ CCostModelPG::CostFilter(CMemoryPool *,	 // mp
 //	  run += cpu_per_tuple * (outer_rows * inner_rows)
 //	approximating qual_cost.per_tuple as cpu_operator_cost × n_qual_cols.
 //
+static DOUBLE ComputeIndexScanIOAmortizationDelta(COperator *inner_op,
+												  DOUBLE tuples_per_probe,
+												  DOUBLE outer_rows);
+
+// Recursively walk a CGroup's expressions looking for an IndexScan or
+// IndexOnlyScan operator.  Returns the first one found within `max_depth`
+// levels of descent through Filter/Select/GbAgg/Project wrappers.  Used by
+// CostNLJoin when the IndexNLJoin's inner CExpression is some wrapper above
+// the actual index probe (e.g. Filter(IndexScan) for an EXISTS sub-query
+// with residual quals on the inner), and exprhdl.Pop(1) returns the wrapper
+// operator rather than the underlying IndexScan.
+static COperator *
+FindIndexScanInGroup(CGroup *group, ULONG max_depth)
+{
+	if (nullptr == group || max_depth == 0) return nullptr;
+	CGroupProxy gp(group);
+	CGroupExpression *pgexpr = gp.PgexprFirst();
+	while (nullptr != pgexpr)
+	{
+		COperator *op = pgexpr->Pop();
+		if (nullptr != op)
+		{
+			const COperator::EOperatorId eop = op->Eopid();
+			if (COperator::EopPhysicalIndexScan == eop ||
+				COperator::EopPhysicalIndexOnlyScan == eop)
+			{
+				return op;
+			}
+			// Descend through wrappers that don't change the underlying
+			// index access pattern (filter/select/groupby/computescalar).
+			const BOOL is_wrapper =
+				(COperator::EopPhysicalFilter == eop ||
+				 COperator::EopPhysicalHashAgg == eop ||
+				 COperator::EopPhysicalStreamAgg == eop ||
+				 COperator::EopPhysicalScalarAgg == eop ||
+				 COperator::EopPhysicalComputeScalar == eop ||
+				 COperator::EopLogicalSelect == eop ||
+				 COperator::EopLogicalGbAgg == eop ||
+				 COperator::EopLogicalProject == eop);
+			if (is_wrapper && pgexpr->Arity() > 0)
+			{
+				CGroup *child0 = (*pgexpr)[0];
+				COperator *found = FindIndexScanInGroup(child0, max_depth - 1);
+				if (nullptr != found) return found;
+			}
+		}
+		pgexpr = gp.PgexprNext(pgexpr);
+	}
+	return nullptr;
+}
+
 //	Semi/anti joins (early termination on first match) follow PG's
 //	final_cost_nestloop SEMI branch (costsize.c:3389): matched outer rows
 //	scan only inner_scan_frac = 2/(match_count+1) of the inner per probe,
@@ -880,6 +934,28 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 	const BOOL inner_cheap_rescan =
 		(nullptr != inner_op &&
 		 COperator::EopPhysicalCTEConsumer == inner_op->Eopid());
+
+	// IndexNLJoin variants embed the IndexScan inside the inner CExpression
+	// child; exprhdl.Pop(1) returns nullptr through the CostContext path
+	// (the inner's PccBest hasn't been finalized to a physical IndexScan
+	// at lower-bound cost time).  Walk the inner group's logical+physical
+	// expressions and pick any IndexScan/IndexOnlyScan we find — it's the
+	// only physical implementation IndexNL's xform produces for that group.
+	const COperator::EOperatorId cur_op_id = exprhdl.Pop()->Eopid();
+	const BOOL is_index_nl_op =
+		(COperator::EopPhysicalInnerIndexNLJoin == cur_op_id ||
+		 COperator::EopPhysicalLeftOuterIndexNLJoin == cur_op_id ||
+		 COperator::EopPhysicalLeftSemiIndexNLJoin == cur_op_id ||
+		 COperator::EopPhysicalLeftAntiSemiIndexNLJoin == cur_op_id);
+	if (nullptr == inner_op && is_index_nl_op && nullptr != exprhdl.Pgexpr())
+	{
+		CGroupExpression *parent_gexpr = exprhdl.Pgexpr();
+		if (parent_gexpr->Arity() > 1)
+		{
+			CGroup *inner_group = (*parent_gexpr)[1];
+			inner_op = FindIndexScanInGroup(inner_group, 5 /* max_depth */);
+		}
+	}
 
 	const COperator::EOperatorId nl_op_id = exprhdl.Pop()->Eopid();
 	const BOOL is_semi =
@@ -955,6 +1031,15 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 			per_exec = inner_total_cost / inner_rebinds;
 		}
 
+		// Mirror PG's create_index_path(loop_count=outer_path_rows) → cost_index:
+		// when the inner is an IndexScan, re-apply Mackert-Lohman IO
+		// amortization at the actual outer cardinality.  ORCA's CostIndexScan
+		// runs with NumRebinds=1 (CJoinStatsProcessor.cpp:682 deliberately
+		// keeps inner-side rebinds at the default), so the inner_total_cost
+		// stored in pci->PdCost()[1] is a single-shot value.
+		per_exec += ComputeIndexScanIOAmortizationDelta(
+			inner_op, inner_rows, outer_rows);
+
 		if (has_indexed_join_quals)
 		{
 			// Matched: inner_scan_frac of a probe.
@@ -989,7 +1074,10 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 		}
 		else
 		{
-			const DOUBLE per_exec = inner_total_cost / inner_rebinds;
+			DOUBLE per_exec = inner_total_cost / inner_rebinds;
+			// IO amortization: see SEMI branch comment.
+			per_exec += ComputeIndexScanIOAmortizationDelta(
+				inner_op, inner_rows, outer_rows);
 			extra_rescan = n_extra * per_exec;
 		}
 	}
@@ -1190,6 +1278,175 @@ CCostModelPG::CostHashJoin(CMemoryPool *,  // mp
 
 	return CCost(pci->NumRebinds() *
 				 (build_cpu + probe_cpu + qual_cpu + spill_io));
+}
+
+// Forward decls; helpers defined further below.
+static DOUBLE IndexPagesFetched(DOUBLE tuples_fetched, DOUBLE pages,
+								DOUBLE index_pages_in);
+
+// PG cost_index (costsize.c:680-757) per-probe IO at a given loop_count.
+// Mirrors the heap-fetch portion: max_IO (uncorrelated, Mackert-Lohman on
+// tuples_fetched × loop_count, pro-rated by loop_count) and min_IO (
+// correlated, ceil(selectivity × T) × loop_count again pro-rated), then
+// linear interpolation by correlation².  See ComputeIndexScanIOAmortization
+// for the NL caller.
+static DOUBLE
+IndexScanIOAtLoopCount(DOUBLE tuples_fetched, DOUBLE N, DOUBLE T,
+					   DOUBLE index_pages, DOUBLE correlation,
+					   DOUBLE allvis_frac, BOOL indexonly, DOUBLE loop_count)
+{
+	if (T <= 0.0) T = 1.0;
+	if (loop_count < 1.0) loop_count = 1.0;
+
+	DOUBLE pages_fetched_uncorr;
+	if (loop_count > 1.0)
+	{
+		pages_fetched_uncorr =
+			IndexPagesFetched(tuples_fetched * loop_count, T, index_pages);
+	}
+	else
+	{
+		pages_fetched_uncorr =
+			IndexPagesFetched(tuples_fetched, T, index_pages);
+	}
+	if (indexonly)
+	{
+		pages_fetched_uncorr =
+			std::ceil(pages_fetched_uncorr * (1.0 - allvis_frac));
+	}
+	const DOUBLE max_IO = (loop_count > 1.0)
+		? (pages_fetched_uncorr * random_page_cost) / loop_count
+		: pages_fetched_uncorr * random_page_cost;
+
+	DOUBLE selectivity = (N > 0.0) ? tuples_fetched / N : 0.0;
+	if (selectivity > 1.0) selectivity = 1.0;
+	DOUBLE pages_fetched_corr = std::ceil(selectivity * T);
+	if (loop_count > 1.0)
+	{
+		pages_fetched_corr =
+			IndexPagesFetched(pages_fetched_corr * loop_count, T, index_pages);
+	}
+	if (indexonly)
+	{
+		pages_fetched_corr =
+			std::ceil(pages_fetched_corr * (1.0 - allvis_frac));
+	}
+	DOUBLE min_IO = 0.0;
+	if (pages_fetched_corr > 0.0)
+	{
+		if (loop_count > 1.0)
+		{
+			min_IO = (pages_fetched_corr * random_page_cost) / loop_count;
+		}
+		else
+		{
+			min_IO = random_page_cost;
+			if (pages_fetched_corr > 1.0)
+			{
+				min_IO += (pages_fetched_corr - 1.0) * seq_page_cost;
+			}
+		}
+	}
+
+	const DOUBLE csquared = correlation * correlation;
+	const DOUBLE heap_io = max_IO + csquared * (min_IO - max_IO);
+
+	DOUBLE index_pages_per_scan = std::ceil(selectivity * index_pages);
+	if (index_pages_per_scan < 1.0) index_pages_per_scan = 1.0;
+	DOUBLE index_io;
+	if (loop_count > 1.0)
+	{
+		const DOUBLE index_pages_total = IndexPagesFetched(
+			index_pages_per_scan * loop_count, index_pages, index_pages);
+		index_io = (index_pages_total * random_page_cost) / loop_count;
+	}
+	else
+	{
+		index_io = index_pages_per_scan * random_page_cost;
+	}
+
+	return heap_io + index_io;
+}
+
+// Compute the per-probe IO delta for the inner IndexScan when used as the
+// inner of a NL with `outer_rows` probes.  ORCA's CostIndexScan ran with
+// NumRebinds=1 (no amortization across probes), so inner_total_cost stored
+// in pci->PdCost()[1] reflects single-shot IO.  PG, by contrast, would have
+// invoked cost_index(loop_count=outer_path_rows) in create_index_path,
+// pro-rating IO via Mackert-Lohman's cache model.  Returns the
+// (amortized - unamortized) per-probe IO delta — typically negative.  Zero
+// when inner is not a plain IndexScan/IndexOnlyScan or stats unavailable.
+static DOUBLE
+ComputeIndexScanIOAmortizationDelta(COperator *inner_op,
+									DOUBLE tuples_per_probe,
+									DOUBLE outer_rows)
+{
+	if (nullptr == inner_op || outer_rows <= 1.0 || tuples_per_probe <= 0.0)
+	{
+		return 0.0;
+	}
+	const COperator::EOperatorId op_id = inner_op->Eopid();
+	const BOOL is_indexscan =
+		(COperator::EopPhysicalIndexScan == op_id ||
+		 COperator::EopPhysicalIndexOnlyScan == op_id);
+	if (!is_indexscan) return 0.0;
+	const BOOL indexonly = (COperator::EopPhysicalIndexOnlyScan == op_id);
+
+	IMDId *index_mdid =
+		(COperator::EopPhysicalIndexScan == op_id)
+			? CPhysicalIndexScan::PopConvert(inner_op)->Pindexdesc()->MDId()
+			: CPhysicalIndexOnlyScan::PopConvert(inner_op)->Pindexdesc()->MDId();
+	if (nullptr == index_mdid) return 0.0;
+
+	CPhysicalScan *pscan = CPhysicalScan::PopConvert(inner_op);
+	IStatistics *base_stats = pscan->PstatsBaseTable();
+	if (nullptr == base_stats) return 0.0;
+	CStatistics *base = CStatistics::CastStats(base_stats);
+	const DOUBLE N = base->Rows().Get();
+	DOUBLE T = static_cast<DOUBLE>(base->RelPages());
+	if (T <= 0.0) T = 1.0;
+
+	DOUBLE allvis_frac = 0.0;
+	{
+		const ULONG rp = base->RelPages();
+		const ULONG rav = base->RelAllVisible();
+		if (rp > 0)
+		{
+			allvis_frac = static_cast<DOUBLE>(rav) / static_cast<DOUBLE>(rp);
+			if (allvis_frac < 0.0) allvis_frac = 0.0;
+			if (allvis_frac > 1.0) allvis_frac = 1.0;
+		}
+	}
+
+	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+	const IMDIndex *index = mda->RetrieveIndex(index_mdid);
+	const DOUBLE index_pages_md = static_cast<DOUBLE>(index->IndexPages());
+	constexpr DOUBLE kIndexEntrySize = 24.0;
+	const DOUBLE index_pages = (index_pages_md > 0.0)
+		? index_pages_md
+		: std::max(1.0, std::ceil(N * kIndexEntrySize / 8192.0));
+
+	DOUBLE correlation = 0.0;
+	if (index->Keys() > 0)
+	{
+		const ULONG leading_pos = index->KeyAt(0);
+		IMDId *rel_mdid = pscan->Ptabdesc()->MDId();
+		rel_mdid->AddRef();
+		CMDIdColStats *colstats_mdid =
+			GPOS_NEW(COptCtxt::PoctxtFromTLS()->Pmp())
+				CMDIdColStats(CMDIdGPDB::CastMdid(rel_mdid), leading_pos);
+		const IMDColStats *col_stats = mda->Pmdcolstats(colstats_mdid);
+		correlation = col_stats->Correlation().Get();
+		colstats_mdid->Release();
+	}
+
+	const DOUBLE io_at_1 = IndexScanIOAtLoopCount(
+		tuples_per_probe, N, T, index_pages, correlation, allvis_frac,
+		indexonly, 1.0);
+	const DOUBLE io_at_n = IndexScanIOAtLoopCount(
+		tuples_per_probe, N, T, index_pages, correlation, allvis_frac,
+		indexonly, outer_rows);
+	return io_at_n - io_at_1;
 }
 
 // PG's index_pages_fetched (costsize.c:907) — Mackert-Lohman formula.
