@@ -78,6 +78,31 @@ CGroupByStatsProcessor::CalcGroupByStats(CMemoryPool *mp,
 		CDouble groups =
 			CStatisticsUtils::GetCumulativeNDVs(stats_config, NDVs);
 
+		// PG estimate_num_groups (selfuncs.c:3712) clamps multi-column group
+		// estimates at min(input_rows × 0.1, max(per-column NDV)) because the
+		// columns are assumed to be at least partially correlated.  ORCA's
+		// damping-factor product (100 × 10 × 0.75^2 = 562 for the cal_onek
+		// (ten, hundred) GROUP BY) over-counts groups by ~5×.  Per-column
+		// NDVs aren't visible here once ExtractNDVForGrpCols collapses cols
+		// from the same source into one combined NDV; the clamp is therefore
+		// implemented inside MaxNumGroupsForGivenSrcGprCols, where the raw
+		// ndvs array is still per-column.  Here we only apply a cross-source
+		// safety clamp when the GROUP BY spans tables.
+		const ULONG num_grp_cols = groupby_cols_for_stats->Size();
+		if (num_grp_cols > 1 && NDVs->Size() > 1)
+		{
+			CDouble max_ndv = *(*NDVs)[0];
+			for (ULONG idx = 1; idx < NDVs->Size(); idx++)
+			{
+				if (*(*NDVs)[idx] > max_ndv) max_ndv = *(*NDVs)[idx];
+			}
+			const CDouble input_rows = input_stats->Rows();
+			CDouble clamp = input_rows * CDouble(0.1);
+			if (clamp < max_ndv) clamp = max_ndv;
+			if (clamp > input_rows) clamp = input_rows;
+			if (groups > clamp) groups = clamp;
+		}
+
 		// clean up
 		groupby_cols_for_stats->Release();
 		computed_groupby_cols->Release();
