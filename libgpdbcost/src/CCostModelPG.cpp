@@ -947,13 +947,30 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 		 COperator::EopPhysicalLeftOuterIndexNLJoin == cur_op_id ||
 		 COperator::EopPhysicalLeftSemiIndexNLJoin == cur_op_id ||
 		 COperator::EopPhysicalLeftAntiSemiIndexNLJoin == cur_op_id);
-	if (nullptr == inner_op && is_index_nl_op && nullptr != exprhdl.Pgexpr())
+	// For IndexNL variants the inner IndexScan often sits under a Filter or
+	// GbAgg wrapper (CPhysicalFilter[IndexScan] for EXISTS-with-residual,
+	// CPhysicalHashAgg[IndexScan] for dedup-style sub-queries).  Pop(1)
+	// returns the wrapper, not the IndexScan, so the inner_op check below
+	// would skip IO amortization.  Walk the inner group to surface the
+	// underlying IndexScan whenever Pop(1) returns a wrapper or null.
+	const BOOL inner_is_wrapper_or_null =
+		(nullptr == inner_op ||
+		 COperator::EopPhysicalFilter == inner_op->Eopid() ||
+		 COperator::EopPhysicalHashAgg == inner_op->Eopid() ||
+		 COperator::EopPhysicalStreamAgg == inner_op->Eopid() ||
+		 COperator::EopPhysicalScalarAgg == inner_op->Eopid() ||
+		 COperator::EopPhysicalComputeScalar == inner_op->Eopid() ||
+		 COperator::EopPhysicalSpool == inner_op->Eopid());
+	if (inner_is_wrapper_or_null && is_index_nl_op &&
+		nullptr != exprhdl.Pgexpr())
 	{
 		CGroupExpression *parent_gexpr = exprhdl.Pgexpr();
 		if (parent_gexpr->Arity() > 1)
 		{
 			CGroup *inner_group = (*parent_gexpr)[1];
-			inner_op = FindIndexScanInGroup(inner_group, 5 /* max_depth */);
+			COperator *found =
+				FindIndexScanInGroup(inner_group, 5 /* max_depth */);
+			if (nullptr != found) inner_op = found;
 		}
 	}
 
