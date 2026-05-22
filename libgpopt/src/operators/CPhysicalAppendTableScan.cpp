@@ -99,4 +99,28 @@ CPhysicalAppendTableScan::PppsDerive(CMemoryPool *mp,
 	return pps;
 }
 
+//---------------------------------------------------------------------------
+//	@function:
+//		CPhysicalAppendTableScan::EpetRewindability
+//
+//	@doc:
+//		Return the enforcing type for rewindability property based on this
+//		operator. An Append over per-partition SeqScans is not inherently
+//		rewindable in PG without a Material above it, so we ask for an
+//		enforcer when the required rewindability is not already satisfied.
+//
+//---------------------------------------------------------------------------
+CEnfdProp::EPropEnforcingType
+CPhysicalAppendTableScan::EpetRewindability(CExpressionHandle &exprhdl,
+											const CEnfdRewindability *per) const
+{
+	CRewindabilitySpec *prs = CDrvdPropPlan::Pdpplan(exprhdl.Pdp())->Prs();
+	if (per->FCompatible(prs))
+	{
+		return CEnfdProp::EpetUnnecessary;
+	}
+
+	return CEnfdProp::EpetRequired;
+}
+
 // EOF

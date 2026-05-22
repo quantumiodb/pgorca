@@ -88,6 +88,11 @@ public:
 
 	CPartitionPropagationSpec *PppsDerive(
 		CMemoryPool *mp, CExpressionHandle &exprhdl) const override;
+
+	// return rewindability property enforcing type for this operator
+	CEnfdProp::EPropEnforcingType EpetRewindability(
+		CExpressionHandle &exprhdl,
+		const CEnfdRewindability *per) const override;
 };	// class CPhysicalAppendTableScan
 
 }  // namespace gpopt
