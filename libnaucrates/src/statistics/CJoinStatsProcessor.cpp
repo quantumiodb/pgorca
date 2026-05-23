@@ -489,7 +489,44 @@ CJoinStatsProcessor::CalcJoinCardinality(
 
 		if (IStatistics::EsjtLeftAntiSemiJoin == join_type)
 		{
-			rows = left_num_rows / scale_factor;
+			// Multi-clause anti-join needs PG-style combine:
+			//   anti_sel = 1 - prod(sel_semi_i)
+			// where sel_semi_i is the per-clause semi-join fraction.
+			// The cumulative scale_factor uses product (with damping),
+			// which for anti-join would give
+			//   rows = outer / prod(scale_anti_i)
+			//        = outer * prod(1 - sel_semi_i)
+			// — a fundamentally different formula that collapses badly
+			// when any single clause has full match (sel_semi → 1,
+			// scale_anti → ∞).  PG independence-combines on semi
+			// selectivity instead so multi-col anti stays well-defined.
+			const ULONG num_clauses = join_conds_scale_factors->Size();
+			if (num_clauses > 1)
+			{
+				CDouble combined_sel_semi(1.0);
+				for (ULONG ul = 0; ul < num_clauses; ul++)
+				{
+					const CDouble clause_scale =
+						(*(*join_conds_scale_factors)[ul]).m_scale_factor;
+					// sel_semi = 1 - 1/scale_anti.  Clamp inputs to avoid
+					// numerical underflow on degenerate clauses.
+					CDouble clause_sel_semi =
+						(clause_scale > 1.0)
+							? CDouble(1.0 - 1.0 / clause_scale.Get())
+							: CDouble(0.0);
+					if (clause_sel_semi.Get() < 0.0)
+						clause_sel_semi = CDouble(0.0);
+					if (clause_sel_semi.Get() > 1.0)
+						clause_sel_semi = CDouble(1.0);
+					combined_sel_semi = combined_sel_semi * clause_sel_semi;
+				}
+				const CDouble anti_sel(1.0 - combined_sel_semi.Get());
+				rows = left_num_rows * anti_sel;
+			}
+			else
+			{
+				rows = left_num_rows / scale_factor;
+			}
 		}
 		else
 		{
@@ -523,7 +560,20 @@ CJoinStatsProcessor::JoinStatsAreEmpty(BOOL outer_is_empty,
 	GPOS_ASSERT(nullptr != inner_histogram);
 	GPOS_ASSERT(nullptr != join_histogram);
 	BOOL IsLASJ = IStatistics::EsjtLeftAntiSemiJoin == join_type;
-	return output_is_empty || (!IsLASJ && outer_is_empty) ||
+	// For inner/semi joins an empty per-clause join histogram means no
+	// outer row finds an inner match on this column, so the join output
+	// is empty.  For LASJ (anti) the semantics flip: an empty per-clause
+	// join histogram means this clause alone fully covers outer (every
+	// outer value has an inner match), which under multi-col AND
+	// conjunction does NOT imply the anti output is empty — the OTHER
+	// clauses may still let outer rows survive.  Don't fold this branch
+	// into output_is_empty for LASJ; leave it to CalcJoinCardinality
+	// (which applies PG-style independence: anti_sel = 1 - prod(sel_semi_i)).
+	if (IsLASJ)
+	{
+		return output_is_empty;
+	}
+	return output_is_empty || outer_is_empty ||
 		   (!outer_histogram->IsEmpty() && !inner_histogram->IsEmpty() &&
 			join_histogram->IsEmpty());
 }
