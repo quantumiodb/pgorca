@@ -1856,21 +1856,37 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 		 cpu_operator_cost * static_cast<DOUBLE>(n_index_qual_ops)) *
 		tuples_fetched;
 
-	// Btree descent: log2(table_pages) + (tree_height + 1) × 50 ops, both
-	// scaled by cpu_operator_cost.  PG's btcostestimate adds this to both
-	// indexStartupCost and indexTotalCost; we have no startup/total split
-	// so it lands in the total.  tree_height isn't exposed by IMDIndex,
-	// approximate as 1 (covers btrees up to ~1M entries).
-	// Hash/gist/bitmap AMs have their own (much simpler) descent models in
-	// PG and do NOT charge a btree-style log2(T)+(h+1)*50 descent.  When
-	// the underlying AM is not btree we zero this term out to stay aligned
-	// with PG's hash/gist/bitmap costestimate routines.
-	constexpr DOUBLE kTreeHeight = 1.0;
+	// Btree descent (PG btcostestimate, selfuncs.c:7780-7798):
+	//   ceil(log2(index->tuples)) × cpu_operator_cost
+	// + (tree_height + 1) × DEFAULT_PAGE_CPU_MULTIPLIER × cpu_operator_cost
+	// Both indexStartupCost and indexTotalCost; we have no startup/total
+	// split so they land in the total.
+	//
+	// ORCA approximations vs PG:
+	//   index->tuples       -> N (base table tuples; matches for full
+	//                          indexes, off for partial indexes).
+	//   index->tree_height  -> log_100(index_pages) when index_pages > 1,
+	//                          else 0.  This is the same fallback PG uses
+	//                          (selfuncs.c:7886) when the btree metapage
+	//                          hasn't been read yet (`tree_height < 0`).
+	//
+	// Hash/gist/bitmap AMs have their own descent models in PG and do NOT
+	// charge a btree-style log2(...)+(h+1)*50 descent.  Zero this term out
+	// for non-btree AMs to stay aligned with hash/gist/bitmap costestimate.
 	constexpr DOUBLE kPageCpuMultiplier = 50.0;
+	// tree_height: any btree with > 1 page has root + leaves (height >= 1).
+	// PG's fallback floor(log_100(pages)) only applies before the metapage
+	// is read; once read, _bt_getrootheight returns >= 1.  Floor at 1 to
+	// match the cached real value.
+	const DOUBLE tree_height =
+		(index_pages > 1.0)
+			? std::max(1.0,
+					   std::floor(std::log(index_pages) / std::log(100.0)))
+			: 0.0;
 	const DOUBLE descent_cost =
 		is_btree
-			? (std::ceil(std::log2(std::max(T, 1.0))) +
-			   (kTreeHeight + 1.0) * kPageCpuMultiplier) *
+			? (std::ceil(std::log2(std::max(N, 1.0))) +
+			   (tree_height + 1.0) * kPageCpuMultiplier) *
 				  cpu_operator_cost
 			: 0.0;
 
@@ -2256,11 +2272,22 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 		(index_pages_real > 0.0)
 			? index_pages_real
 			: std::max(1.0, std::ceil(N * kIndexEntrySize / 8192.0));
-	constexpr DOUBLE kTreeHeight = 1.0;
+	// Btree descent matches CostIndexScan (PG btcostestimate); see the
+	// detailed comment block there.  Use index->tuples ≈ N (not table
+	// pages) for log2(...), and approximate tree_height as log_100(index_pages).
 	constexpr DOUBLE kPageCpuMultiplier = 50.0;
+	// tree_height: any btree with > 1 page has root + leaves (height >= 1).
+	// PG's fallback floor(log_100(pages)) only applies before the metapage
+	// is read; once read, _bt_getrootheight returns >= 1.  Floor at 1 to
+	// match the cached real value.
+	const DOUBLE tree_height =
+		(index_pages > 1.0)
+			? std::max(1.0,
+					   std::floor(std::log(index_pages) / std::log(100.0)))
+			: 0.0;
 	const DOUBLE descent =
-		(std::ceil(std::log2(std::max(T, 1.0))) +
-		 (kTreeHeight + 1.0) * kPageCpuMultiplier) *
+		(std::ceil(std::log2(std::max(N, 1.0))) +
+		 (tree_height + 1.0) * kPageCpuMultiplier) *
 		cpu_operator_cost;
 	const DOUBLE index_cpu =
 		(cpu_index_tuple_cost + cpu_operator_cost) * tuples_fetched;
