@@ -1571,19 +1571,28 @@ CStatisticsUtils::MaxNumGroupsForGivenSrcGprCols(
 	// take the minimum of (a) the estimated number of groups from the columns of this source,
 	// (b) input rows, and (c) cardinality upper bound for the given source in the
 	// input statistics object
+	//
+	// PG estimate_num_groups (selfuncs.c:3712) assumes per-column NDV
+	// independence (full product) for the multi-column estimate, then
+	// caps the result at min(input_rows × 0.1, max(per-column NDV))
+	// as a "columns are probably at least partially correlated" safety
+	// bound.  ORCA previously used a damping-factor product
+	// (0.75^(k+1)) which OVER-discounts the independent case (e.g.
+	// cal_tenk1 ten × hundred = 562 vs PG's 1000), even when the
+	// independence assumption is actually warranted.  Switch to the
+	// full undamped product and rely on the PG-equivalent clamp below
+	// to handle the correlated case (the clamp already kicks in
+	// whenever input_rows is small enough that the product would
+	// blow past max_ndv × 1, which captures the correlation safety
+	// PG aims for).
+	CDouble cumulative_ndvs = (ndvs->Size() == 0)
+								  ? CDouble(1.0)
+								  : *(*ndvs)[0];
+	for (ULONG idx = 1; idx < ndvs->Size(); idx++)
+	{
+		cumulative_ndvs = cumulative_ndvs * (*(*ndvs)[idx]);
+	}
 
-	// DNumOfDistVal internally damps the number of columns with our formula.
-	// (a) For columns from the same table, they will be damped based on the formula in DNumOfDistVal
-	// (b) If the group by has columns from multiple tables, they will again be damped by the formula
-	// in DNumOfDistVal when we compute the final group by cardinality
-	CDouble cumulative_ndvs = GetCumulativeNDVs(stats_config, ndvs);
-
-	// PG estimate_num_groups (selfuncs.c:3712) clamps multi-column group
-	// estimates at min(input_rows × 0.1, max(per-column NDV)) because the
-	// columns are assumed to be at least partially correlated.  ORCA's
-	// damping-factor product overcounts under correlation (e.g. 100 × 10 ×
-	// 0.75^2 = 562 for cal_onek (ten, hundred) where the true joint NDV is
-	// 100).  Apply PG's clamp here while per-column ndvs are still visible.
 	if (ndvs->Size() > 1)
 	{
 		CDouble max_ndv = *(*ndvs)[0];
