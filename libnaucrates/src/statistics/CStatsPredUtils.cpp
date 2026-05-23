@@ -1515,6 +1515,42 @@ CStatsPredUtils::IsUnsupportedPredOnDefinedCol(CStatsPred *pred_stats)
 //		buried inside OR disjunctions so they can get an NDV-based selectivity
 //		rather than the default 0.4 unsupported fallback.
 //---------------------------------------------------------------------------
+// Walk down through single-argument ScalarCast / ScalarFunc nodes to find
+// a single underlying ScalarIdent's CColRef.  Returns null when the chain
+// contains any node we can't safely peel (multi-arg func, branching expr,
+// non-scalar-ident leaf), since in those cases the NDV of the underlying
+// column isn't a good proxy for the expression's NDV.
+static const CColRef *
+ExtractUnderlyingColref(CExpression *expr)
+{
+	CExpression *cur = expr;
+	while (nullptr != cur)
+	{
+		COperator *pop = cur->Pop();
+		switch (pop->Eopid())
+		{
+			case COperator::EopScalarIdent:
+				return CScalarIdent::PopConvert(pop)->Pcr();
+
+			case COperator::EopScalarCast:
+				if (1 != cur->Arity())
+					return nullptr;
+				cur = (*cur)[0];
+				break;
+
+			case COperator::EopScalarFunc:
+				if (1 != cur->Arity())
+					return nullptr;
+				cur = (*cur)[0];
+				break;
+
+			default:
+				return nullptr;
+		}
+	}
+	return nullptr;
+}
+
 BOOL
 CStatsPredUtils::IsCol2ColEquiPredicate(CExpression *predicate_expr,
 										ULONG *colid1, ULONG *colid2)
@@ -1539,21 +1575,13 @@ CStatsPredUtils::IsCol2ColEquiPredicate(CExpression *predicate_expr,
 	CExpression *expr_left = (*predicate_expr)[0];
 	CExpression *expr_right = (*predicate_expr)[1];
 
-	BOOL left_is_ident =
-		COperator::EopScalarIdent == expr_left->Pop()->Eopid() ||
-		CScalarIdent::FCastedScId(expr_left);
-	BOOL right_is_ident =
-		COperator::EopScalarIdent == expr_right->Pop()->Eopid() ||
-		CScalarIdent::FCastedScId(expr_right);
-	if (!left_is_ident || !right_is_ident)
-	{
-		return false;
-	}
-
-	const CColRef *col_ref_left =
-		CCastUtils::PcrExtractFromScIdOrCastScId(expr_left);
-	const CColRef *col_ref_right =
-		CCastUtils::PcrExtractFromScIdOrCastScId(expr_right);
+	// Accept ScalarIdent, ScalarCast(ScalarIdent), and chains of single-arg
+	// ScalarFunc / ScalarCast bottoming out at a ScalarIdent.  PG represents
+	// many casts (e.g. numeric->int4) as function calls, which the previous
+	// `FCastedScId` check missed and routed to the 0.4-default unsupported
+	// fallback.
+	const CColRef *col_ref_left = ExtractUnderlyingColref(expr_left);
+	const CColRef *col_ref_right = ExtractUnderlyingColref(expr_right);
 	if (nullptr == col_ref_left || nullptr == col_ref_right ||
 		col_ref_left->Id() == col_ref_right->Id())
 	{
