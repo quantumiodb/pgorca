@@ -107,6 +107,58 @@ SET enable_partitionwise_join = on;
 SET enable_partitionwise_aggregate = on;
 
 -- ---------------------------------------------------------------------
+-- CBDB regress-derived tables (DISTRIBUTED BY stripped).  Sources:
+-- bfv_index, bfv_subquery, bfv_joins, bfv_planner, indexjoin, cte_prune.
+-- ---------------------------------------------------------------------
+DROP TABLE IF EXISTS cb_bitmap_alt, cb_hash_tbl, cb_multikey,
+                     cb_subq_a, cb_subq_b, cb_coerce_a, cb_coerce_b,
+                     cb_tt, cb_tq;
+
+CREATE TABLE cb_bitmap_alt (id int, bitmap_idx_col int, btree_idx_col int, hash_idx_col int);
+CREATE INDEX cb_bitmap_alt_btree ON cb_bitmap_alt USING btree (btree_idx_col);
+CREATE INDEX cb_bitmap_alt_hash  ON cb_bitmap_alt USING hash  (hash_idx_col);
+INSERT INTO cb_bitmap_alt
+SELECT i, i % 100, i, i % 50 FROM generate_series(1, 10000) i;
+
+CREATE TABLE cb_hash_tbl (a int, b int);
+CREATE INDEX cb_hash_tbl_idx ON cb_hash_tbl USING hash (b);
+INSERT INTO cb_hash_tbl SELECT i, i FROM generate_series(1, 1000) i;
+
+CREATE TABLE cb_multikey (a int, key1 char(6), key2 char(1));
+CREATE INDEX cb_multikey_idx ON cb_multikey (key1, key2);
+INSERT INTO cb_multikey
+SELECT i, lpad((i % 1000)::text, 6, '0'), chr(65 + (i % 26))
+FROM generate_series(1, 5000) i;
+
+CREATE TABLE cb_subq_a (i int, j int);
+CREATE TABLE cb_subq_b (i int, j int);
+INSERT INTO cb_subq_a SELECT i, i * i FROM generate_series(1, 100) i;
+INSERT INTO cb_subq_b SELECT i, i * i FROM generate_series(1, 100) i;
+
+CREATE TABLE cb_coerce_a (a numeric);
+CREATE TABLE cb_coerce_b (a numeric);
+INSERT INTO cb_coerce_a SELECT i FROM generate_series(1, 1000) i;
+INSERT INTO cb_coerce_b SELECT i FROM generate_series(1, 1000) i;
+
+CREATE TABLE cb_tt (symbol int, event_ts bigint);
+CREATE TABLE cb_tq (sym int, ets bigint, end_ts bigint);
+INSERT INTO cb_tt
+SELECT i % 100, i * 1000 FROM generate_series(1, 10000) i;
+INSERT INTO cb_tq
+SELECT i % 100, i * 1000, i * 1000 + 500 FROM generate_series(1, 10000) i;
+CREATE INDEX cb_tq_ets_endts ON cb_tq (ets, end_ts);
+
+ANALYZE cb_bitmap_alt;
+ANALYZE cb_hash_tbl;
+ANALYZE cb_multikey;
+ANALYZE cb_subq_a;
+ANALYZE cb_subq_b;
+ANALYZE cb_coerce_a;
+ANALYZE cb_coerce_b;
+ANALYZE cb_tt;
+ANALYZE cb_tq;
+
+-- ---------------------------------------------------------------------
 -- Queries -- each line is one EXPLAIN that the driver compares.
 -- Keep one statement per line so the driver can split on newlines.
 -- ---------------------------------------------------------------------
@@ -518,3 +570,59 @@ EXPLAIN SELECT DISTINCT four FROM cal_tenk1 WHERE four = 10;
 EXPLAIN SELECT count(*) FROM cal_tenk1 GROUP BY ten ORDER BY ten;
 EXPLAIN SELECT count(*) FROM cal_tenk1 GROUP BY ten, hundred ORDER BY ten, hundred;
 EXPLAIN SELECT count(*) FROM cal_tenk1 GROUP BY hundred, ten ORDER BY ten;
+
+-- ---------------------------------------------------------------------
+-- CBDB regress-derived patterns (tables defined above; DISTRIBUTED BY
+-- stripped).  Sources: bfv_index, bfv_subquery, bfv_joins, bfv_planner,
+-- indexjoin, cte_prune.  Targets ORCA cost paths not exercised by the
+-- PG-regress-derived block above:
+--   - bitmap-vs-btree IndexScan for IN-list / =ANY / OR
+--   - hash index access
+--   - multi-key btree with leading-key partial coverage
+--   - NOT IN with self-correlation; correlated scalar subquery
+--   - join-key type coercion (numeric/int)
+--   - index nested-loop on range/BETWEEN predicate
+-- ---------------------------------------------------------------------
+-- bfv_index: btree IN-list / =ANY / OR (ScalarArrayOp variants)
+EXPLAIN SELECT * FROM cb_bitmap_alt WHERE btree_idx_col IN (3, 5);
+EXPLAIN SELECT * FROM cb_bitmap_alt WHERE btree_idx_col IN (3, 5, 100, 200, 500);
+EXPLAIN SELECT * FROM cb_bitmap_alt WHERE btree_idx_col = ANY (ARRAY[3, 5, 100]);
+EXPLAIN SELECT * FROM cb_bitmap_alt WHERE btree_idx_col = 3 OR btree_idx_col = 7;
+EXPLAIN SELECT * FROM cb_bitmap_alt WHERE btree_idx_col = 3 OR btree_idx_col = 7 OR btree_idx_col = 11;
+EXPLAIN SELECT * FROM cb_bitmap_alt WHERE bitmap_idx_col IN (3, 5);
+EXPLAIN SELECT count(*) FROM cb_bitmap_alt WHERE btree_idx_col BETWEEN 100 AND 500;
+
+-- bfv_index: hash index single-equality / multi-cond / OR
+EXPLAIN SELECT * FROM cb_hash_tbl WHERE b = 3;
+EXPLAIN SELECT * FROM cb_hash_tbl WHERE b = 3 AND a = 3;
+EXPLAIN SELECT * FROM cb_hash_tbl WHERE b = 3 OR b = 5;
+
+-- bfv_index / create_index: multi-key btree, leading vs non-leading coverage
+EXPLAIN SELECT * FROM cb_multikey WHERE key1 = '000100';
+EXPLAIN SELECT * FROM cb_multikey WHERE key1 = '000100' AND key2 = 'A';
+EXPLAIN SELECT * FROM cb_multikey WHERE key2 = 'A';
+EXPLAIN SELECT * FROM cb_multikey WHERE key1 IN ('000100', '000200', '000300');
+
+-- bfv_subquery: NOT IN with self-correlation; correlated scalar subquery
+EXPLAIN SELECT * FROM cb_subq_a WHERE j NOT IN (SELECT j FROM cb_subq_a a2 WHERE a2.j = cb_subq_a.j);
+EXPLAIN SELECT a.* FROM cb_subq_a a INNER JOIN cb_subq_b b ON a.i = b.i WHERE a.j NOT IN (SELECT j FROM cb_subq_a a2 WHERE a2.j = b.j) AND a.i = 1;
+EXPLAIN SELECT i FROM cb_subq_a WHERE j < (SELECT 0.5 * sum(j) FROM cb_subq_b WHERE i >= 3) ORDER BY 1;
+EXPLAIN SELECT EXISTS (SELECT 1 FROM unnest(ARRAY[1,2,3])) FROM cb_subq_a;
+
+-- bfv_joins: join-key type coercion (numeric/int)
+EXPLAIN SELECT * FROM cb_coerce_a a, cb_coerce_b b WHERE a.a = b.a;
+EXPLAIN SELECT * FROM cb_coerce_a a, cb_coerce_b b WHERE a.a::numeric = b.a::numeric;
+EXPLAIN SELECT * FROM cb_coerce_a a, cb_coerce_b b WHERE a.a::int = b.a::int;
+
+-- indexjoin: range-predicate IndexNL (event-time / quote)
+EXPLAIN SELECT count(*) FROM cb_tt tt, cb_tq tq WHERE tq.sym = tt.symbol AND tt.event_ts >= tq.ets AND tt.event_ts < tq.end_ts;
+EXPLAIN SELECT tt.event_ts / 5000 AS bucket, count(*) FROM cb_tt tt, cb_tq tq WHERE tq.sym = tt.symbol AND tt.event_ts >= tq.ets AND tt.event_ts < tq.end_ts GROUP BY 1 ORDER BY 1;
+
+-- cte_prune: CTE projection / materialization variants
+EXPLAIN WITH t AS (SELECT * FROM cal_tenk1) SELECT count(*) FROM t WHERE hundred = 5;
+EXPLAIN WITH t AS MATERIALIZED (SELECT unique1, hundred FROM cal_tenk1) SELECT hundred, count(*) FROM t GROUP BY hundred;
+EXPLAIN WITH t AS NOT MATERIALIZED (SELECT * FROM cal_tenk1) SELECT t.hundred, count(*) FROM t WHERE t.unique1 < 1000 GROUP BY t.hundred;
+
+-- bfv_planner: anti-join NOT EXISTS over multi-column correlation
+EXPLAIN SELECT * FROM cal_tenk1 t WHERE NOT EXISTS (SELECT 1 FROM cal_onek o WHERE o.unique1 = t.unique1 AND o.hundred = t.hundred);
+EXPLAIN SELECT * FROM cb_subq_a a WHERE NOT EXISTS (SELECT 1 FROM cb_subq_a a2 WHERE a2.i = a.i + 1);
