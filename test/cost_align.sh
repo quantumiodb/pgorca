@@ -160,7 +160,7 @@ for q in "${queries[@]}"; do
     | sed -E 's/[[:space:]]*\(cost.*//' \
     | sed -E 's/^[[:space:]]*->[[:space:]]*//; s/^[[:space:]]+//' \
     | grep -E "^[A-Z]" \
-    | grep -vE "^(Optimizer|Output|Index Cond|Recheck Cond|Sort Key|Group Key|Hash Cond|Merge Cond|Filter|Join Filter|One-Time Filter|Subplans Removed|Workers|Heap Fetches|Window|InitPlan|SubPlan|CTE|Function Call)" \
+    | grep -vE "^(Optimizer|Output|Index Cond|Recheck Cond|Sort Key|Group Key|Hash Cond|Merge Cond|Filter|Join Filter|One-Time Filter|Subplans Removed|Workers|Heap Fetches|Window|InitPlan|SubPlan|CTE [A-Za-z_][A-Za-z_0-9]*$|Function Call)" \
     | sed -E 's/[[:space:]]+(using|on)[[:space:]]+[A-Za-z_][A-Za-z_0-9.]*([[:space:]]+[A-Za-z_][A-Za-z_0-9.]*)?//g; s/[[:space:]]+$//' \
     | xargs
   }
