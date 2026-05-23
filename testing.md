@@ -150,13 +150,8 @@ Window functions over `ROWS BETWEEN n PRECEDING AND n FOLLOWING` return differen
 
 **Root cause:** No `ORDER BY` inside the window frame; scan order is plan-dependent. ORCA's chosen index/seq scan order differs from the standard planner's, producing valid but differently-ordered intermediate rows and thus different partial sums.
 
-### 6. `polymorphism` — aggregate array element order
 
-Array aggregates (`array_agg`-style) built by user-defined aggregate functions return elements in a different order (`{2,1,3}` instead of `{1,2,3}`). ORCA uses a different grouping/scanning order for the `group by f3` queries.
-
-**Root cause:** The aggregate collects values in scan order. ORCA's plan scans the source table in a different order than the standard planner, producing the same set of elements but in a different sequence.
-
-### 7. `stats` — `check_estimated_rows` function not found
+### 6. `stats` — `check_estimated_rows` function not found
 
 The `stats` test calls `check_estimated_rows(text)`, a helper function defined earlier in the same test session. Under ORCA, a prior statement in the test fails or rolls back in a way that prevents the function from being visible when this call is reached.
 
@@ -164,4 +159,4 @@ The `stats` test calls `check_estimated_rows(text)`, a helper function defined e
 
 ---
 
-These 7 failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.
+These 6 failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.
