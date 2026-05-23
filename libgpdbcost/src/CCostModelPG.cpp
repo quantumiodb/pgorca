@@ -1654,9 +1654,11 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 			break;
 	}
 	BOOL leading_key_used = true;  // assume covered if no index metadata
+	BOOL is_btree = true;  // descent_cost only applies to btree AMs
 	if (nullptr != index_mdid)
 	{
 		const IMDIndex *index = mda->RetrieveIndex(index_mdid);
+		is_btree = (IMDIndex::EmdindBtree == index->IndexType());
 		if (index->Keys() > 0)
 		{
 			// IMDIndex::KeyAt(0) is the 0-based POSITION of the leading
@@ -1805,12 +1807,18 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// indexStartupCost and indexTotalCost; we have no startup/total split
 	// so it lands in the total.  tree_height isn't exposed by IMDIndex,
 	// approximate as 1 (covers btrees up to ~1M entries).
+	// Hash/gist/bitmap AMs have their own (much simpler) descent models in
+	// PG and do NOT charge a btree-style log2(T)+(h+1)*50 descent.  When
+	// the underlying AM is not btree we zero this term out to stay aligned
+	// with PG's hash/gist/bitmap costestimate routines.
 	constexpr DOUBLE kTreeHeight = 1.0;
 	constexpr DOUBLE kPageCpuMultiplier = 50.0;
 	const DOUBLE descent_cost =
-		(std::ceil(std::log2(std::max(T, 1.0))) +
-		 (kTreeHeight + 1.0) * kPageCpuMultiplier) *
-		cpu_operator_cost;
+		is_btree
+			? (std::ceil(std::log2(std::max(T, 1.0))) +
+			   (kTreeHeight + 1.0) * kPageCpuMultiplier) *
+				  cpu_operator_cost
+			: 0.0;
 
 	// Index-side IO: PG btcostestimate charges roughly one random index
 	// page per probe plus sequential reads through the relevant leaf range.
