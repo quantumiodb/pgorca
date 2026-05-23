@@ -133,9 +133,16 @@ CLogicalLeftAntiSemiJoin::PstatsDerive(CMemoryPool *mp,
 	CStatsPredJoinArray *join_preds_stats =
 		CStatsPredUtils::ExtractJoinStatsFromExprHandle(mp, exprhdl,
 														true /*LASJ*/);
+	// Use the histogram-based LASJ derivation (bucket-difference) instead
+	// of the default 0.4 selectivity fallback.  PG's eqjoinsel JOIN_ANTI
+	// path uses histogram MCV/bucket info; the 2012-vintage TODO that
+	// flagged this path as "aggressive" (CHistogram.cpp:772) predates the
+	// later histogram-derivation hardening and the constant fallback has
+	// since proved consistently 2-3× off from PG on TPC-H/regress
+	// NOT EXISTS patterns (cost_align #62/#167/#310/#311).
 	IStatistics *pstatsLASJoin =
 		outer_stats->CalcLASJoinStats(mp, inner_side_stats, join_preds_stats,
-									  true /* DoIgnoreLASJHistComputation */
+									  false /* DoIgnoreLASJHistComputation */
 		);
 
 	// Check whether a row plan hint exists for this join operators relations.
