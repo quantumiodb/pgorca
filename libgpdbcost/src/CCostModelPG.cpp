@@ -2062,14 +2062,35 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// constant 5-10 % overestimate compared to PG EXPLAIN.  Fixing this
 	// requires either threading outer_rows through the NL context or a
 	// post-pass re-cost in CostNLJoin; neither is in scope here.
-	// SAOP scaling: PG charges descent + index IO once per array element.
+	//
+	// SAOP scaling: PG charges descent once per array element (added
+	// num_sa_scans times to indexTotalCost) but index IO is amortized
+	// across SAOP scans via Mackert-Lohman in genericcostestimate
+	// (selfuncs.c:7196-7218: pages_fetched = index_pages_fetched(
+	// numIndexPages × num_sa_scans × num_outer_scans, ...) /
+	// num_outer_scans).  Multiplying index_io by num_sa_scans without
+	// amortization (the old formula here) over-billed by one
+	// random_page_cost per SAOP element on selective IN-list queries
+	// (cost_align #212: unique1 IN(10 vals) yielded 47.02 vs PG 43.03).
 	// index_cpu is NOT multiplied because tuples_fetched already counts
 	// matches across all elements (PG divides numIndexTuples by
 	// num_sa_scans, then multiplies back when accumulating into
 	// indexTotalCost — net effect: per-element charge stays the same).
 	// Heap IO and heap CPU also stay one-shot.
+	DOUBLE saop_index_io;
+	if (num_sa_scans > 1.0)
+	{
+		const DOUBLE total_index_pages =
+			IndexPagesFetched(index_pages_per_scan * num_sa_scans,
+							  index_pages, index_pages);
+		saop_index_io = total_index_pages * random_page_cost;
+	}
+	else
+	{
+		saop_index_io = index_io;
+	}
 	return CCost(loop_count *
-				 (num_sa_scans * (descent_cost + index_io) + index_cpu +
+				 (num_sa_scans * descent_cost + saop_index_io + index_cpu +
 				  io_cost + heap_cpu));
 }
 
