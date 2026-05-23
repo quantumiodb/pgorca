@@ -56,6 +56,73 @@ IsTextVarlenaDatum(const IDatum *datum)
 		   mdid->Equals(&CMDIdGPDB::m_mdid_bpchar);
 }
 
+// PG name type: NAMEDATALEN (64) byte fixed-width, no varlena header.
+// GetByteArrayValue returns the raw NameData buffer (content at byte 0,
+// NUL-padded).  Safe for direct memcmp prefix compare; cannot be fed to
+// PG's textlike.
+static BOOL
+IsNameDatum(const IDatum *datum)
+{
+	if (datum == nullptr)
+	{
+		return false;
+	}
+	return datum->MDId()->Equals(&CMDIdGPDB::m_mdid_name);
+}
+
+// Extract a literal prefix from a LIKE pattern stored as a text varlena.
+// Returns true and sets *out_prefix / *out_prefix_len if a non-empty
+// literal prefix exists before the first wildcard (% or _).  Backslash
+// escapes and empty/escape-only patterns return false (handled by the
+// caller via the default-selectivity fallback).
+static BOOL
+ExtractLikePrefix(const BYTE *pat_bytes, ULONG pat_size,
+				  const BYTE **out_prefix, ULONG *out_prefix_len)
+{
+	if (pat_bytes == nullptr || pat_size < 1)
+	{
+		return false;
+	}
+	// Skip varlena header.  PG short header: low bit set, top 7 bits =
+	// total length (including header byte).  Long header: 4 bytes.
+	ULONG header_size;
+	if ((pat_bytes[0] & 0x01) != 0)
+	{
+		header_size = 1;
+	}
+	else if (pat_size >= 4)
+	{
+		header_size = 4;
+	}
+	else
+	{
+		return false;
+	}
+	if (pat_size <= header_size)
+	{
+		return false;
+	}
+	const BYTE *content = pat_bytes + header_size;
+	ULONG content_size = pat_size - header_size;
+	ULONG prefix_len = 0;
+	while (prefix_len < content_size)
+	{
+		BYTE b = content[prefix_len];
+		if (b == '%' || b == '_' || b == '\\')
+		{
+			break;
+		}
+		prefix_len++;
+	}
+	if (prefix_len == 0)
+	{
+		return false;
+	}
+	*out_prefix = content;
+	*out_prefix_len = prefix_len;
+	return true;
+}
+
 // derive statistics for filter operation based on given scalar expression
 IStatistics *
 CFilterStatsProcessor::MakeStatsFilterForScalarExpr(
@@ -889,6 +956,59 @@ CFilterStatsProcessor::MakeHistLikeFilter(CStatsPredLike *pred_stats,
 			CDouble scale_factor = CDouble(1.0) / hist_sel;
 			*last_scale_factor = *last_scale_factor * scale_factor;
 			return result_histogram;
+		}
+	}
+
+	// Native prefix-match path: handles LIKE 'literal%' on fixed-width
+	// non-varlena columns (notably 'name') where the textlike fast-path
+	// is unsafe because byte 0 isn't a varlena header.  Extracts the
+	// literal prefix from the pattern and does a memcmp against the
+	// first N bytes of each bucket boundary.  Less general than PG's
+	// pattern_selectivity (no _ wildcard, no escape, no MB-encoding
+	// awareness) but covers the common literal-prefix case that PG's
+	// patternsel handles via histogram_selectivity (selfuncs.c:5947).
+	if (nbuckets >= min_hist_buckets && pat_datum != nullptr &&
+		IsTextVarlenaDatum(pat_datum))
+	{
+		const BYTE *pat_bytes = pat_datum->GetByteArrayValue();
+		ULONG pat_size = pat_datum->Size();
+		const BYTE *prefix = nullptr;
+		ULONG prefix_len = 0;
+		if (ExtractLikePrefix(pat_bytes, pat_size, &prefix, &prefix_len))
+		{
+			ULONG nmatch = 0;
+			ULONG nchecked = 0;
+			ULONG end = (nbuckets > n_skip) ? (nbuckets - n_skip) : nbuckets;
+			for (ULONG i = n_skip; i < end; i++)
+			{
+				IDatum *bnd = (*buckets)[i]->GetLowerBound()->GetDatum();
+				if (bnd->IsNull() || !IsNameDatum(bnd))
+				{
+					continue;
+				}
+				const BYTE *str_bytes = bnd->GetByteArrayValue();
+				ULONG str_size = bnd->Size();
+				if (str_bytes == nullptr || str_size < prefix_len)
+				{
+					nchecked++;
+					continue;
+				}
+				if (memcmp(str_bytes, prefix, prefix_len) == 0)
+				{
+					nmatch++;
+				}
+				nchecked++;
+			}
+			if (nchecked > 0)
+			{
+				CDouble hist_sel(static_cast<double>(nmatch) /
+								 static_cast<double>(nchecked));
+				hist_sel = std::max(hist_sel, CDouble(0.0001));
+				hist_sel = std::min(hist_sel, CDouble(0.9999));
+				CDouble scale_factor = CDouble(1.0) / hist_sel;
+				*last_scale_factor = *last_scale_factor * scale_factor;
+				return result_histogram;
+			}
 		}
 	}
 
