@@ -829,6 +829,49 @@ CCostModelPG::CostSort(CMemoryPool *,  // mp
 //	one comparison per column.  Under-counts predicates that reuse the
 //	same column (e.g. `x BETWEEN 1 AND 10`); negligible cost impact.
 //---------------------------------------------------------------------------
+// Like CountQualOps but returns a DOUBLE and applies PG's SAOP fuzz:
+// per-element × 0.5 (ANY-like rewrite — `<> ALL` and `= ANY` both
+// short-circuit on first counterexample or match respectively, so PG
+// estimates average eval at half the array length, costsize.c:5125).
+// Used only by CostFilter where the SAOP appears as a qpqual; index/
+// bitmap paths bill SAOP scaling separately via num_sa_scans.
+static DOUBLE
+CountQualOpsForFilter(CExpression *expr)
+{
+	if (nullptr == expr)
+	{
+		return 0.0;
+	}
+	const COperator::EOperatorId eop = expr->Pop()->Eopid();
+	if (COperator::EopScalarArrayCmp == eop)
+	{
+		// per_element × estarraylen × 0.5 — matches PG cost_qual_eval_walker
+		// SAOP branch for both useOr=true (`= ANY`) and the post-negate
+		// `<> ALL` form ORCA emits directly (PG negate_clause rewrites it
+		// to `NOT (= ANY)` for cost evaluation).
+		const ULONG saop_len = CountSAOPScans(expr);
+		return static_cast<DOUBLE>(saop_len) * 0.5;
+	}
+	DOUBLE n = 0.0;
+	if (COperator::EopScalarCmp == eop ||
+		COperator::EopScalarOp == eop ||
+		COperator::EopScalarFunc == eop ||
+		COperator::EopScalarCast == eop ||
+		COperator::EopScalarCoerceToDomain == eop ||
+		COperator::EopScalarCoerceViaIO == eop ||
+		COperator::EopScalarArrayCoerceExpr == eop ||
+		COperator::EopScalarNullIf == eop ||
+		COperator::EopScalarMinMax == eop)
+	{
+		n = 1.0;
+	}
+	for (ULONG i = 0; i < expr->Arity(); i++)
+	{
+		n += CountQualOpsForFilter((*expr)[i]);
+	}
+	return n;
+}
+
 CCost
 CCostModelPG::CostFilter(CMemoryPool *,	 // mp
 						 CExpressionHandle &exprhdl,
@@ -837,11 +880,10 @@ CCostModelPG::CostFilter(CMemoryPool *,	 // mp
 	GPOS_ASSERT(COperator::EopPhysicalFilter == exprhdl.Pop()->Eopid());
 
 	const DOUBLE input_rows = pci->PdRows()[0];
-	const ULONG n_qual_ops =
-		CountQualOps(exprhdl.PexprScalarRepChild(1));
+	const DOUBLE n_qual_ops =
+		CountQualOpsForFilter(exprhdl.PexprScalarRepChild(1));
 
-	const DOUBLE qual_per_tuple =
-		cpu_operator_cost * static_cast<DOUBLE>(n_qual_ops);
+	const DOUBLE qual_per_tuple = cpu_operator_cost * n_qual_ops;
 
 	return CCost(pci->NumRebinds() * qual_per_tuple * input_rows);
 }
