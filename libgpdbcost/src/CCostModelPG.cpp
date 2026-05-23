@@ -1159,6 +1159,12 @@ CCostModelPG::CostHashJoin(CMemoryPool *,  // mp
 		(COperator::EopPhysicalLeftOuterHashJoin == op_id ||
 		 COperator::EopPhysicalRightOuterHashJoin == op_id ||
 		 COperator::EopPhysicalFullHashJoin == op_id);
+	const BOOL is_semi =
+		(COperator::EopPhysicalLeftSemiHashJoin == op_id);
+	const BOOL is_anti =
+		(COperator::EopPhysicalLeftAntiSemiHashJoin == op_id ||
+		 COperator::EopPhysicalLeftAntiSemiHashJoinNotIn == op_id);
+	const BOOL is_semi_anti = is_semi || is_anti;
 
 	// PG's final_cost_hashjoin (costsize.c:4274) separates hash quals
 	// from qpquals (non-hash join predicates):
@@ -1254,20 +1260,68 @@ CCostModelPG::CostHashJoin(CMemoryPool *,  // mp
 	const DOUBLE hashjointuples_internal = std::min(
 		outer_rows * inner_rows,
 		std::max(1.0, outer_rows * inner_rows * hash_selectivity));
-	// For outer joins the executor still scans buckets per outer row but
-	// emits NULL-padded rows for non-matches; bill emit/qpqual against
-	// the larger of internal-matches and final output_rows.
-	const DOUBLE billed_tuples = is_outer_join
-									 ? std::min(output_rows,
-												std::min(outer_rows, inner_rows))
-									 : hashjointuples_internal;
 
 	const DOUBLE build_cpu =
 		(cpu_operator_cost * n_hash + cpu_tuple_cost) * inner_rows;
 	const DOUBLE probe_cpu = cpu_operator_cost * n_hash * outer_rows;
-	const DOUBLE hash_qual_cpu = cpu_operator_cost * n_hash * outer_rows *
-								 std::max(1.0, inner_rows * innerbucketsize) *
-								 0.5;
+
+	// PG final_cost_hashjoin (costsize.c:4434-4504) splits the hash-qual
+	// cost path for SEMI/ANTI joins.  The executor stops scanning the
+	// bucket on the first match per outer row, so:
+	//   - matched outer rows (frac = outer_match_frac) scan a fraction
+	//     inner_scan_frac = 2/(match_count+1) of the bucket, weighted 0.5
+	//     for the matched-distribution average;
+	//   - unmatched outer rows hit buckets they don't correlate with and
+	//     PG models them with a 10x smaller fuzz factor (0.05 vs 0.5).
+	// For ANTI, hashjointuples reflects the anti output (unmatched outer);
+	// for SEMI, it reflects matched outer.  Both are much smaller than
+	// the inner-join hashjointuples_internal under low SEMI selectivity,
+	// which is the main reason ORCA over-bills emit/qpqual on these joins
+	// today.
+	DOUBLE hash_qual_cpu;
+	DOUBLE billed_tuples;
+	if (is_semi_anti)
+	{
+		const DOUBLE outer_match_frac =
+			is_semi
+				? (outer_rows > 0.0
+					   ? std::min(1.0, output_rows / outer_rows)
+					   : 0.0)
+				: (outer_rows > 0.0
+					   ? std::max(0.0, 1.0 - output_rows / outer_rows)
+					   : 0.0);
+		const DOUBLE outer_matched = outer_rows * outer_match_frac;
+		const DOUBLE outer_unmatched =
+			std::max(0.0, outer_rows - outer_matched);
+		// match_count approximates the average # of matches per matched
+		// outer row.  PG: max(1, JOIN_INNER selectivity × inner_rows).
+		const DOUBLE match_count =
+			std::max(1.0, hash_selectivity * inner_rows);
+		const DOUBLE inner_scan_frac = 2.0 / (match_count + 1.0);
+
+		const DOUBLE matched_qual =
+			cpu_operator_cost * n_hash * outer_matched *
+			std::max(1.0, inner_rows * innerbucketsize * inner_scan_frac) *
+			0.5;
+		const DOUBLE unmatched_qual =
+			cpu_operator_cost * n_hash * outer_unmatched *
+			std::max(1.0, inner_rows * innerbucketsize) * 0.05;
+		hash_qual_cpu = matched_qual + unmatched_qual;
+		billed_tuples = is_anti ? outer_unmatched : outer_matched;
+	}
+	else
+	{
+		hash_qual_cpu = cpu_operator_cost * n_hash * outer_rows *
+						std::max(1.0, inner_rows * innerbucketsize) * 0.5;
+		// For outer joins the executor still scans buckets per outer row
+		// but emits NULL-padded rows for non-matches; bill emit/qpqual
+		// against the larger of internal-matches and final output_rows.
+		billed_tuples =
+			is_outer_join
+				? std::min(output_rows, std::min(outer_rows, inner_rows))
+				: hashjointuples_internal;
+	}
+
 	const DOUBLE qpqual_cpu =
 		cpu_operator_cost * n_qpqual * billed_tuples;
 	const DOUBLE emit_cpu = cpu_tuple_cost * billed_tuples;
