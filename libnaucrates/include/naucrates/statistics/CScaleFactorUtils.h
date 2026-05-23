@@ -43,12 +43,18 @@ public:
 		// true if both sides of the predicate are distribution keys
 		BOOL m_dist_keys;
 
+		// true if the predicate is an equality (Eq/INDF/EqNDV); non-equi
+		// predicates (range, inequality) should not be sqrt-damped against
+		// equi-correlated columns since PG treats them independently.
+		BOOL m_is_equi;
+
 		//ctor
 		SJoinCondition(CDouble scale_factor, IMdIdArray *mdid_pair,
-					   BOOL both_dist_keys)
+					   BOOL both_dist_keys, BOOL is_equi = true)
 			: m_scale_factor(scale_factor),
 			  m_oid_pair(mdid_pair),
-			  m_dist_keys(both_dist_keys)
+			  m_dist_keys(both_dist_keys),
+			  m_is_equi(is_equi)
 		{
 		}
 
