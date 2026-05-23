@@ -634,8 +634,21 @@ CFilterStatsProcessor::MakeHistHashMapDisjFilter(
 
 		if (IsNewStatsColumn(colid, previous_colid))
 		{
-			scale_factors->Append(GPOS_NEW(mp)
-									  CDouble(previous_scale_factor.Get()));
+			// Skip the placeholder append on the very first iteration —
+			// previous_scale_factor was initialized to input_rows at
+			// line 612 as a sentinel ("min-rows baseline"), not from any
+			// processed predicate.  Appending it adds a phantom OR
+			// disjunct with selectivity 1/input_rows to the cumulative
+			// disjunction, inflating row estimates by ~1 row (cost_align
+			// #293: `b=3 OR b=5` on cb_hash_tbl returned 3 rows instead
+			// of PG's 2).  Only append once we've actually processed at
+			// least one predicate (previous_colid is no longer the
+			// sentinel ulong_max).
+			if (gpos::ulong_max != previous_colid)
+			{
+				scale_factors->Append(GPOS_NEW(mp)
+										  CDouble(previous_scale_factor.Get()));
+			}
 			CStatisticsUtils::UpdateDisjStatistics(
 				mp, non_updatable_cols, input_rows, cumulative_rows,
 				previous_histogram, disjunctive_result_histograms,
