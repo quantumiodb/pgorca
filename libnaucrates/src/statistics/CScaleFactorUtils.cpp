@@ -68,6 +68,17 @@ CScaleFactorUtils::GenerateScaleFactorMap(
 			(*(*join_conds_scale_factors)[ul]).m_scale_factor;
 		IMdIdArray *oid_pair = (*(*join_conds_scale_factors)[ul]).m_oid_pair;
 		BOOL both_dist_keys = (*(*join_conds_scale_factors)[ul]).m_dist_keys;
+		BOOL is_equi = (*(*join_conds_scale_factors)[ul]).m_is_equi;
+
+		// Non-equi join predicates (range, inequality) are independent of
+		// equi-join column correlation, so route them straight to the
+		// independent (multiplicative) bucket to match PG's behavior.
+		if (!is_equi)
+		{
+			independent_join_preds->Append(GPOS_NEW(mp)
+											   CDouble(local_scale_factor));
+			continue;
+		}
 
 		if (oid_pair != nullptr && oid_pair->Size() == 2)
 		{

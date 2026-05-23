@@ -415,9 +415,14 @@ CJoinStatsProcessor::SetResultingJoinStats(
 			}
 		}
 
+		const CStatsPred::EStatsCmpType cmp_type = pred_info->GetCmpType();
+		const BOOL is_equi = (CStatsPred::EstatscmptEq == cmp_type ||
+							  CStatsPred::EstatscmptEqNDV == cmp_type ||
+							  CStatsPred::EstatscmptINDF == cmp_type);
+
 		join_conds_scale_factors->Append(
 			GPOS_NEW(mp) CScaleFactorUtils::SJoinCondition(
-				local_scale_factor, mdid_pair, both_dist_keys));
+				local_scale_factor, mdid_pair, both_dist_keys, is_equi));
 	}
 
 
