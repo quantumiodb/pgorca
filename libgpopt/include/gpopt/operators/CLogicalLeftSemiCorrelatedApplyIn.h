@@ -69,6 +69,16 @@ public:
 		return true;
 	}
 
+	// derive stats using child[2] (the operator's scalar) as the join condition.
+	// The parent (CLogicalLeftSemiApply::PstatsDerive) assumes the join cond is
+	// embedded in child[1]'s Select filter (true for the non-correlated
+	// ApplyIn shape), but for the correlated variant the join cond lives on
+	// the operator's scalar child.  Without this override the outer
+	// cardinality stays at the unfiltered partsupp size (e.g. 800K in Q20),
+	// blowing up downstream IxNL cost estimates.
+	IStatistics *PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							  IStatisticsArray *stats_ctxt) const override;
+
 	// return a copy of the operator with remapped columns
 	COperator *PopCopyWithRemappedColumns(CMemoryPool *mp,
 										  UlongToColRefMap *colref_mapping,
