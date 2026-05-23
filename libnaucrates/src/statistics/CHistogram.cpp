@@ -614,6 +614,49 @@ CHistogram::MakeHistogramFilterNormalize(
 
 	CHistogram *result_histogram = MakeHistogramFilter(stats_cmp_type, point);
 	*scale_factor = result_histogram->NormalizeHistogram();
+
+	// NEQ correction: MakeBucketsWithInequalityFilter splits the bucket
+	// containing the NEQ point by RANGE (e.g. [0,100) → [0,5) + (5,100)).
+	// The split preserves total bucket frequency (the removed singleton
+	// {5} has zero width), so NormalizeHistogram returns ~1.0 for any
+	// NEQ on an already-normalized histogram.  But PG's neqsel = 1 -
+	// eqsel = 1 - 1/distinct subtracts a discrete (N-k)/(N-k+1) factor
+	// per NEQ, accumulating across AND-chained NEQs.  gdb on cost_align
+	// #215 (unique1 NOT IN (1..5)): each NEQ after the first contributed
+	// local_scale ≈ 1.000003 instead of ≈ 1.0001, so cumulative after 5
+	// NEQs was 1.000115 (rows ≈ 9999) instead of 1.00050 (rows = 9995).
+	//
+	// Derive a PG-equivalent scale from the discrete value removed.
+	// gdb on cost_align #215 showed distinct_after - distinct_before is
+	// ~0.02 (not 1) after iter 1, because the bucket [2,100) split at
+	// point=2 has the lower bound equal to point (singleton case
+	// returns nullptr for less_than, only greater_than gets the residual
+	// scaled distinct).  Using distinct_before/distinct_after thus
+	// produces tiny scales (1.00000204) instead of the expected 1.0001.
+	//
+	// Use the input histogram's NDV directly: PG neqsel = 1 - 1/N, so
+	// scale = N/(N-1).  This is independent of how the bucket-split
+	// math accounts for the lost value.  Each NEQ in a CONJ chain
+	// reduces the histogram NDV by ~1, so subsequent NEQs see
+	// distinct_before slightly smaller and the per-NEQ scale stays
+	// close to 1.0001 across all iterations.
+	//
+	// (Comparison with == 0.0 would fail per b86224f — CDouble values
+	//  floor at ~1e-250.  Use CStatistics::Epsilon as the gap.)
+	if (CStatsPred::EstatscmptNEq == stats_cmp_type)
+	{
+		const DOUBLE distinct_before = this->GetNumDistinct().Get();
+		if (distinct_before > 1.0 + CStatistics::Epsilon.Get())
+		{
+			const DOUBLE pg_neq_scale =
+				distinct_before / (distinct_before - 1.0);
+			if ((*scale_factor).Get() < pg_neq_scale)
+			{
+				*scale_factor = CDouble(pg_neq_scale);
+			}
+		}
+	}
+
 	GPOS_ASSERT(result_histogram->IsValid());
 
 	return result_histogram;
