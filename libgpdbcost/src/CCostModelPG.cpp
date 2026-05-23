@@ -1920,8 +1920,109 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// non-leading-key IndexScans (observed at 28 ms/loop on partsupp_pkey
 	// in TPC-H Q2 where ORCA was previously selecting this shape because
 	// the cost looked artificially low).
+	// IS NULL on a column with null_frac=0 produces a raw selectivity of
+	// exactly 0.  PG's nulltestsel returns 0, so numIndexPages = ceil(0 ×
+	// idx_pages) = 0 and no index IO is charged.  ORCA's tuples_fetched
+	// (= pci->Rows()) has already been clamped to 1 row by the stats
+	// layer, hiding the raw 0 selectivity; without compensating here we
+	// floor index_pages_per_scan at 1 and over-charge by random_page_cost
+	// (cost_align #206: cal_tenk1.unique1 IS NULL, ORCA 8.30 vs PG 4.30).
+	//
+	// Detect this case by inspecting the index condition: a single
+	// ScalarNullTest on a ScalarIdent whose column has GetNullFreq()=0
+	// in the base table histogram.
+	// IS NULL on a column with null_frac=0 → PG nulltestsel returns sel=0
+	// → numIndexPages = ceil(0 × idx_pages) = 0 (no index IO charged).
+	// ORCA's pci->Rows() is clamped to 1 by the stats layer, hiding the
+	// raw 0 selectivity; without this guard we floor index_pages_per_scan
+	// at 1 and over-charge by random_page_cost (cost_align #206:
+	// cal_tenk1.unique1 IS NULL → ORCA 8.30 vs PG 4.30).
+	//
+	// Detect when the index condition contains a ScalarNullTest on the
+	// leading index key column, then look up that column's NullFreq via
+	// IMDColStats (the runtime histogram doesn't carry null_freq for
+	// unique columns).  Only the leading-key column gets a stats lookup
+	// since that's the one the index actually probes on for the NULL.
+	BOOL skip_index_pages_for_null_test = false;
+	if (nullptr != index_mdid)
+	{
+		// Walk index condition for ScalarNullTest(ScalarIdent col).
+		const CColRef *null_test_col = nullptr;
+		std::function<BOOL(CExpression *)> find_null_test =
+			[&](CExpression *e) -> BOOL {
+			if (nullptr == e) return false;
+			if (COperator::EopScalarNullTest == e->Pop()->Eopid() &&
+				e->Arity() >= 1)
+			{
+				CExpression *arg = (*e)[0];
+				if (nullptr != arg &&
+					COperator::EopScalarIdent == arg->Pop()->Eopid())
+				{
+					null_test_col =
+						CScalarIdent::PopConvert(arg->Pop())->Pcr();
+					return true;
+				}
+				return false;
+			}
+			for (ULONG i = 0; i < e->Arity(); i++)
+			{
+				if (find_null_test((*e)[i])) return true;
+			}
+			return false;
+		};
+		BOOL found = find_null_test(exprhdl.PexprScalarRepChild(0));
+		if (found &&
+			nullptr != null_test_col &&
+			CColRef::EcrtTable == null_test_col->Ecrt())
+		{
+			// Confirm the column is the leading index key of this index
+			// (otherwise the IS NULL doesn't drive the page-fetch count).
+			const IMDIndex *idx = mda->RetrieveIndex(index_mdid);
+			if (nullptr != idx && idx->Keys() > 0)
+			{
+				const ULONG leading_pos2 = idx->KeyAt(0);
+				CTableDescriptor *ptd =
+					CPhysicalScan::PopConvert(pop)->Ptabdesc();
+				const CColumnDescriptorArray *pdrgpcd2 = ptd->Pdrgpcoldesc();
+				INT lead_attno2 = -1;
+				if (nullptr != pdrgpcd2 && leading_pos2 < pdrgpcd2->Size())
+				{
+					lead_attno2 = (*pdrgpcd2)[leading_pos2]->AttrNum();
+				}
+				const CColRefTable *crt2 =
+					CColRefTable::PcrConvert(
+						const_cast<CColRef *>(null_test_col));
+				if (lead_attno2 > 0 &&
+					crt2->AttrNum() == lead_attno2)
+				{
+					IMDId *rel_mdid2 = ptd->MDId();
+					rel_mdid2->AddRef();
+					CMDIdColStats *cs_mdid2 = GPOS_NEW(mp) CMDIdColStats(
+						CMDIdGPDB::CastMdid(rel_mdid2), leading_pos2);
+					const IMDColStats *cs = mda->Pmdcolstats(cs_mdid2);
+					// IMDColStats::GetNullFreq returns a CDouble that's
+					// floored at a tiny positive value (~1e-250) rather
+					// than literal 0.0 — `== 0.0` fails on the
+					// null_frac=0 case.  Use the project-wide
+					// CStatistics::Epsilon (1e-5) cutoff applied
+					// throughout the stats layer for "effectively zero".
+					if (nullptr != cs &&
+						cs->GetNullFreq().Get() < CStatistics::Epsilon.Get())
+					{
+						skip_index_pages_for_null_test = true;
+					}
+					cs_mdid2->Release();
+				}
+			}
+		}
+	}
+
 	DOUBLE index_pages_per_scan;
-	if (!leading_key_used)
+	if (skip_index_pages_for_null_test)
+	{
+		index_pages_per_scan = 0.0;
+	}
+	else if (!leading_key_used)
 	{
 		index_pages_per_scan = index_pages;
 	}
@@ -1929,7 +2030,7 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	{
 		index_pages_per_scan = std::ceil(selectivity * index_pages);
 	}
-	if (index_pages_per_scan < 1.0)
+	if (!skip_index_pages_for_null_test && index_pages_per_scan < 1.0)
 	{
 		index_pages_per_scan = 1.0;
 	}
