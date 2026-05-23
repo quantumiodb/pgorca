@@ -4,7 +4,7 @@
 # For each EXPLAIN in test/sql/cost_align.sql, run it twice — once under
 # PG's planner, once under ORCA with cost_model=pg — and report the cost
 # diff.  Plans with the same top operator are checked against a
-# tolerance (default 5%).  Plans whose top operator differs are
+# tolerance (default 2%).  Plans whose top operator differs are
 # reported but don't fail.
 #
 # Exit non-zero only if a "same-plan" comparison exceeds tolerance.
@@ -14,7 +14,7 @@
 #   PGHOST        directory containing the postmaster socket
 # Optional:
 #   PGDATABASE    test database name (default: postgres)
-#   COST_ALIGN_TOL_PCT   tolerance percentage (default: 5)
+#   COST_ALIGN_TOL_PCT   tolerance percentage (default: 2)
 
 set -u
 
@@ -23,7 +23,7 @@ PG_CONFIG=${PG_CONFIG:-pg_config}
 # caller can override via PG_ORCA_HOST / PG_ORCA_DB.
 PGHOST=${PG_ORCA_HOST:-/tmp}
 PGDATABASE=${PG_ORCA_DB:-postgres}
-TOL=${COST_ALIGN_TOL_PCT:-20}
+TOL=${COST_ALIGN_TOL_PCT:-2}
 export PGHOST PGDATABASE
 unset PGPORT PGUSER PGOPTIONS
 
