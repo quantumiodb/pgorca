@@ -37,6 +37,10 @@ public:
 		EsptDisj,		  // disjunctive filter
 		EsptLike,		  // LIKE filter
 		EsptUnsupported,  // unsupported filter for statistics calculation
+		EsptCol2ColEqui,  // col1 = col2 equality between two scalar idents
+						  // (used to give post-Cartesian OR-of-equi filters
+						  // a real NDV-based selectivity instead of falling
+						  // back to default 0.4 unsupported)
 
 		EsptSentinel
 	};

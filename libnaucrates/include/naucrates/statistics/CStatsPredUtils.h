@@ -187,6 +187,12 @@ public:
 	// is unsupported predicate on unknown column
 	static BOOL IsUnsupportedPredOnDefinedCol(CStatsPred *pred_stats);
 
+	// Detect a `col1 = col2` (or trivially-casted) equality between two
+	// distinct scalar idents.  Returns true and writes the two colids
+	// when matched; false otherwise.
+	static BOOL IsCol2ColEquiPredicate(CExpression *predicate_expr,
+									   ULONG *colid1, ULONG *colid2);
+
 };	// class CStatsPredUtils
 }  // namespace gpopt
 

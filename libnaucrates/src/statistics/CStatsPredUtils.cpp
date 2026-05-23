@@ -31,6 +31,7 @@
 #include "naucrates/statistics/CStatistics.h"
 #include "naucrates/statistics/CStatisticsUtils.h"
 #include "naucrates/statistics/CStatsPredArrayCmp.h"
+#include "naucrates/statistics/CStatsPredCol2ColEqui.h"
 #include "naucrates/statistics/CStatsPredConj.h"
 #include "naucrates/statistics/CStatsPredDisj.h"
 #include "naucrates/statistics/CStatsPredLike.h"
@@ -764,9 +765,21 @@ CStatsPredUtils::AddSupportedStatsFilters(CMemoryPool *mp,
 					mp, predicate_expr, outer_refs);
 				break;
 			default:
-				pred_stats = CStatsPredUtils::CreateStatsPredUnsupported(
-					mp, predicate_expr, outer_refs);
+			{
+				ULONG colid1 = gpos::ulong_max;
+				ULONG colid2 = gpos::ulong_max;
+				if (IsCol2ColEquiPredicate(predicate_expr, &colid1, &colid2))
+				{
+					pred_stats =
+						GPOS_NEW(mp) CStatsPredCol2ColEqui(colid1, colid2);
+				}
+				else
+				{
+					pred_stats = CStatsPredUtils::CreateStatsPredUnsupported(
+						mp, predicate_expr, outer_refs);
+				}
 				break;
+			}
 		}
 
 		if (nullptr != pred_stats)
@@ -1490,6 +1503,71 @@ CStatsPredUtils::IsUnsupportedPredOnDefinedCol(CStatsPred *pred_stats)
 {
 	return ((CStatsPred::EsptUnsupported == pred_stats->GetPredStatsType()) &&
 			(gpos::ulong_max == pred_stats->GetColId()));
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CStatsPredUtils::IsCol2ColEquiPredicate
+//
+//	@doc:
+//		Detect ScalarCmp(=, ScalarIdent, ScalarIdent) (with trivial casts
+//		permitted on either side).  Used to recognise col1=col2 equalities
+//		buried inside OR disjunctions so they can get an NDV-based selectivity
+//		rather than the default 0.4 unsupported fallback.
+//---------------------------------------------------------------------------
+BOOL
+CStatsPredUtils::IsCol2ColEquiPredicate(CExpression *predicate_expr,
+										ULONG *colid1, ULONG *colid2)
+{
+	GPOS_ASSERT(nullptr != predicate_expr);
+	GPOS_ASSERT(nullptr != colid1);
+	GPOS_ASSERT(nullptr != colid2);
+
+	if (COperator::EopScalarCmp != predicate_expr->Pop()->Eopid())
+	{
+		return false;
+	}
+
+	CScalarCmp *sc_cmp_op =
+		CScalarCmp::PopConvert(predicate_expr->Pop());
+	if (CStatsPred::EstatscmptEq !=
+		CStatsPredUtils::StatsCmpType(sc_cmp_op->MdIdOp()))
+	{
+		return false;
+	}
+
+	CExpression *expr_left = (*predicate_expr)[0];
+	CExpression *expr_right = (*predicate_expr)[1];
+
+	BOOL left_is_ident =
+		COperator::EopScalarIdent == expr_left->Pop()->Eopid() ||
+		CScalarIdent::FCastedScId(expr_left);
+	BOOL right_is_ident =
+		COperator::EopScalarIdent == expr_right->Pop()->Eopid() ||
+		CScalarIdent::FCastedScId(expr_right);
+	if (!left_is_ident || !right_is_ident)
+	{
+		return false;
+	}
+
+	const CColRef *col_ref_left =
+		CCastUtils::PcrExtractFromScIdOrCastScId(expr_left);
+	const CColRef *col_ref_right =
+		CCastUtils::PcrExtractFromScIdOrCastScId(expr_right);
+	if (nullptr == col_ref_left || nullptr == col_ref_right ||
+		col_ref_left->Id() == col_ref_right->Id())
+	{
+		return false;
+	}
+	if (!IMDType::StatsAreComparable(col_ref_left->RetrieveType(),
+									 col_ref_right->RetrieveType()))
+	{
+		return false;
+	}
+
+	*colid1 = col_ref_left->Id();
+	*colid2 = col_ref_right->Id();
+	return true;
 }
 
 

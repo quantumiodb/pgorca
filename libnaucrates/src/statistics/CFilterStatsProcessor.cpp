@@ -26,6 +26,7 @@
 #include "naucrates/statistics/CScaleFactorUtils.h"
 #include "naucrates/statistics/CStatistics.h"
 #include "naucrates/statistics/CStatisticsUtils.h"
+#include "naucrates/statistics/CStatsPredCol2ColEqui.h"
 
 using namespace gpopt;
 
@@ -471,6 +472,29 @@ CFilterStatsProcessor::MakeHistHashMapConjFilter(
 			continue;
 		}
 
+		if (CStatsPred::EsptCol2ColEqui == child_pred_stats->GetPredStatsType())
+		{
+			CStatsPredCol2ColEqui *col2col_pred =
+				CStatsPredCol2ColEqui::ConvertPredStats(child_pred_stats);
+			ULONG cid1 = col2col_pred->GetColId();
+			ULONG cid2 = col2col_pred->GetColIdOther();
+			CHistogram *h1 = input_histograms->Find(&cid1);
+			CHistogram *h2 = input_histograms->Find(&cid2);
+			CDouble sf = 1 / CHistogram::DefaultSelectivity;
+			if (nullptr != h1 && nullptr != h2)
+			{
+				CDouble ndv1 = h1->GetNumDistinct();
+				CDouble ndv2 = h2->GetNumDistinct();
+				CDouble max_ndv = std::max(ndv1.Get(), ndv2.Get());
+				if (max_ndv.Get() > 1.0)
+				{
+					sf = max_ndv;
+				}
+			}
+			unsupported_scale_factor = unsupported_scale_factor * sf;
+			continue;
+		}
+
 		// the histogram to apply filter on
 		CHistogram *hist_before = nullptr;
 		if (IsNewStatsColumn(colid, last_colid))
@@ -629,6 +653,29 @@ CFilterStatsProcessor::MakeHistHashMapDisjFilter(
 			scale_factors->Append(
 				GPOS_NEW(mp) CDouble(unsupported_pred_stats->ScaleFactor()));
 
+			continue;
+		}
+
+		if (CStatsPred::EsptCol2ColEqui == child_pred_stats->GetPredStatsType())
+		{
+			CStatsPredCol2ColEqui *col2col_pred =
+				CStatsPredCol2ColEqui::ConvertPredStats(child_pred_stats);
+			ULONG cid1 = col2col_pred->GetColId();
+			ULONG cid2 = col2col_pred->GetColIdOther();
+			CHistogram *h1 = input_histograms->Find(&cid1);
+			CHistogram *h2 = input_histograms->Find(&cid2);
+			CDouble sf = 1 / CHistogram::DefaultSelectivity;
+			if (nullptr != h1 && nullptr != h2)
+			{
+				CDouble ndv1 = h1->GetNumDistinct();
+				CDouble ndv2 = h2->GetNumDistinct();
+				CDouble max_ndv = std::max(ndv1.Get(), ndv2.Get());
+				if (max_ndv.Get() > 1.0)
+				{
+					sf = max_ndv;
+				}
+			}
+			scale_factors->Append(GPOS_NEW(mp) CDouble(sf));
 			continue;
 		}
 
