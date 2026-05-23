@@ -781,12 +781,26 @@ CCostModelPG::CostSort(CMemoryPool *,  // mp
 	{
 		const DOUBLE npages = std::ceil(input_bytes / 8192.0);
 		const DOUBLE nruns = input_bytes / sort_mem_bytes;
-		// MINORDER from PG tuplesort.c; safe lower bound when we can't
-		// recompute tuplesort_merge_order() exactly.
-		constexpr DOUBLE kMergeOrder = 6.0;
-		const DOUBLE log_runs = (nruns > kMergeOrder)
+		// PG tuplesort_merge_order (tuplesort.c:1778):
+		//   mOrder = allowedMem / (2 × TAPE_BUFFER_OVERHEAD + MERGE_BUFFER_SIZE)
+		//          = allowedMem / (2 × BLCKSZ + 32 × BLCKSZ)
+		//          = allowedMem / (34 × 8192)
+		// clamped to [MINORDER=6, MAXORDER=500].  At 4 MB work_mem this
+		// gives ~15; at 64 MB it gives ~241.  ORCA previously hardcoded the
+		// MINORDER=6 floor, over-billing log_runs by ~log(15)/log(6) ≈ 1.5×
+		// at default work_mem.
+		constexpr DOUBLE kMinOrder = 6.0;
+		constexpr DOUBLE kMaxOrder = 500.0;
+		constexpr DOUBLE kTapeBufferOverhead = 8192.0;
+		constexpr DOUBLE kMergeBufferSize = 8192.0 * 32.0;
+		const DOUBLE merge_order_raw =
+			sort_mem_bytes /
+			(2.0 * kTapeBufferOverhead + kMergeBufferSize);
+		const DOUBLE merge_order =
+			std::min(kMaxOrder, std::max(kMinOrder, merge_order_raw));
+		const DOUBLE log_runs = (nruns > merge_order)
 									? std::ceil(std::log(nruns) /
-												std::log(kMergeOrder))
+												std::log(merge_order))
 									: 1.0;
 		const DOUBLE npageaccesses = 2.0 * npages * log_runs;
 		disk_cost = npageaccesses *
