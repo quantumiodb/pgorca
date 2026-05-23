@@ -2415,6 +2415,7 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	DOUBLE index_pages_real = 0.0;
 	DOUBLE num_sa_scans = 1.0;
 	ULONG num_index_probes = 0;
+	BOOL all_probes_btree = true;
 	{
 		CMDAccessor *mda_b = COptCtxt::PoctxtFromTLS()->Pmda();
 		std::function<void(CExpression *)> walk = [&](CExpression *e) {
@@ -2429,6 +2430,10 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 				index_pages_real +=
 					static_cast<DOUBLE>(index->IndexPages());
 				num_index_probes += 1;
+				if (IMDIndex::EmdindBtree != index->IndexType())
+				{
+					all_probes_btree = false;
+				}
 				if (e->Arity() > 0 && num_index_probes == 1)
 				{
 					num_sa_scans = static_cast<DOUBLE>(
@@ -2463,10 +2468,17 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 			? std::max(1.0,
 					   std::floor(std::log(index_pages) / std::log(100.0)))
 			: 0.0;
+	// Hash/gist/bitmap AMs don't pay the btree-style descent (matches
+	// CostIndexScan / 9feb33d): PG hashcostestimate / gistcostestimate
+	// return indexTotalCost without a log_2(tuples) + (h+1)×50 term.
+	// For BitmapAnd/Or trees mixing AMs (rare), conservatively skip
+	// descent when any probe is non-btree.
 	const DOUBLE descent =
-		(std::ceil(std::log2(std::max(N, 1.0))) +
-		 (tree_height + 1.0) * kPageCpuMultiplier) *
-		cpu_operator_cost;
+		all_probes_btree
+			? (std::ceil(std::log2(std::max(N, 1.0))) +
+			   (tree_height + 1.0) * kPageCpuMultiplier) *
+				  cpu_operator_cost
+			: 0.0;
 	const DOUBLE index_cpu =
 		(cpu_index_tuple_cost + cpu_operator_cost) * tuples_fetched;
 	const DOUBLE selectivity = std::min(1.0, tuples_fetched / N);
