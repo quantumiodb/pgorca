@@ -1447,11 +1447,22 @@ IndexScanIOAtLoopCount(DOUBLE tuples_fetched, DOUBLE N, DOUBLE T,
 
 	DOUBLE selectivity = (N > 0.0) ? tuples_fetched / N : 0.0;
 	if (selectivity > 1.0) selectivity = 1.0;
-	DOUBLE pages_fetched_corr = std::ceil(selectivity * T);
+	// Match PG's cost_index (costsize.c:700) min_IO computation: scale
+	// selectivity × T by loop_count BEFORE rounding, so very selective
+	// per-probe lookups (tuples_per_probe ≪ N) don't saturate at 1 page
+	// per probe.  Previously ceil(selectivity * T) rounded a 0.115-page
+	// estimate up to 1 before multiplying by loop_count, multiplying the
+	// final min_IO by ~7× on lineitem(l_orderkey) probes (TPC-H Q5).
+	DOUBLE pages_fetched_corr;
 	if (loop_count > 1.0)
 	{
 		pages_fetched_corr =
-			IndexPagesFetched(pages_fetched_corr * loop_count, T, index_pages);
+			IndexPagesFetched(std::ceil(selectivity * T * loop_count),
+							  T, index_pages);
+	}
+	else
+	{
+		pages_fetched_corr = std::ceil(selectivity * T);
 	}
 	if (indexonly)
 	{
