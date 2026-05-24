@@ -238,19 +238,6 @@ Oid GetArrayType(Oid typid);
 bool GetAttrStatsSlot(AttStatsSlot *sslot, HeapTuple statstuple, int reqkind,
 					  Oid reqop, int flags);
 
-// Produce an order-preserving prefix for `src` under `collation` into
-// `dest`.  For C/POSIX collations this is just a memcpy of up to destsize
-// bytes.  For deterministic libc/ICU collations it invokes the PG locale
-// machinery (pg_strnxfrm_prefix).  For non-deterministic collations or any
-// error path it returns 0 (so the caller can fall back to raw bytes or
-// default selectivity).
-//
-// Returns the number of sort-key bytes written to `dest` (always <=
-// destsize).  The output bytes have the property that
-//   memcmp(sortkey(a), sortkey(b)) preserves varstr_cmp(a, b, collation).
-size_t ComputeLocaleSortKey(char *dest, size_t destsize, const char *src,
-							size_t srclen, Oid collation);
-
 // free attribute stats slot
 void FreeAttrStatsSlot(AttStatsSlot *sslot);
 

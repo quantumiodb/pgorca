@@ -2259,7 +2259,7 @@ CTranslatorRelcacheToDXL::RetrieveColStats(CMemoryPool *mp,
 		TransformStatsToDXLBucketArray(
 			mp, att_type, num_distinct, null_freq, mcv_slot.values,
 			mcv_slot.numbers, ULONG(mcv_slot.nvalues), hist_slot.values,
-			ULONG(hist_slot.nvalues), mcv_slot.stacoll, hist_slot.stacoll);
+			ULONG(hist_slot.nvalues));
 
 	GPOS_ASSERT(nullptr != dxl_stats_bucket_array_transformed);
 
@@ -2528,17 +2528,15 @@ CDXLBucketArray *
 CTranslatorRelcacheToDXL::TransformStatsToDXLBucketArray(
 	CMemoryPool *mp, OID att_type, CDouble num_distinct, CDouble null_freq,
 	const Datum *mcv_values, const float4 *mcv_frequencies,
-	ULONG num_mcv_values, const Datum *hist_values, ULONG num_hist_values,
-	Oid mcv_collation, Oid hist_collation)
+	ULONG num_mcv_values, const Datum *hist_values, ULONG num_hist_values)
 {
 	CMDIdGPDB *mdid_atttype =
 		GPOS_NEW(mp) CMDIdGPDB(IMDId::EmdidGeneral, att_type);
 	IMDType *md_type = RetrieveType(mp, mdid_atttype);
 
 	// translate MCVs to Orca histogram. Create an empty histogram if there are no MCVs.
-	CHistogram *gpdb_mcv_hist =
-		TransformMcvToOrcaHistogram(mp, md_type, mcv_values, mcv_frequencies,
-									num_mcv_values, mcv_collation);
+	CHistogram *gpdb_mcv_hist = TransformMcvToOrcaHistogram(
+		mp, md_type, mcv_values, mcv_frequencies, num_mcv_values);
 
 	GPOS_ASSERT(gpdb_mcv_hist->IsValid());
 
@@ -2571,9 +2569,8 @@ CTranslatorRelcacheToDXL::TransformStatsToDXLBucketArray(
 			hist_distinct = num_distinct - CDouble(num_mcv_values);
 		}
 		// histogram from gpdb histogram
-		histogram = TransformHistToOrcaHistogram(mp, md_type, hist_values,
-												 num_hist_values, hist_distinct,
-												 hist_freq, hist_collation);
+		histogram = TransformHistToOrcaHistogram(
+			mp, md_type, hist_values, num_hist_values, hist_distinct, hist_freq);
 		if (0 == histogram->GetNumBuckets())
 		{
 			has_hist = false;
@@ -2634,7 +2631,7 @@ CTranslatorRelcacheToDXL::TransformStatsToDXLBucketArray(
 CHistogram *
 CTranslatorRelcacheToDXL::TransformMcvToOrcaHistogram(
 	CMemoryPool *mp, const IMDType *md_type, const Datum *mcv_values,
-	const float4 *mcv_frequencies, ULONG num_mcv_values, Oid collation)
+	const float4 *mcv_frequencies, ULONG num_mcv_values)
 {
 	IDatumArray *datums = GPOS_NEW(mp) IDatumArray(mp);
 	CDoubleArray *freqs = GPOS_NEW(mp) CDoubleArray(mp);
@@ -2643,7 +2640,7 @@ CTranslatorRelcacheToDXL::TransformMcvToOrcaHistogram(
 	{
 		Datum datumMCV = mcv_values[ul];
 		IDatum *datum = CTranslatorScalarToDXL::CreateIDatumFromGpdbDatum(
-			mp, md_type, false /* is_null */, datumMCV, collation);
+			mp, md_type, false /* is_null */, datumMCV);
 		datums->Append(datum);
 		freqs->Append(GPOS_NEW(mp) CDouble(mcv_frequencies[ul]));
 
@@ -2676,8 +2673,7 @@ CTranslatorRelcacheToDXL::TransformMcvToOrcaHistogram(
 CHistogram *
 CTranslatorRelcacheToDXL::TransformHistToOrcaHistogram(
 	CMemoryPool *mp, const IMDType *md_type, const Datum *hist_values,
-	ULONG num_hist_values, CDouble num_distinct, CDouble hist_freq,
-	Oid collation)
+	ULONG num_hist_values, CDouble num_distinct, CDouble hist_freq)
 {
 	GPOS_ASSERT(1 < num_hist_values);
 
@@ -2691,9 +2687,9 @@ CTranslatorRelcacheToDXL::TransformHistToOrcaHistogram(
 	for (ULONG ul = 0; ul < num_buckets; ul++)
 	{
 		IDatum *min_datum = CTranslatorScalarToDXL::CreateIDatumFromGpdbDatum(
-			mp, md_type, false /* is_null */, hist_values[ul], collation);
+			mp, md_type, false /* is_null */, hist_values[ul]);
 		IDatum *max_datum = CTranslatorScalarToDXL::CreateIDatumFromGpdbDatum(
-			mp, md_type, false /* is_null */, hist_values[ul + 1], collation);
+			mp, md_type, false /* is_null */, hist_values[ul + 1]);
 		BOOL is_lower_closed, is_upper_closed;
 
 		if (min_datum->StatsAreEqual(max_datum))

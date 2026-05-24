@@ -304,14 +304,12 @@ public:
 	static CDXLDatum *TranslateDatumToDXL(CMemoryPool *mp,
 										  const IMDType *md_type,
 										  INT type_modifier, BOOL is_null,
-										  ULONG len, Datum datum,
-										  Oid collation = InvalidOid);
+										  ULONG len, Datum datum);
 
 	// translate GPDB datum to IDatum
 	static IDatum *CreateIDatumFromGpdbDatum(CMemoryPool *mp,
 											 const IMDType *md_type,
-											 BOOL is_null, Datum datum,
-											 Oid collation = InvalidOid);
+											 BOOL is_null, Datum datum);
 
 	// extract the byte array value of the datum
 	static BYTE *ExtractByteArrayFromDatum(CMemoryPool *mp,
@@ -324,8 +322,7 @@ public:
 	// extract the long int value of a datum
 	static LINT ExtractLintValueFromDatum(const IMDType *md_type, BOOL is_null,
 										  BYTE *bytes, ULONG len,
-										  IMDId *base_mdid,
-										  Oid collation = InvalidOid);
+										  IMDId *base_mdid);
 
 	// datum to oid CDXLDatum
 	static CDXLDatum *TranslateOidDatumToDXL(CMemoryPool *mp,
@@ -362,8 +359,7 @@ public:
 												 const IMDType *md_type,
 												 INT type_modifier,
 												 BOOL is_null, ULONG len,
-												 Datum datum,
-												 Oid collation = InvalidOid);
+												 Datum datum);
 };
 }  // namespace gpdxl
 #endif	// GPDXL_CTranslatorScalarToDXL_H
