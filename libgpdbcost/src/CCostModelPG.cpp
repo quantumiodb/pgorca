@@ -1163,7 +1163,19 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 		cpu_operator_cost * static_cast<DOUBLE>(n_qual_ops);
 	const DOUBLE cpu_cost = cpu_per_tuple * ntuples;
 
-	return CCost(pci->NumRebinds() * (extra_rescan + cpu_cost));
+	// PG's final_cost_nestloop adds `pathtarget->cost.per_tuple * path->rows`
+	// to the run cost (costsize.c:3513), charging per-output-row tlist-eval
+	// cost.  ORCA delegates tlist evaluation to a separate ComputeScalar /
+	// Result node above the join, but that node only sees the FINAL output
+	// rows — it doesn't penalize NL nodes that produce a wide intermediate
+	// (e.g. TPC-H Q8 orders-driven NL emitting 640k rows that downstream
+	// HashJoin then filters to 12k).  Approximate PG's per-output-row charge
+	// with `cpu_tuple_cost × output_rows`; this is the minimum PG would
+	// charge for an empty pathtarget and gives any NL a row-count signal
+	// that maps wider intermediates to higher cost.
+	const DOUBLE emit_cost = cpu_tuple_cost * output_rows;
+
+	return CCost(pci->NumRebinds() * (extra_rescan + cpu_cost + emit_cost));
 }
 
 //---------------------------------------------------------------------------
@@ -1489,17 +1501,23 @@ IndexScanIOAtLoopCount(DOUBLE tuples_fetched, DOUBLE N, DOUBLE T,
 	const DOUBLE csquared = correlation * correlation;
 	const DOUBLE heap_io = max_IO + csquared * (min_IO - max_IO);
 
-	DOUBLE index_pages_per_scan = std::ceil(selectivity * index_pages);
-	if (index_pages_per_scan < 1.0) index_pages_per_scan = 1.0;
+	// Match PG's cost_index index_pages_fetched call: at loop_count > 1, scale
+	// selectivity × index_pages by loop_count BEFORE rounding so very selective
+	// per-probe lookups don't saturate at 1 index page per probe (same fix as
+	// for heap pages above; without it the per-probe index IO stays at ~1
+	// random page when amortization should bring it well below 1).
 	DOUBLE index_io;
 	if (loop_count > 1.0)
 	{
 		const DOUBLE index_pages_total = IndexPagesFetched(
-			index_pages_per_scan * loop_count, index_pages, index_pages);
+			std::ceil(selectivity * index_pages * loop_count),
+			index_pages, index_pages);
 		index_io = (index_pages_total * random_page_cost) / loop_count;
 	}
 	else
 	{
+		DOUBLE index_pages_per_scan = std::ceil(selectivity * index_pages);
+		if (index_pages_per_scan < 1.0) index_pages_per_scan = 1.0;
 		index_io = index_pages_per_scan * random_page_cost;
 	}
 
