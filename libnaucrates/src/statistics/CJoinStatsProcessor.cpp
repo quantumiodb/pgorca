@@ -33,27 +33,30 @@ using namespace gpopt;
 
 namespace
 {
-// Per-thread cache of the currently-deriving join's equivalence classes,
-// set by DeriveJoinStats and consumed by ApplyForeignKeyAdjustment.  We
-// can't plumb this through SetResultingJoinStats / CalcInnerJoinStats
-// without churning unrelated callers, and stats derivation is
-// single-threaded per query.  RAII guard restores the previous value on
-// scope exit so nested calls don't leak state.
-thread_local CColRefSetArray *t_join_equiv_classes = nullptr;
-
+// RAII guard to publish the currently-deriving join's equivalence
+// classes on COptCtxt so ApplyForeignKeyAdjustment can do EC-aware FK
+// matching without plumbing the EC array through CalcAllJoinStats /
+// CalcInnerJoinStats / SetResultingJoinStats — all stable APIs with
+// multiple call sites.  COptCtxt is per-query task-local storage so
+// the slot inherits the same single-threaded-per-query invariant we
+// previously relied on with thread_local, but lives inside ORCA's
+// explicit per-task object rather than in C++ TLS.  Nested
+// DeriveJoinStats invocations restore the prior value on scope exit
+// (current shape is non-recursive but the guard preserves the
+// invariant if that ever changes).
 class CJoinECScope
 {
 private:
 	CColRefSetArray *m_prev;
 
 public:
-	explicit CJoinECScope(CColRefSetArray *ec) : m_prev(t_join_equiv_classes)
+	explicit CJoinECScope(CColRefSetArray *ec)
+		: m_prev(COptCtxt::PoctxtFromTLS()->SetJoinEquivClasses(ec))
 	{
-		t_join_equiv_classes = ec;
 	}
 	~CJoinECScope()
 	{
-		t_join_equiv_classes = m_prev;
+		(void) COptCtxt::PoctxtFromTLS()->SetJoinEquivClasses(m_prev);
 	}
 	CJoinECScope(const CJoinECScope &) = delete;
 	CJoinECScope &operator=(const CJoinECScope &) = delete;
@@ -701,19 +704,27 @@ CJoinStatsProcessor::ApplyForeignKeyAdjustment(
 						{
 							ref_side_ok = true;	 // direct
 						}
-						else if (nullptr != t_join_equiv_classes)
+						else
 						{
+							CColRefSetArray *equiv_classes =
+								COptCtxt::PoctxtFromTLS()
+									->GetJoinEquivClasses();
+							if (nullptr == equiv_classes)
+							{
+								// no EC info available — fall through to
+								// "ref_side_ok=false" (skip this conjunct)
+								continue;
+							}
 							// EC-aware: walk j_ref's EC for a member on
 							// (referenced_mdid, ref_a).
 							CColRef *j_ref_cr =
 								(0 == dir) ? conj_info[j].inner_cr
 										   : conj_info[j].outer_cr;
-							const ULONG n_ec = t_join_equiv_classes->Size();
+							const ULONG n_ec = equiv_classes->Size();
 							for (ULONG ec_idx = 0;
 								 ec_idx < n_ec && !ref_side_ok; ec_idx++)
 							{
-								CColRefSet *ec =
-									(*t_join_equiv_classes)[ec_idx];
+								CColRefSet *ec = (*equiv_classes)[ec_idx];
 								if (!ec->FMember(j_ref_cr))
 								{
 									continue;

@@ -119,6 +119,15 @@ private:
 	// unique id per partition selector in the memo
 	ULONG m_selector_id_counter;
 
+	// Currently-deriving join's combined equivalence classes (borrowed
+	// from CPropConstraint, NOT ref-counted here).  Set by
+	// CJoinStatsProcessor::DeriveJoinStats via the RAII guard
+	// CJoinECScope, read by ApplyForeignKeyAdjustment to do EC-aware
+	// FK matching.  Nullptr outside a join's stats derivation scope.
+	// Lifetime: borrowed from the exprhdl's CPropConstraint, which lives
+	// at least as long as the join's stats derivation call.
+	CColRefSetArray *m_join_equiv_classes{nullptr};
+
 	// detailed info (filter expr, stats etc) per partition selector
 	// (required by CDynamicPhysicalScan for recomputing statistics for DPE)
 	SPartSelectorInfo *m_part_selector_info;
@@ -263,6 +272,22 @@ public:
 	Pcteinfo()
 	{
 		return m_pcteinfo;
+	}
+
+	// equivalence classes of the join currently being stats-derived;
+	// see m_join_equiv_classes.
+	CColRefSetArray *
+	GetJoinEquivClasses() const
+	{
+		return m_join_equiv_classes;
+	}
+	// Returns the previous value so a RAII scope can restore it.
+	CColRefSetArray *
+	SetJoinEquivClasses(CColRefSetArray *new_value)
+	{
+		CColRefSetArray *prev = m_join_equiv_classes;
+		m_join_equiv_classes = new_value;
+		return prev;
 	}
 
 	// return a new part index id
