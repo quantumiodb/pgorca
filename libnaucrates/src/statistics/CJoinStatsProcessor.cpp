@@ -11,8 +11,11 @@
 
 #include "naucrates/statistics/CJoinStatsProcessor.h"
 
+#include "gpopt/base/CColRefSet.h"
+#include "gpopt/base/CColRefSetIter.h"
 #include "gpopt/base/CColRefTable.h"
 #include "gpopt/base/COptCtxt.h"
+#include "gpopt/base/CPropConstraint.h"
 #include "gpopt/operators/CLogicalIndexApply.h"
 #include "gpopt/operators/CLogicalNAryJoin.h"
 #include "gpopt/operators/CPredicateUtils.h"
@@ -27,6 +30,35 @@
 #include "naucrates/statistics/CStatisticsUtils.h"
 
 using namespace gpopt;
+
+namespace
+{
+// Per-thread cache of the currently-deriving join's equivalence classes,
+// set by DeriveJoinStats and consumed by ApplyForeignKeyAdjustment.  We
+// can't plumb this through SetResultingJoinStats / CalcInnerJoinStats
+// without churning unrelated callers, and stats derivation is
+// single-threaded per query.  RAII guard restores the previous value on
+// scope exit so nested calls don't leak state.
+thread_local CColRefSetArray *t_join_equiv_classes = nullptr;
+
+class CJoinECScope
+{
+private:
+	CColRefSetArray *m_prev;
+
+public:
+	explicit CJoinECScope(CColRefSetArray *ec) : m_prev(t_join_equiv_classes)
+	{
+		t_join_equiv_classes = ec;
+	}
+	~CJoinECScope()
+	{
+		t_join_equiv_classes = m_prev;
+	}
+	CJoinECScope(const CJoinECScope &) = delete;
+	CJoinECScope &operator=(const CJoinECScope &) = delete;
+};
+}  // namespace
 
 BOOL CJoinStatsProcessor::m_compute_scale_factor_from_histogram_buckets = false;
 
@@ -525,13 +557,17 @@ CJoinStatsProcessor::ApplyForeignKeyAdjustment(
 	CColumnFactory *col_factory = COptCtxt::PoctxtFromTLS()->Pcf();
 
 	// Per-conjunct extracted info: (outer_mdid, outer_attno, inner_mdid,
-	// inner_attno).  Indexed identically to join_conds_scale_factors.
+	// inner_attno) plus the CColRef pointers (kept for the EC-aware
+	// FK matching path below).  Indexed identically to
+	// join_conds_scale_factors.
 	struct SConjInfo
 	{
 		IMDId *outer_mdid;
 		INT outer_attno;
 		IMDId *inner_mdid;
 		INT inner_attno;
+		CColRef *outer_cr;	// only valid when valid==true
+		CColRef *inner_cr;
 		BOOL valid;	 // false when colrefs aren't base-table or are computed
 	};
 	std::vector<SConjInfo> conj_info(n);
@@ -563,6 +599,8 @@ CJoinStatsProcessor::ApplyForeignKeyAdjustment(
 			static_cast<CColRefTable *>(cr_out)->AttrNum();
 		conj_info[i].inner_attno =
 			static_cast<CColRefTable *>(cr_in)->AttrNum();
+		conj_info[i].outer_cr = cr_out;
+		conj_info[i].inner_cr = cr_in;
 		if (nullptr == conj_info[i].outer_mdid ||
 			nullptr == conj_info[i].inner_mdid)
 		{
@@ -628,25 +666,86 @@ CJoinStatsProcessor::ApplyForeignKeyAdjustment(
 						{
 							continue;
 						}
-						// Conjunct j must be between this same pair AND
-						// its attnos must match (loc, ref) in the
-						// orientation matching `dir`.
-						INT j_local = (0 == dir) ? conj_info[j].outer_attno
-												 : conj_info[j].inner_attno;
-						INT j_ref = (0 == dir) ? conj_info[j].inner_attno
-											   : conj_info[j].outer_attno;
-						IMDId *j_loc_mdid = (0 == dir) ? conj_info[j].outer_mdid
-													   : conj_info[j].inner_mdid;
-						IMDId *j_ref_mdid = (0 == dir) ? conj_info[j].inner_mdid
-													   : conj_info[j].outer_mdid;
-						if (j_loc_mdid->Equals(referencing_mdid) &&
-							j_ref_mdid->Equals(referenced_mdid) &&
-							j_local == loc_a && j_ref == ref_a)
+						// Conjunct j must have its "referencing-side" col
+						// on (referencing_mdid, loc_a).  The
+						// "referenced-side" can match EITHER
+						//   (a) directly on (referenced_mdid, ref_a), or
+						//   (b) via an equivalence class — share an EC
+						//       with some col on (referenced_mdid, ref_a).
+						// PG's get_foreign_key_join_selectivity checks
+						// rinfo->parent_ec; (b) is the same idea for ORCA,
+						// catching join orders where ORCA has substituted
+						// one FK column for an EC-equivalent (e.g. Q9's
+						// l_suppkey = s_suppkey derived from
+						// l_suppkey = ps_suppkey AND ps_suppkey = s_suppkey).
+						INT j_local =
+							(0 == dir) ? conj_info[j].outer_attno
+									   : conj_info[j].inner_attno;
+						IMDId *j_loc_mdid =
+							(0 == dir) ? conj_info[j].outer_mdid
+									   : conj_info[j].inner_mdid;
+						if (!j_loc_mdid->Equals(referencing_mdid) ||
+							j_local != loc_a)
 						{
-							fk_match_idx[k] = j;
-							found = true;
-							break;
+							continue;
 						}
+						INT j_ref =
+							(0 == dir) ? conj_info[j].inner_attno
+									   : conj_info[j].outer_attno;
+						IMDId *j_ref_mdid =
+							(0 == dir) ? conj_info[j].inner_mdid
+									   : conj_info[j].outer_mdid;
+						BOOL ref_side_ok = false;
+						if (j_ref_mdid->Equals(referenced_mdid) &&
+							j_ref == ref_a)
+						{
+							ref_side_ok = true;	 // direct
+						}
+						else if (nullptr != t_join_equiv_classes)
+						{
+							// EC-aware: walk j_ref's EC for a member on
+							// (referenced_mdid, ref_a).
+							CColRef *j_ref_cr =
+								(0 == dir) ? conj_info[j].inner_cr
+										   : conj_info[j].outer_cr;
+							const ULONG n_ec = t_join_equiv_classes->Size();
+							for (ULONG ec_idx = 0;
+								 ec_idx < n_ec && !ref_side_ok; ec_idx++)
+							{
+								CColRefSet *ec =
+									(*t_join_equiv_classes)[ec_idx];
+								if (!ec->FMember(j_ref_cr))
+								{
+									continue;
+								}
+								CColRefSetIter ec_iter(*ec);
+								while (ec_iter.Advance())
+								{
+									CColRef *m =
+										const_cast<CColRef *>(ec_iter.Pcr());
+									if (CColRef::EcrtTable != m->Ecrt())
+									{
+										continue;
+									}
+									IMDId *m_mdid = m->GetMdidTable();
+									if (nullptr != m_mdid &&
+										m_mdid->Equals(referenced_mdid) &&
+										static_cast<CColRefTable *>(m)
+												->AttrNum() == ref_a)
+									{
+										ref_side_ok = true;
+										break;
+									}
+								}
+							}
+						}
+						if (!ref_side_ok)
+						{
+							continue;
+						}
+						fk_match_idx[k] = j;
+						found = true;
+						break;
 					}
 					if (!found)
 					{
@@ -864,6 +963,20 @@ CJoinStatsProcessor::DeriveJoinStats(CMemoryPool *mp,
 {
 	GPOS_ASSERT(CLogical::EspNone <
 				CLogical::PopConvert(exprhdl.Pop())->Esp(exprhdl));
+
+	// Stash this join's equivalence classes on a thread-local so the
+	// FK-aware adjustment further down can do EC-extended FK matching
+	// (PG cost_index get_foreign_key_join_selectivity checks via
+	// parent_ec, not direct attno equality).  CPropConstraint already
+	// combines children's ECs with this join's own pred-derived ECs;
+	// the scope guard restores prior TLS on exit.
+	CColRefSetArray *equiv_classes = nullptr;
+	CPropConstraint *ppc = exprhdl.DerivePropertyConstraint();
+	if (nullptr != ppc)
+	{
+		equiv_classes = ppc->PdrgpcrsEquivClasses();
+	}
+	CJoinECScope ec_scope(equiv_classes);
 
 	IStatisticsArray *statistics_array = GPOS_NEW(mp) IStatisticsArray(mp);
 	const ULONG arity = exprhdl.Arity();
