@@ -69,6 +69,19 @@ public:
 
 	void Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 				   CExpression *pexpr) const override;
+
+	BOOL
+	IsApplyOnce() override
+	{
+		// Cap binding iteration to a single binding per group expression.
+		// Without this guard the binding enumerator walks every
+		// combination of child gexprs for nested-subquery shapes (TPC-DS
+		// EXISTS-over-cross-join etc.), spending minutes on 60K+
+		// bindings even when most are then rejected by the structural
+		// scan-like gate.  The shape gate is independent of which
+		// specific binding fires, so one is enough.
+		return true;
+	}
 };
 }  // namespace gpopt
 
