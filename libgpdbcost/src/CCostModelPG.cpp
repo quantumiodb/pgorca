@@ -1064,11 +1064,30 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 	DOUBLE ntuples = outer_rows * inner_rows;
 	if (is_semi_or_anti && outer_rows > 0.0 && inner_rows > 0.0)
 	{
-		// PG: match_count ≈ avg # matches per *matched* outer row;
-		// inner_rows in ORCA's NL inner stats is per-probe expected
-		// matches (CJoinStatsProcessor scales by 1/outer_rows), so it's
-		// the closest analogue.  Clamp ≥ 1.0 to match PG (Max(1.0, ...)).
-		const DOUBLE match_count = std::max(1.0, inner_rows);
+		// PG's match_count = avg # matches per matched outer row, derived
+		// from compute_semi_anti_join_factors via clauselist_selectivity
+		// (JOIN_SEMI).  ORCA approximates it from the inner stats, but the
+		// right value depends on whether the inner is correlated:
+		//
+		//   - Correlated NL (inner has outer refs, executes once per outer
+		//     row): CJoinStatsProcessor scales inner_rows by 1/outer_rows
+		//     so inner_rows IS per-probe expected matches → use directly.
+		//
+		//   - Uncorrelated NL (inner is materialized once and rescanned —
+		//     Hash, Sort, or any plain physical op): inner_rows is the
+		//     FULL inner cardinality.  Using it as match_count makes
+		//     inner_scan_frac = 2/(inner_rows+1) collapse to ~0 for any
+		//     non-trivial inner, dramatically under-pricing NL Semi over
+		//     a materialized inner.  TPC-DS Q95 was the trigger: outer
+		//     3909, materialized inner 9.4M → match_count=9.4M →
+		//     inner_scan_frac=2e-7 → NL Semi cost ≈ 0.  Approximate
+		//     per-outer matches as inner_rows / outer_rows (uniform
+		//     distribution); not exact but better-by-orders than treating
+		//     full inner as a single match group.
+		const BOOL inner_is_correlated = (inner_rebinds > 1.0);
+		const DOUBLE match_count = inner_is_correlated
+			? std::max(1.0, inner_rows)
+			: std::max(1.0, inner_rows / std::max(1.0, outer_rows));
 		const DOUBLE inner_scan_frac = 2.0 / (match_count + 1.0);
 
 		// PG's outer_match_frac = jselec (SEMI selectivity) = fraction of
