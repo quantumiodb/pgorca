@@ -81,6 +81,8 @@ CLogicalInnerJoin::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfInnerJoinAntiSemiJoinSwap);
 	(void) xform_set->ExchangeSet(CXform::ExfInnerJoinAntiSemiJoinNotInSwap);
 
+	(void) xform_set->ExchangeSet(CXform::ExfReduceAggInputViaCTE);
+
 	return xform_set;
 }
 

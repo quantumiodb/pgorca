@@ -133,6 +133,7 @@
 #include "gpopt/xforms/CXformPushGbBelowUnionAll.h"
 #include "gpopt/xforms/CXformPushGbDedupBelowJoin.h"
 #include "gpopt/xforms/CXformPushGbWithHavingBelowJoin.h"
+#include "gpopt/xforms/CXformReduceAggInputViaCTE.h"
 #include "gpopt/xforms/CXformPushJoinBelowLeftUnionAll.h"
 #include "gpopt/xforms/CXformPushJoinBelowRightUnionAll.h"
 #include "gpopt/xforms/CXformPushJoinBelowUnionAll.h"
