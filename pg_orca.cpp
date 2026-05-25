@@ -162,7 +162,6 @@ static bool orca_initialized = false;
 MemoryContext OptimizerMemoryContext = NULL;
 
 static planner_hook_type             prev_planner_hook        = nullptr;
-static ExplainOneQuery_hook_type     prev_explain_hook        = nullptr;
 static explain_per_plan_hook_type    prev_per_plan_hook       = nullptr;
 static ExecutorStart_hook_type       prev_executor_start_hook = nullptr;
 
@@ -591,17 +590,6 @@ fallback:
 }
 
 /* ----------------------------------------------------------------
- * pg_orca_ExplainOneQuery  -- delegate to prev hook / standard
- * ---------------------------------------------------------------- */
-static void
-pg_orca_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into,
-                        ExplainState *es, const char *queryString,
-                        ParamListInfo params, QueryEnvironment *queryEnv)
-{
-    prev_explain_hook(query, cursorOptions, into, es, queryString, params, queryEnv);
-}
-
-/* ----------------------------------------------------------------
  * pg_orca_ExplainPerPlan  -- annotate EXPLAIN output with optimizer name
  *
  * Called via explain_per_plan_hook, which fires inside ExplainOnePlan
@@ -833,11 +821,18 @@ void _PG_init(void)
 
     RegisterDynScanCustomScanMethods();
 
+    /*
+     * Hook chain conventions:
+     *   prev_X_hook = X_hook;   // may be NULL — original PG state preserved
+     *   X_hook      = pg_orca_X;
+     * Call sites use `if (prev) prev(); else standard_X();` so any prior
+     * extension's hook is preserved and re-invoked.  pg_orca's planner
+     * intentionally does NOT chain to prev_planner_hook on successful ORCA
+     * planning (only on fallback), matching the "owner takes over" pattern
+     * other transformative planner extensions follow (e.g. duckdb_fdw).
+     */
     prev_planner_hook = planner_hook;
     planner_hook      = pg_orca_planner;
-
-    prev_explain_hook    = ExplainOneQuery_hook ? ExplainOneQuery_hook : standard_ExplainOneQuery;
-    ExplainOneQuery_hook = pg_orca_ExplainOneQuery;
 
     prev_per_plan_hook       = explain_per_plan_hook;
     explain_per_plan_hook    = pg_orca_ExplainPerPlan;
@@ -848,11 +843,9 @@ void _PG_init(void)
 
 void _PG_fini(void)
 {
-    planner_hook         = prev_planner_hook;
-    ExplainOneQuery_hook = (prev_explain_hook == standard_ExplainOneQuery)
-                           ? nullptr : prev_explain_hook;
+    planner_hook          = prev_planner_hook;
     explain_per_plan_hook = prev_per_plan_hook;
-    ExecutorStart_hook   = prev_executor_start_hook;
+    ExecutorStart_hook    = prev_executor_start_hook;
 
     if (orca_initialized)
     {
