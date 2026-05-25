@@ -11,12 +11,16 @@
 
 #include "naucrates/statistics/CJoinStatsProcessor.h"
 
+#include "gpopt/base/CColRefTable.h"
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/operators/CLogicalIndexApply.h"
 #include "gpopt/operators/CLogicalNAryJoin.h"
 #include "gpopt/operators/CPredicateUtils.h"
 #include "gpopt/operators/CScalarNAryJoinPredList.h"
 #include "gpopt/optimizer/COptimizerConfig.h"
+#include "naucrates/md/CMDForeignKey.h"
+#include "naucrates/md/CMDIdRelStats.h"
+#include "naucrates/md/IMDRelStats.h"
 #include "naucrates/statistics/CFilterStatsProcessor.h"
 #include "naucrates/statistics/CLeftAntiSemiJoinStatsProcessor.h"
 #include "naucrates/statistics/CScaleFactorUtils.h"
@@ -425,6 +429,18 @@ CJoinStatsProcessor::SetResultingJoinStats(
 				local_scale_factor, mdid_pair, both_dist_keys, is_equi));
 	}
 
+	// PG-style FK-aware join sel: if an equi-join's conjunctive clauses
+	// fully cover an FK between the two base tables, replace the per-
+	// clause scale factors of those clauses with a single virtual scale
+	// factor = ref_tuples (so the combined sel becomes 1/ref_tuples,
+	// matching PG's get_foreign_key_join_selectivity).  Skipped for
+	// LASJ/LSJ which already have their own combine paths.
+	if (join_type == IStatistics::EsjtInnerJoin ||
+		join_type == IStatistics::EsjtLeftOuterJoin)
+	{
+		ApplyForeignKeyAdjustment(mp, join_pred_stats_info,
+								  join_conds_scale_factors);
+	}
 
 	num_join_rows = CStatistics::MinRows;
 	if (!output_is_empty)
@@ -468,6 +484,263 @@ CJoinStatsProcessor::SetResultingJoinStats(
 	return join_stats;
 }
 
+
+// PG cost_index get_foreign_key_join_selectivity port.
+//
+// For each (outer_mdid, inner_mdid) pair appearing in the join's equi
+// conjuncts:
+//   1. Collect the (outer_attno, inner_attno) pairs of all equi conjuncts
+//      between that table pair.
+//   2. Look up FKs on either rel pointing at the other.
+//   3. If an FK's column list is fully contained in the collected attno
+//      pairs (each FK column matched by exactly one conjunct), the join
+//      is "FK-driven": every referencing row matches exactly one
+//      referenced row.  Combined sel = 1 / ref_rel.tuples.
+//   4. Replace the FK-covering entries in join_conds_scale_factors with
+//      a single virtual entry whose scale_factor = ref_tuples (no equi
+//      flag so it bypasses sqrt damping).  Non-FK entries stay as-is.
+//
+// Tolerated edge cases:
+//   - non-CColRefTable colrefs (computed cols): skipped, can't get attno.
+//   - mdid_pair == nullptr (cross-table preds): skipped.
+//   - partially-covered FK (only some of FK cols in conjunct set): skipped.
+//   - duplicate FK columns in conjunct set: skipped (would double-count).
+//   - mixed equi + non-equi between same pair: only equi participate,
+//     non-equi entries remain in the array as-is.
+void
+CJoinStatsProcessor::ApplyForeignKeyAdjustment(
+	CMemoryPool *mp, CStatsPredJoinArray *join_pred_stats_info,
+	CScaleFactorUtils::SJoinConditionArray *join_conds_scale_factors)
+{
+	const ULONG n = join_conds_scale_factors->Size();
+	if (n < 2 || nullptr == join_pred_stats_info ||
+		join_pred_stats_info->Size() != n)
+	{
+		// Need at least 2 conjuncts for multi-col FK; index arrays must
+		// align 1-to-1.
+		return;
+	}
+
+	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+	CColumnFactory *col_factory = COptCtxt::PoctxtFromTLS()->Pcf();
+
+	// Per-conjunct extracted info: (outer_mdid, outer_attno, inner_mdid,
+	// inner_attno).  Indexed identically to join_conds_scale_factors.
+	struct SConjInfo
+	{
+		IMDId *outer_mdid;
+		INT outer_attno;
+		IMDId *inner_mdid;
+		INT inner_attno;
+		BOOL valid;	 // false when colrefs aren't base-table or are computed
+	};
+	std::vector<SConjInfo> conj_info(n);
+
+	for (ULONG i = 0; i < n; i++)
+	{
+		conj_info[i].valid = false;
+		CScaleFactorUtils::SJoinCondition *sjc = (*join_conds_scale_factors)[i];
+		if (!sjc->m_is_equi || nullptr == sjc->m_oid_pair)
+		{
+			continue;
+		}
+		CStatsPredJoin *pred = (*join_pred_stats_info)[i];
+		if (!pred->HasValidColIdOuter() || !pred->HasValidColIdInner())
+		{
+			continue;
+		}
+		CColRef *cr_out = col_factory->LookupColRef(pred->ColIdOuter());
+		CColRef *cr_in = col_factory->LookupColRef(pred->ColIdInner());
+		if (nullptr == cr_out || nullptr == cr_in ||
+			CColRef::EcrtTable != cr_out->Ecrt() ||
+			CColRef::EcrtTable != cr_in->Ecrt())
+		{
+			continue;
+		}
+		conj_info[i].outer_mdid = cr_out->GetMdidTable();
+		conj_info[i].inner_mdid = cr_in->GetMdidTable();
+		conj_info[i].outer_attno =
+			static_cast<CColRefTable *>(cr_out)->AttrNum();
+		conj_info[i].inner_attno =
+			static_cast<CColRefTable *>(cr_in)->AttrNum();
+		if (nullptr == conj_info[i].outer_mdid ||
+			nullptr == conj_info[i].inner_mdid)
+		{
+			continue;
+		}
+		conj_info[i].valid = true;
+	}
+
+	// Look for any FK between any pair (outer_mdid, inner_mdid) that is
+	// fully covered by the conjunct attno set.  At most one FK match per
+	// table-pair is applied (PG's loop also bails after the first).
+	BOOL *matched = GPOS_NEW_ARRAY(mp, BOOL, n);
+	for (ULONG i = 0; i < n; i++) matched[i] = false;
+
+	CDouble fk_ref_tuples(0.0);
+	BOOL any_fk_match = false;
+
+	for (ULONG i = 0; i < n; i++)
+	{
+		if (!conj_info[i].valid || matched[i])
+		{
+			continue;
+		}
+		IMDId *mdid_a = conj_info[i].outer_mdid;
+		IMDId *mdid_b = conj_info[i].inner_mdid;
+
+		// Try FK from a→b (a referencing, b referenced) then b→a.
+		for (ULONG dir = 0; dir < 2; dir++)
+		{
+			IMDId *referencing_mdid = (0 == dir) ? mdid_a : mdid_b;
+			IMDId *referenced_mdid = (0 == dir) ? mdid_b : mdid_a;
+			const IMDRelation *ref_rel = mda->RetrieveRel(referencing_mdid);
+			if (nullptr == ref_rel)
+			{
+				continue;
+			}
+			const ULONG fk_count = ref_rel->ForeignKeyCount();
+			for (ULONG fk_idx = 0; fk_idx < fk_count; fk_idx++)
+			{
+				const CMDForeignKey *fk = ref_rel->ForeignKeyAt(fk_idx);
+				if (!fk->RefMdid()->Equals(referenced_mdid))
+				{
+					continue;
+				}
+				const ULONG nkeys = fk->Nkeys();
+				const IntPtrArray *local_attnos = fk->LocalAttnos();
+				const IntPtrArray *ref_attnos = fk->RefAttnos();
+
+				// Match each FK column against the conjunct list.  This
+				// is the same predicate PG checks in
+				// get_foreign_key_join_selectivity but on attnos instead
+				// of EquivalenceClasses.
+				std::vector<ULONG> fk_match_idx(nkeys, n);
+				BOOL all_covered = true;
+				for (ULONG k = 0; k < nkeys; k++)
+				{
+					INT loc_a = *(*local_attnos)[k];
+					INT ref_a = *(*ref_attnos)[k];
+					BOOL found = false;
+					for (ULONG j = 0; j < n; j++)
+					{
+						if (!conj_info[j].valid || matched[j])
+						{
+							continue;
+						}
+						// Conjunct j must be between this same pair AND
+						// its attnos must match (loc, ref) in the
+						// orientation matching `dir`.
+						INT j_local = (0 == dir) ? conj_info[j].outer_attno
+												 : conj_info[j].inner_attno;
+						INT j_ref = (0 == dir) ? conj_info[j].inner_attno
+											   : conj_info[j].outer_attno;
+						IMDId *j_loc_mdid = (0 == dir) ? conj_info[j].outer_mdid
+													   : conj_info[j].inner_mdid;
+						IMDId *j_ref_mdid = (0 == dir) ? conj_info[j].inner_mdid
+													   : conj_info[j].outer_mdid;
+						if (j_loc_mdid->Equals(referencing_mdid) &&
+							j_ref_mdid->Equals(referenced_mdid) &&
+							j_local == loc_a && j_ref == ref_a)
+						{
+							fk_match_idx[k] = j;
+							found = true;
+							break;
+						}
+					}
+					if (!found)
+					{
+						all_covered = false;
+						break;
+					}
+				}
+				if (!all_covered)
+				{
+					continue;
+				}
+				// Record the match.  ref_tuples is the raw catalog row
+				// count of the referenced table (PG uses raw tuples).
+				CMDIdGPDB *rel_mdid_for_stats =
+					CMDIdGPDB::CastMdid(referenced_mdid);
+				rel_mdid_for_stats->AddRef();
+				CMDIdRelStats *rs_mdid =
+					GPOS_NEW(mp) CMDIdRelStats(rel_mdid_for_stats);
+				const IMDRelStats *rs = mda->Pmdrelstats(rs_mdid);
+				CDouble ref_tuples = (nullptr != rs) ? rs->Rows() : CDouble(1.0);
+				rs_mdid->Release();
+				if (ref_tuples < CDouble(1.0))
+				{
+					ref_tuples = CDouble(1.0);
+				}
+				for (ULONG k = 0; k < nkeys; k++)
+				{
+					matched[fk_match_idx[k]] = true;
+				}
+				// Multiplying multiple FKs is unusual but possible
+				// (e.g. multi-table self-join).  PG also multiplies.
+				if (!any_fk_match)
+				{
+					fk_ref_tuples = ref_tuples;
+					any_fk_match = true;
+				}
+				else
+				{
+					fk_ref_tuples = fk_ref_tuples * ref_tuples;
+				}
+				break;
+			}
+		}
+	}
+
+	if (!any_fk_match)
+	{
+		GPOS_DELETE_ARRAY(matched);
+		return;
+	}
+
+	// In-place rewrite: Replace matched slots with nullptr (which
+	// deletes the SJoinCondition via CleanupDelete), then compact the
+	// non-null entries forward, truncate trailing nullptrs, and append
+	// a single virtual FK entry whose scale_factor = ref_tuples.  This
+	// uses only the public CDynamicPtrArray API (Replace / Swap /
+	// RemoveLast / Append) and never double-frees.
+	for (ULONG i = 0; i < n; i++)
+	{
+		if (matched[i])
+		{
+			join_conds_scale_factors->Replace(i, nullptr);
+		}
+	}
+	ULONG write = 0;
+	for (ULONG read = 0; read < n; read++)
+	{
+		if (nullptr != (*join_conds_scale_factors)[read])
+		{
+			if (read != write)
+			{
+				join_conds_scale_factors->Swap(read, write);
+			}
+			write++;
+		}
+	}
+	while (join_conds_scale_factors->Size() > write)
+	{
+		(void) join_conds_scale_factors->RemoveLast();	// returns nullptr
+	}
+
+	// Virtual FK entry: is_equi=false so CumulativeJoinScaleFactor
+	// doesn't apply equi-damping (which would shrink ref_tuples further
+	// and inflate row count); mdid_pair=nullptr so it doesn't get
+	// grouped with other clauses by the same-pair detector.  The single
+	// scale_factor contributes 1/ref_tuples to the combined sel.
+	join_conds_scale_factors->Append(GPOS_NEW(mp)
+									 CScaleFactorUtils::SJoinCondition(
+										 fk_ref_tuples, nullptr,
+										 false /* both_dist_keys */,
+										 false /* is_equi */));
+
+	GPOS_DELETE_ARRAY(matched);
+}
 
 // return join cardinality based on scaling factor and join type
 CDouble

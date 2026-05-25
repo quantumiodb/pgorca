@@ -171,6 +171,22 @@ public:
 	// retrieve the id of the check constraint cache at the given position
 	virtual IMDId *CheckConstraintMDidAt(ULONG pos) const = 0;
 
+	// foreign-key constraints (referencing other relations).  Default
+	// implementation returns zero so subclasses that don't carry FK info
+	// (CTAS rels, system pseudo-relations, DXL-loaded minidump rels) do
+	// not need to override.  Used by CJoinStatsProcessor to mirror PG's
+	// get_foreign_key_join_selectivity.
+	virtual ULONG
+	ForeignKeyCount() const
+	{
+		return 0;
+	}
+	virtual const class CMDForeignKey *
+	ForeignKeyAt(ULONG /* pos */) const
+	{
+		return nullptr;
+	}
+
 	// part constraint
 	virtual CDXLNode *MDPartConstraint() const = 0;
 

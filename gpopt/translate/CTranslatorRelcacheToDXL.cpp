@@ -656,6 +656,38 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 		md_index_info_array, check_constraint_mdids, mdpart_constraint,
 		foreign_server_mdid, rel->rd_rel->reltuples);
 
+	// Populate FK info for the FK-aware join-cardinality estimate
+	// (mirrors PG cost_index get_foreign_key_join_selectivity).  Done
+	// post-construction to keep the long CMDRelationGPDB ctor signature
+	// untouched.  See CMDForeignKey.h for the motivation and the join
+	// stats processor for the consumer.
+	{
+		List *fk_list = gpdb::GetForeignKeyInfo(oid);
+		if (NIL != fk_list)
+		{
+			CMDForeignKeyArray *fk_array = GPOS_NEW(mp) CMDForeignKeyArray(mp);
+			ListCell *lc = nullptr;
+			ForEach(lc, fk_list)
+			{
+				gpdb::OrcaFKInfo *info = (gpdb::OrcaFKInfo *) lfirst(lc);
+				IntPtrArray *local_attnos = GPOS_NEW(mp) IntPtrArray(mp);
+				IntPtrArray *ref_attnos = GPOS_NEW(mp) IntPtrArray(mp);
+				for (int i = 0; i < info->nkeys; i++)
+				{
+					local_attnos->Append(GPOS_NEW(mp) INT(info->conkey[i]));
+					ref_attnos->Append(GPOS_NEW(mp) INT(info->confkey[i]));
+				}
+				IMDId *ref_mdid = GPOS_NEW(mp)
+					CMDIdGPDB(IMDId::EmdidRel, info->ref_relid);
+				fk_array->Append(GPOS_NEW(mp) CMDForeignKey(
+					ref_mdid, local_attnos, ref_attnos));
+			}
+			// md_rel was just constructed as a CMDRelationGPDB above;
+			// downcast to access the concrete-class setter.
+			static_cast<CMDRelationGPDB *>(md_rel)->SetForeignKeys(fk_array);
+		}
+	}
+
 	return md_rel;
 }
 

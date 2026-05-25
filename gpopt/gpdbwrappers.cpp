@@ -2339,6 +2339,71 @@ gpdb::GetMVNDistinct(Oid stat_oid)
 	GP_WRAP_END;
 }
 
+List *
+gpdb::GetForeignKeyInfo(Oid rel_oid)
+{
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_constraint */
+		/* Scan pg_constraint for FK constraints on rel_oid.  Mirror the
+		 * loop in CHECK constraint scanner but match contype = 'f' and
+		 * decode the conkey/confkey int2[] arrays into palloc'd buffers
+		 * that ORCA can free with the rest of its memcontext. */
+		List	   *result = NIL;
+		Relation	conrel = table_open(ConstraintRelationId, AccessShareLock);
+		ScanKeyData skey;
+		ScanKeyInit(&skey, Anum_pg_constraint_conrelid,
+					BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(rel_oid));
+		SysScanDesc scan = systable_beginscan(
+			conrel, ConstraintRelidTypidNameIndexId, true, NULL, 1, &skey);
+		HeapTuple tuple;
+		while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+		{
+			Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tuple);
+			if (con->contype != CONSTRAINT_FOREIGN)
+				continue;
+			/* Skip FKs that haven't been validated or are NOT VALID — PG's
+			 * cost code also requires conenforced && convalidated to avoid
+			 * over-trusting unverified relationships. */
+			if (!con->convalidated)
+				continue;
+
+			Datum		datum;
+			bool		isnull;
+			datum = SysCacheGetAttr(CONSTROID, tuple,
+									Anum_pg_constraint_conkey, &isnull);
+			if (isnull)
+				continue;
+			ArrayType  *conkey_arr = DatumGetArrayTypeP(datum);
+			int			nkeys = ARR_DIMS(conkey_arr)[0];
+			int16	   *conkey_src = (int16 *) ARR_DATA_PTR(conkey_arr);
+
+			datum = SysCacheGetAttr(CONSTROID, tuple,
+									Anum_pg_constraint_confkey, &isnull);
+			if (isnull)
+				continue;
+			ArrayType  *confkey_arr = DatumGetArrayTypeP(datum);
+			if (ARR_DIMS(confkey_arr)[0] != nkeys)
+				continue;
+			int16	   *confkey_src = (int16 *) ARR_DATA_PTR(confkey_arr);
+
+			OrcaFKInfo *info = (OrcaFKInfo *) palloc(sizeof(OrcaFKInfo));
+			info->ref_relid = con->confrelid;
+			info->nkeys = nkeys;
+			info->conkey = (int16 *) palloc(sizeof(int16) * nkeys);
+			info->confkey = (int16 *) palloc(sizeof(int16) * nkeys);
+			memcpy(info->conkey, conkey_src, sizeof(int16) * nkeys);
+			memcpy(info->confkey, confkey_src, sizeof(int16) * nkeys);
+			result = lappend(result, info);
+		}
+		systable_endscan(scan);
+		table_close(conrel, AccessShareLock);
+		return result;
+	}
+	GP_WRAP_END;
+	return NIL;
+}
+
 MVDependencies *
 gpdb::GetMVDependencies(Oid stat_oid)
 {

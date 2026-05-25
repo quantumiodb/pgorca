@@ -41,6 +41,18 @@ protected:
 								  CHistogram *join_histogram,
 								  IStatistics::EStatsJoinType join_type);
 
+	// PG-style FK-aware adjustment: when join conjuncts fully cover a
+	// foreign-key constraint between the two base tables, replace the
+	// involved entries with a single virtual entry whose scale factor
+	// = ref_rel.tuples, so combined sel = 1/ref_tuples instead of the
+	// independence-assumption product of per-clause sels.  Mirrors
+	// PG cost_index's get_foreign_key_join_selectivity.  Mutates
+	// join_conds_scale_factors in place; safe to call when no FK matches
+	// (no-op in that case).
+	static void ApplyForeignKeyAdjustment(
+		CMemoryPool *mp, CStatsPredJoinArray *join_pred_stats_info,
+		CScaleFactorUtils::SJoinConditionArray *join_conds_scale_factors);
+
 	// helper for joining histograms
 	static void JoinHistograms(
 		CMemoryPool *mp, const CHistogram *histogram1,

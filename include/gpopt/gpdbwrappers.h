@@ -561,6 +561,23 @@ MVNDistinct *GetMVNDistinct(Oid stat_oid);
 
 MVDependencies *GetMVDependencies(Oid stat_oid);
 
+// Lightweight FK info struct surfaced to ORCA for FK-aware join
+// selectivity (mirrors PG cost_index's get_foreign_key_join_selectivity).
+// Caller owns the palloc'd memory in current memcontext.
+struct OrcaFKInfo
+{
+	Oid			ref_relid;	// referenced relation oid
+	int			nkeys;		// number of columns in FK
+	int16	   *conkey;		// attnos on referencing (local) side
+	int16	   *confkey;	// attnos on referenced side
+};
+
+// Returns List of OrcaFKInfo* describing simple FK constraints on rel_oid
+// (contype = 'f', no WHERE, no DEFERRABLE filter required since we only
+// use the join-cardinality formula which is unaffected by deferral).
+// Returns NIL when the relation has no FKs.
+List *GetForeignKeyInfo(Oid rel_oid);
+
 // get relation with given oid
 RelationWrapper GetRelation(Oid rel_oid);
 

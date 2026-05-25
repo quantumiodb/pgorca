@@ -18,6 +18,7 @@
 #include "gpos/string/CWStringDynamic.h"
 
 #include "naucrates/md/CMDColumn.h"
+#include "naucrates/md/CMDForeignKey.h"
 #include "naucrates/md/CMDName.h"
 #include "naucrates/md/IMDColumn.h"
 #include "naucrates/md/IMDRelation.h"
@@ -96,6 +97,12 @@ private:
 
 	// array of check constraint mdids
 	IMdIdArray *m_mdid_check_constraint_array;
+
+	// foreign-key constraints on this relation; populated post-construction
+	// by CTranslatorRelcacheToDXL via SetForeignKeys() so the long ctor
+	// signature doesn't need to change.  See CMDForeignKey.h for the
+	// "PG get_foreign_key_join_selectivity" motivation.
+	CMDForeignKeyArray *m_fk_array;
 
 	// partition constraint
 	CDXLNode *m_mdpart_constraint;
@@ -228,6 +235,27 @@ public:
 
 	// number of check constraints
 	ULONG CheckConstraintCount() const override;
+
+	// FK accessors — defined inline since the field is a simple ptr+size.
+	ULONG
+	ForeignKeyCount() const override
+	{
+		return (nullptr == m_fk_array) ? 0 : m_fk_array->Size();
+	}
+	const CMDForeignKey *
+	ForeignKeyAt(ULONG pos) const override
+	{
+		GPOS_ASSERT(nullptr != m_fk_array);
+		return (*m_fk_array)[pos];
+	}
+	// Take ownership of the passed-in array.  No-op if already set;
+	// callers should construct once at relcache load time.
+	void
+	SetForeignKeys(CMDForeignKeyArray *fk_array)
+	{
+		GPOS_ASSERT(nullptr == m_fk_array);
+		m_fk_array = fk_array;
+	}
 
 	// retrieve the id of the check constraint cache at the given position
 	IMDId *CheckConstraintMDidAt(ULONG pos) const override;

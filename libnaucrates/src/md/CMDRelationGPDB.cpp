@@ -56,6 +56,7 @@ CMDRelationGPDB::CMDRelationGPDB(
 	  m_keyset_array(keyset_array),
 	  m_mdindex_info_array(md_index_info_array),
 	  m_mdid_check_constraint_array(mdid_check_constraint_array),
+	  m_fk_array(nullptr),
 	  m_mdpart_constraint(mdpart_constraint),
 	  m_system_columns(0),
 	  m_foreign_server(foreign_server),
@@ -139,6 +140,7 @@ CMDRelationGPDB::~CMDRelationGPDB()
 	CRefCount::SafeRelease(m_keyset_array);
 	m_mdindex_info_array->Release();
 	m_mdid_check_constraint_array->Release();
+	CRefCount::SafeRelease(m_fk_array);
 	m_col_width_array->Release();
 	CRefCount::SafeRelease(m_foreign_server);
 	CRefCount::SafeRelease(m_mdpart_constraint);
