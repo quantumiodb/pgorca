@@ -240,6 +240,7 @@ public:
 		ExfSplitWindowFunc,
 		ExfDynamicGet2AppendTableScan,
 		ExfSemiJoin2IndexGetApply,
+		ExfReduceAggInputViaCTE,
 		ExfInvalid,
 		ExfSentinel = ExfInvalid
 	};
