@@ -115,22 +115,55 @@ cmake --build . --target install -j$(nproc)
 Release mode enables `-O3 -DNDEBUG` and disables ORCA internal assertions (`GPOS_DEBUG`).
 
 ## Usage
-- Configure shared_preload_libraries = 'pg_orca', or manually load 'pg_orca';
 
 ```sql
--- Load the extension (once per database)
+-- 1. Install the extension in the target database.  This LOADs the
+--    shared library into the current session so pg_orca.* GUCs and
+--    the planner_hook are live immediately:
 CREATE EXTENSION pg_orca;
 
-load 'pg_orca';
+-- 2. (Recommended) Have every new connection to this database
+--    auto-load pg_orca.  Per-database scope; no restart, no cluster
+--    GUC change, takes effect for subsequent connections:
+ALTER DATABASE mydb SET session_preload_libraries = 'pg_orca';
 
--- Enable ORCA for the current session
+-- 3. Enable ORCA per session (or persistently via
+--    ALTER DATABASE mydb SET pg_orca.enable_orca = on):
 SET pg_orca.enable_orca = on;
 
--- Run a query — ORCA will optimize it
+-- 4. Run a query — ORCA optimizes it.
 EXPLAIN SELECT * FROM t WHERE id > 100;
 ```
 
-If ORCA cannot handle a query (unsupported feature or internal error) it falls back to the standard PostgreSQL planner automatically.
+Existing sessions are unaffected by step 2 until they reconnect.  If
+ORCA cannot handle a query (unsupported feature or internal error) it
+falls back to the standard PostgreSQL planner automatically.
+
+Alternative scopes for the preload setting:
+
+```sql
+-- Cluster-wide (every database, every role):
+ALTER SYSTEM SET session_preload_libraries = 'pg_orca';
+SELECT pg_reload_conf();
+
+-- Single role only:
+ALTER ROLE bench SET session_preload_libraries = 'pg_orca';
+```
+
+`ALTER DATABASE ... SET` and `ALTER SYSTEM SET` overwrite the value;
+if a sibling library was already present (`pg_stat_statements`, etc.),
+include it explicitly:
+
+```sql
+ALTER DATABASE mydb SET session_preload_libraries = 'pg_orca,pg_stat_statements';
+```
+
+Roll back:
+
+```sql
+ALTER DATABASE mydb RESET session_preload_libraries;
+DROP EXTENSION pg_orca;
+```
 
 ## GUC Parameters
 
