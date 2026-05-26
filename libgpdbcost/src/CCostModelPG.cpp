@@ -1224,24 +1224,35 @@ CCostModelPG::CostHashJoin(CMemoryPool *,  // mp
 						   CExpressionHandle &exprhdl,
 						   const SCostingInfo *pci)
 {
-#ifdef GPOS_DEBUG
 	const COperator::EOperatorId op_id = exprhdl.Pop()->Eopid();
 	GPOS_ASSERT(COperator::EopPhysicalInnerHashJoin == op_id ||
 				COperator::EopPhysicalLeftSemiHashJoin == op_id ||
 				COperator::EopPhysicalLeftAntiSemiHashJoin == op_id ||
 				COperator::EopPhysicalLeftAntiSemiHashJoinNotIn == op_id ||
+				COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter == op_id ||
 				COperator::EopPhysicalLeftOuterHashJoin == op_id ||
 				COperator::EopPhysicalRightOuterHashJoin == op_id ||
 				COperator::EopPhysicalFullHashJoin == op_id);
-#endif
 
-	const DOUBLE outer_rows = pci->PdRows()[0];
-	const DOUBLE outer_width = pci->GetWidth()[0];
-	const DOUBLE inner_rows = pci->PdRows()[1];
-	const DOUBLE inner_width = pci->GetWidth()[1];
+	// Build-on-outer anti-semi variant builds the hash on the OUTER child
+	// and probes with the INNER child (PG's "Hash Right Anti Join"). All
+	// formulas below are written as "build on inner, probe with outer", so
+	// swap row counts and widths into those variables for the BuildOuter
+	// case.  The operator's logical (outer, inner) ordering — and which
+	// stats child PdRows()/GetWidth()/Pcstats() index 0 vs 1 refers to —
+	// is unchanged.
+	const BOOL fBuildOnOuter =
+		(COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter == op_id);
+	const DOUBLE outer_rows =
+		fBuildOnOuter ? pci->PdRows()[1] : pci->PdRows()[0];
+	const DOUBLE outer_width =
+		fBuildOnOuter ? pci->GetWidth()[1] : pci->GetWidth()[0];
+	const DOUBLE inner_rows =
+		fBuildOnOuter ? pci->PdRows()[0] : pci->PdRows()[1];
+	const DOUBLE inner_width =
+		fBuildOnOuter ? pci->GetWidth()[0] : pci->GetWidth()[1];
 	const DOUBLE output_rows = pci->Rows();
 
-	const COperator::EOperatorId op_id = exprhdl.Pop()->Eopid();
 	const BOOL is_outer_join =
 		(COperator::EopPhysicalLeftOuterHashJoin == op_id ||
 		 COperator::EopPhysicalRightOuterHashJoin == op_id ||
@@ -1250,7 +1261,8 @@ CCostModelPG::CostHashJoin(CMemoryPool *,  // mp
 		(COperator::EopPhysicalLeftSemiHashJoin == op_id);
 	const BOOL is_anti =
 		(COperator::EopPhysicalLeftAntiSemiHashJoin == op_id ||
-		 COperator::EopPhysicalLeftAntiSemiHashJoinNotIn == op_id);
+		 COperator::EopPhysicalLeftAntiSemiHashJoinNotIn == op_id ||
+		 COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter == op_id);
 	const BOOL is_semi_anti = is_semi || is_anti;
 
 	// PG's final_cost_hashjoin (costsize.c:4274) separates hash quals
@@ -2309,6 +2321,7 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 				 COperator::EopPhysicalLeftSemiHashJoin == op ||
 				 COperator::EopPhysicalLeftAntiSemiHashJoin == op ||
 				 COperator::EopPhysicalLeftAntiSemiHashJoinNotIn == op ||
+				 COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter == op ||
 				 COperator::EopPhysicalLeftOuterHashJoin == op ||
 				 COperator::EopPhysicalRightOuterHashJoin == op ||
 				 COperator::EopPhysicalFullHashJoin == op)
@@ -3231,6 +3244,7 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 		case COperator::EopPhysicalLeftSemiHashJoin:
 		case COperator::EopPhysicalLeftAntiSemiHashJoin:
 		case COperator::EopPhysicalLeftAntiSemiHashJoinNotIn:
+		case COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter:
 		case COperator::EopPhysicalLeftOuterHashJoin:
 		case COperator::EopPhysicalRightOuterHashJoin:
 		case COperator::EopPhysicalFullHashJoin:
