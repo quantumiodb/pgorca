@@ -124,7 +124,8 @@ with open(out_file, 'w', newline='') as f:
     w.writeheader()
     w.writerows(rows_out)
 
-gm = math.exp(sum(math.log(s) for s in speedups) / len(speedups)) if speedups else 0
+positive_speedups = [s for s in speedups if s > 0]
+gm = math.exp(sum(math.log(s) for s in positive_speedups) / len(positive_speedups)) if positive_speedups else 0
 med = sorted(speedups)[len(speedups)//2] if speedups else 0
 
 print(f"\n{'='*65}")
