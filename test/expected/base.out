@@ -857,23 +857,26 @@ EXPLAIN (COSTS OFF) SELECT * FROM customer WHERE 1+c_custkey IN (SELECT c_nation
 -- count/case-rewrite based on minor cost-model perturbations; the result is
 -- semantically identical, but the EXPLAIN text isn't stable. Ignore output.
 EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM customer WHERE 2 IN (SELECT n_nationkey + 1 FROM nation);
-                                                                                QUERY PLAN                                                                                
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Seq Scan on public.customer
+                                                                                                QUERY PLAN                                                                                                 
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result
    Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
-   Filter: (SubPlan 1).col1
-   SubPlan 1
-     ->  Result
-           Output: true
-           ->  Result
-                 Output: ((nation.n_nationkey + 1))
-                 Filter: (2 = ((nation.n_nationkey + 1)))
-                 ->  Result
-                       Output: (nation.n_nationkey + 1)
-                       ->  Seq Scan on public.nation
-                             Output: nation.n_nationkey
+   ->  HashAggregate
+         Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
+         Group Key: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
+         ->  Nested Loop
+               Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
+               Join Filter: true
+               ->  Result
+                     Filter: (2 = ((nation.n_nationkey + 1)))
+                     ->  Result
+                           Output: (nation.n_nationkey + 1)
+                           ->  Seq Scan on public.nation
+                                 Output: nation.n_nationkey
+               ->  Seq Scan on public.customer
+                     Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
  Optimizer: pg_orca
-(14 rows)
+(17 rows)
 
 -- end_ignore
 -- Correlated EXISTS
@@ -892,44 +895,54 @@ EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM customer WHERE EXISTS(SELECT n_nation
 
 -- Nested EXISTS
 EXPLAIN (COSTS OFF, VERBOSE) SELECT pn, cn, vn FROM sale s WHERE EXISTS (SELECT * FROM customer WHERE EXISTS (SELECT * FROM product WHERE pn = s.pn));
-                    QUERY PLAN                     
----------------------------------------------------
- Seq Scan on public.sale s
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Result
    Output: s.pn, s.cn, s.vn
-   Filter: EXISTS(SubPlan 1)
-   SubPlan 1
-     ->  HashAggregate
-           Output: customer.ctid
-           Group Key: customer.ctid
-           ->  Nested Loop
-                 Output: customer.ctid
-                 Join Filter: true
-                 ->  Seq Scan on public.product
-                       Filter: (product.pn = s.pn)
-                 ->  Seq Scan on public.customer
-                       Output: customer.ctid
+   Filter: (COALESCE(((SubPlan 1)), '0'::bigint) > '0'::bigint)
+   ->  Result
+         Output: (SubPlan 1), s.cn, s.vn, s.pn
+         ->  Seq Scan on public.sale s
+               Output: s.cn, s.vn, s.pn
+         SubPlan 1
+           ->  Aggregate
+                 Output: count(*)
+                 ->  Result
+                       ->  HashAggregate
+                             Output: customer.ctid
+                             Group Key: customer.ctid
+                             ->  Nested Loop
+                                   Output: customer.ctid
+                                   Join Filter: true
+                                   ->  Seq Scan on public.product
+                                         Filter: (product.pn = s.pn)
+                                   ->  Seq Scan on public.customer
+                                         Output: customer.ctid
  Optimizer: pg_orca
-(15 rows)
+(22 rows)
 
 EXPLAIN (COSTS OFF) SELECT pn, cn, vn FROM sale s WHERE cn IN (SELECT s.pn FROM customer WHERE cn NOT IN (SELECT pn FROM product WHERE pn = s.pn));
-                                                                                                                                                                                   QUERY PLAN                                                                                                                                                                                    
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                                                                                                                                      QUERY PLAN                                                                                                                                                                                       
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Result
-   ->  Seq Scan on sale s
-         Filter: ((cn = pn) AND EXISTS(SubPlan 1))
+   Filter: (COALESCE(((SubPlan 1)), '0'::bigint) > '0'::bigint)
+   ->  Result
+         ->  Seq Scan on sale s
+               Filter: (cn = pn)
          SubPlan 1
-           ->  Nested Loop
-                 Join Filter: true
-                 ->  Result
-                       Filter: ((CASE WHEN ((sum((CASE WHEN (s.cn = product.pn) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (product.pn IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (s.cn IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (s.cn = product.pn) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
+           ->  Aggregate
+                 ->  Nested Loop
+                       Join Filter: true
                        ->  Result
-                             ->  Aggregate
-                                   ->  Result
-                                         ->  Seq Scan on product
-                                               Filter: (pn = s.pn)
-                 ->  Seq Scan on customer
+                             Filter: ((CASE WHEN ((sum((CASE WHEN (s.cn = product.pn) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (product.pn IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (s.cn IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (s.cn = product.pn) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
+                             ->  Result
+                                   ->  Aggregate
+                                         ->  Result
+                                               ->  Seq Scan on product
+                                                     Filter: (pn = s.pn)
+                       ->  Seq Scan on customer
  Optimizer: pg_orca
-(15 rows)
+(18 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM customer WHERE EXISTS (SELECT 1 FROM nation WHERE nation.n_nationkey = customer.c_custkey AND customer.c_custkey > 1);
                        QUERY PLAN                       
