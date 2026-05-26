@@ -126,6 +126,18 @@ static const struct config_enum_entry optimizer_join_order_options[] = {
     {NULL, 0, false}
 };
 
+/*
+ * When a query references at least this many base relations (counting those
+ * nested in subqueries and CTEs), ORCA's exhaustive/exhaustive2 join-order
+ * search explodes the MEMO and planning time dwarfs execution -- e.g.
+ * TPC-DS Q33 (3 CTEs x 4-table joins + IN-subqueries, ~15 relations) spends
+ * ~7s planning for a plan greedy finds in 0.15s with identical execution.
+ * Above this threshold we transparently downshift to the greedy search for
+ * that one query.  0 disables the heuristic (always honor optimizer_join_order).
+ * TPC-H tops out at ~8 flat-join relations, comfortably below the default.
+ */
+int pg_orca_join_order_dynamic_threshold = 12;
+
 /* Cost model selection (pg_orca.cost_model). */
 #define PG_ORCA_COST_MODEL_GPDB  0
 #define PG_ORCA_COST_MODEL_PG    1
@@ -504,6 +516,45 @@ fold_query_constants(Query *query)
 }
 
 /* ----------------------------------------------------------------
+ * Count base relations referenced anywhere in the query tree (range
+ * tables of the query itself, of subqueries, of CTE definitions, and
+ * of sublink subselects).  Used to decide whether to downshift ORCA's
+ * join-order search; see pg_orca_join_order_dynamic_threshold.
+ * ---------------------------------------------------------------- */
+extern "C" {
+static bool
+pg_orca_count_relations_walker(Node *node, void *context)
+{
+    if (node == NULL)
+        return false;
+    if (IsA(node, RangeTblEntry))
+    {
+        RangeTblEntry *rte = (RangeTblEntry *) node;
+        if (rte->rtekind == RTE_RELATION)
+            (*(int *) context)++;
+        /* query_tree_walker (with QTW_EXAMINE_RTES_BEFORE) descends into the
+         * RTE's own subquery/CTE on its own; nothing more to do here. */
+        return false;
+    }
+    if (IsA(node, Query))
+        return query_tree_walker((Query *) node,
+                                 pg_orca_count_relations_walker,
+                                 context, QTW_EXAMINE_RTES_BEFORE);
+    return expression_tree_walker(node, pg_orca_count_relations_walker,
+                                  context);
+}
+} /* extern "C" */
+
+static int
+pg_orca_count_query_relations(Query *query)
+{
+    int count = 0;
+    (void) query_tree_walker(query, pg_orca_count_relations_walker,
+                             &count, QTW_EXAMINE_RTES_BEFORE);
+    return count;
+}
+
+/* ----------------------------------------------------------------
  * pg_orca_planner
  * ---------------------------------------------------------------- */
 static PlannedStmt *
@@ -556,9 +607,38 @@ pg_orca_planner(Query *parse, const char *query_string,
          */
         pqueryCopy = (Query *) transformGroupedWindows((Node *) pqueryCopy, NULL);
 
+        /*
+         * Adaptive join-order downshift.  For queries that reference many
+         * base relations (counting subqueries and CTEs), ORCA's
+         * exhaustive/exhaustive2 search blows up the MEMO and planning time
+         * dominates -- with no execution benefit.  Temporarily force greedy
+         * for this one query when the relation count crosses the threshold.
+         * The override is restored immediately after optimization (ORCA
+         * catches its own exceptions and returns NULL, so no longjmp escapes
+         * GPOPTOptimizedPlan).
+         */
+        int saved_join_order = optimizer_join_order;
+        if (pg_orca_join_order_dynamic_threshold > 0 &&
+            (optimizer_join_order == JOIN_ORDER_EXHAUSTIVE_SEARCH ||
+             optimizer_join_order == JOIN_ORDER_EXHAUSTIVE2_SEARCH))
+        {
+            int nrels = pg_orca_count_query_relations(pqueryCopy);
+            if (nrels >= pg_orca_join_order_dynamic_threshold)
+            {
+                optimizer_join_order = JOIN_ORDER_GREEDY_SEARCH;
+                if (pg_orca_trace_fallback)
+                    elog(LOG,
+                         "pg_orca: %d relations >= threshold %d, "
+                         "downshifting join_order to greedy",
+                         nrels, pg_orca_join_order_dynamic_threshold);
+            }
+        }
+
         bool had_unexpected_failure = false;
         PlannedStmt *result = GPOPTOptimizedPlan(pqueryCopy, &had_unexpected_failure,
                                                   pg_orca_trace_fallback);
+
+        optimizer_join_order = saved_join_order;
 
         if (result != nullptr)
         {
@@ -699,6 +779,14 @@ void _PG_init(void)
         "(query | greedy | exhaustive | exhaustive2).",
         NULL, &optimizer_join_order, JOIN_ORDER_EXHAUSTIVE2_SEARCH,
         optimizer_join_order_options,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.join_order_dynamic_threshold",
+        "Relation count (incl. subqueries/CTEs) at or above which ORCA "
+        "downshifts exhaustive/exhaustive2 join-order search to greedy for "
+        "that query. 0 disables the heuristic.",
+        NULL, &pg_orca_join_order_dynamic_threshold, 12, 0, INT_MAX,
         PGC_USERSET, 0, NULL, NULL, NULL);
 
     DefineCustomEnumVariable(
