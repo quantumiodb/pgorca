@@ -455,6 +455,7 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 		case COperator::EopPhysicalLeftSemiHashJoin:
 		case COperator::EopPhysicalLeftAntiSemiHashJoin:
 		case COperator::EopPhysicalLeftAntiSemiHashJoinNotIn:
+		case COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter:
 		case COperator::EopPhysicalRightOuterHashJoin:
 		case COperator::EopPhysicalFullHashJoin:
 			dxlnode = CTranslatorExprToDXL::PdxlnHashJoin(
@@ -4876,6 +4877,9 @@ CTranslatorExprToDXL::EdxljtHashJoin(CPhysicalHashJoin *popHJ)
 		case COperator::EopPhysicalLeftAntiSemiHashJoinNotIn:
 			return EdxljtLeftAntiSemijoinNotIn;
 
+		case COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter:
+			return EdxljtRightAntiSemijoin;
+
 		case COperator::EopPhysicalFullHashJoin:
 			return EdxljtFull;
 
@@ -4913,6 +4917,14 @@ CTranslatorExprToDXL::PdxlnHashJoin(CExpression *pexprHJ,
 	GPOS_ASSERT(popHJ->PdrgpexprOuterKeys()->Size() ==
 				popHJ->PdrgpexprInnerKeys()->Size());
 
+	// Build-on-outer anti-semi: we emit DXL with children + hash cond
+	// operands swapped, so PG's translator (which extracts hashclauses
+	// positionally as args[0]=outer, args[1]=inner) ends up with the
+	// build side on PG's inner (right) and probe side on PG's outer (left).
+	BOOL fSwapForBuildOuter =
+		(COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter ==
+		 popHJ->Eopid());
+
 	// translate relational child expression
 	CDXLNode *pdxlnOuterChild = CreateDXLNode(
 		pexprOuterChild, nullptr /*colref_array*/, pdrgpdsBaseTables,
@@ -4949,17 +4961,24 @@ CTranslatorExprToDXL::PdxlnHashJoin(CExpression *pexprHJ,
 
 			pexprPredOuter->AddRef();
 			pexprPredInner->AddRef();
+			// For build-on-outer anti-semi we swap the operand order so
+			// that args[0] references the new "left/outer" side after the
+			// child swap, matching PG's positional hashclause extraction.
+			CExpression *pexprPredLeft =
+				fSwapForBuildOuter ? pexprPredInner : pexprPredOuter;
+			CExpression *pexprPredRight =
+				fSwapForBuildOuter ? pexprPredOuter : pexprPredInner;
 			// create hash join predicate based on conjunct type
 			if (CPredicateUtils::IsEqualityOp(pexprPred))
 			{
-				pexprPred = CUtils::PexprScalarCmp(m_mp, pexprPredOuter,
-												   pexprPredInner, mdid_scop);
+				pexprPred = CUtils::PexprScalarCmp(m_mp, pexprPredLeft,
+												   pexprPredRight, mdid_scop);
 			}
 			else
 			{
 				GPOS_ASSERT(CPredicateUtils::FINDF(pexprPred));
-				pexprPred = CUtils::PexprINDF(m_mp, pexprPredOuter,
-											  pexprPredInner, mdid_scop);
+				pexprPred = CUtils::PexprINDF(m_mp, pexprPredLeft,
+											  pexprPredRight, mdid_scop);
 			}
 
 			CDXLNode *pdxlnPred = PdxlnScalar(pexprPred);
@@ -5013,8 +5032,16 @@ CTranslatorExprToDXL::PdxlnHashJoin(CExpression *pexprHJ,
 	pdxlnHJ->AddChild(filter_dxlnode);
 	pdxlnHJ->AddChild(dxlnode_join_filter);
 	pdxlnHJ->AddChild(pdxlnHashCondList);
-	pdxlnHJ->AddChild(pdxlnOuterChild);
-	pdxlnHJ->AddChild(pdxlnInnerChild);
+	if (fSwapForBuildOuter)
+	{
+		pdxlnHJ->AddChild(pdxlnInnerChild);
+		pdxlnHJ->AddChild(pdxlnOuterChild);
+	}
+	else
+	{
+		pdxlnHJ->AddChild(pdxlnOuterChild);
+		pdxlnHJ->AddChild(pdxlnInnerChild);
+	}
 
 	// cleanup
 	pdrgpexprPredicates->Release();

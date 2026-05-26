@@ -307,6 +307,7 @@ CXformFactory::Instantiate()
 	Add(GPOS_NEW(m_mp)
 			CXformSemiJoin2IndexApplyGeneric(m_mp, false /*generateBitmapPlans*/));
 	Add(GPOS_NEW(m_mp) CXformReduceAggInputViaCTE(m_mp));
+	Add(GPOS_NEW(m_mp) CXformLeftAntiSemiJoin2HashJoinBuildOuter(m_mp));
 
 	GPOS_ASSERT(nullptr != m_rgpxf[CXform::ExfSentinel - 1] &&
 				"Not all xforms have been instantiated");

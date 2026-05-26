@@ -957,21 +957,35 @@ CCostModelGPDB::CostHashJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 {
 	GPOS_ASSERT(nullptr != pcmgpdb);
 	GPOS_ASSERT(nullptr != pci);
-#ifdef GPOS_DEBUG
 	COperator::EOperatorId op_id = exprhdl.Pop()->Eopid();
+#ifdef GPOS_DEBUG
 	GPOS_ASSERT(COperator::EopPhysicalInnerHashJoin == op_id ||
 				COperator::EopPhysicalLeftSemiHashJoin == op_id ||
 				COperator::EopPhysicalLeftAntiSemiHashJoin == op_id ||
 				COperator::EopPhysicalLeftAntiSemiHashJoinNotIn == op_id ||
+				COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter == op_id ||
 				COperator::EopPhysicalLeftOuterHashJoin == op_id ||
 				COperator::EopPhysicalRightOuterHashJoin == op_id ||
 				COperator::EopPhysicalFullHashJoin == op_id);
 #endif	// GPOS_DEBUG
 
-	const DOUBLE num_rows_outer = pci->PdRows()[0];
-	const DOUBLE dWidthOuter = pci->GetWidth()[0];
-	const DOUBLE dRowsInner = pci->PdRows()[1];
-	const DOUBLE dWidthInner = pci->GetWidth()[1];
+	// For the build-on-outer anti-semi variant the hash table is built on
+	// the outer side and the inner side is the probe stream.  All cost
+	// formulas in this function are written for "build on inner, probe
+	// with outer", so swap the row counts and widths fed into the formula
+	// for the build-on-outer case.  The result still represents the cost
+	// of the physical operator that ORCA sees as (outer, inner) in its
+	// child ordering.
+	const BOOL fBuildOnOuter =
+		(COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter == op_id);
+	const DOUBLE num_rows_outer =
+		fBuildOnOuter ? pci->PdRows()[1] : pci->PdRows()[0];
+	const DOUBLE dWidthOuter =
+		fBuildOnOuter ? pci->GetWidth()[1] : pci->GetWidth()[0];
+	const DOUBLE dRowsInner =
+		fBuildOnOuter ? pci->PdRows()[0] : pci->PdRows()[1];
+	const DOUBLE dWidthInner =
+		fBuildOnOuter ? pci->GetWidth()[0] : pci->GetWidth()[1];
 
 	const CDouble dHJHashTableInitCostFactor =
 		pcmgpdb->GetCostModelParams()
@@ -2887,6 +2901,7 @@ CCostModelGPDB::Cost(
 		case COperator::EopPhysicalLeftSemiHashJoin:
 		case COperator::EopPhysicalLeftAntiSemiHashJoin:
 		case COperator::EopPhysicalLeftAntiSemiHashJoinNotIn:
+		case COperator::EopPhysicalLeftAntiSemiHashJoinBuildOuter:
 		case COperator::EopPhysicalLeftOuterHashJoin:
 		case COperator::EopPhysicalRightOuterHashJoin:
 		case COperator::EopPhysicalFullHashJoin:

@@ -272,6 +272,15 @@ public:
 		EopLogicalDynamicIndexOnlyGet,
 
 		EopLogicalWindowFunc,
+
+		// Build-on-outer variant of LeftAntiSemiHashJoin: same logical
+		// semantics (output outer rows with no match in inner) but the
+		// hash table is built on the OUTER side and the INNER side is
+		// streamed.  Translates to PostgreSQL's JOIN_RIGHT_ANTI when
+		// emitted to a PlannedStmt.  Useful when outer is small and inner
+		// is large (e.g. TPC-H Q22's NOT EXISTS on orders).
+		EopPhysicalLeftAntiSemiHashJoinBuildOuter,
+
 		EopSentinel
 	};
 

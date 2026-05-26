@@ -182,6 +182,10 @@ enum EdxlJoinType
 	EdxljtIn,
 	EdxljtLeftAntiSemijoin,
 	EdxljtLeftAntiSemijoinNotIn,
+	// Right anti-semi join: same logical semantics as LeftAntiSemi but
+	// with operands swapped at the executor level, so hash table is built
+	// on the side preserved by the join (PostgreSQL's JOIN_RIGHT_ANTI).
+	EdxljtRightAntiSemijoin,
 	EdxljtSentinel
 };
 

@@ -6854,6 +6854,9 @@ CTranslatorDXLToPlStmt::GetGPDBJoinTypeFromDXLJoinType(EdxlJoinType join_type)
 			GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
 					   GPOS_WSZ_LIT("LeftAntiSemiJoinNotIn (NOT IN with NULLs) not supported in PG18"));
 			break;
+		case EdxljtRightAntiSemijoin:
+			jt = JOIN_RIGHT_ANTI;
+			break;
 		default:
 			GPOS_ASSERT(!"Unrecognized join type");
 	}

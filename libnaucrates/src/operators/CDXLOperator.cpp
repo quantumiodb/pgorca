@@ -75,6 +75,9 @@ CDXLOperator::GetJoinTypeNameStr(EdxlJoinType join_type)
 			return CDXLTokens::GetDXLTokenStr(
 				EdxltokenJoinLeftAntiSemiJoinNotIn);
 
+		case EdxljtRightAntiSemijoin:
+			return CDXLTokens::GetDXLTokenStr(EdxltokenJoinRightAntiSemiJoin);
+
 		default:
 			return CDXLTokens::GetDXLTokenStr(EdxltokenUnknown);
 	}
