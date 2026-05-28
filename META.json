@@ -1,0 +1,58 @@
+{
+   "name": "pg_orca",
+   "abstract": "ORCA query optimizer as a PostgreSQL extension",
+   "description": "Plugs the Apache Cloudberry / Greenplum ORCA cost-based optimizer into single-node PostgreSQL 18 via planner_hook. ORCA operates on an intermediate XML-based representation (DXL); if it cannot handle a query it falls back to the standard PG planner automatically. Useful for analytical workloads where ORCA's transformation-based search and cost model produce better plans than PG's standard optimizer (TPC-H, TPC-DS, many-relation joins).",
+   "version": "1.0.0",
+   "maintainer": "Jianghua Yang <yjhjstz@gmail.com>",
+   "license": "apache_2_0",
+   "provides": {
+      "pg_orca": {
+         "abstract": "ORCA query optimizer planner_hook for PostgreSQL 18",
+         "file": "pg_orca.control",
+         "docfile": "README.md",
+         "version": "1.0.0"
+      }
+   },
+   "prereqs": {
+      "runtime": {
+         "requires": {
+            "PostgreSQL": "18.0.0"
+         },
+         "recommends": {
+            "xerces-c": "3.2.0"
+         }
+      },
+      "configure": {
+         "requires": {
+            "cmake": "3.20.0"
+         }
+      }
+   },
+   "resources": {
+      "homepage": "https://github.com/quantumiodb/pgorca",
+      "bugtracker": {
+         "web": "https://github.com/quantumiodb/pgorca/issues"
+      },
+      "repository": {
+         "url":  "git://github.com/quantumiodb/pgorca.git",
+         "web":  "https://github.com/quantumiodb/pgorca",
+         "type": "git"
+      }
+   },
+   "generated_by": "Jianghua Yang",
+   "meta-spec": {
+      "version": "1.0.0",
+      "url": "https://pgxn.org/meta/spec.txt"
+   },
+   "tags": [
+      "optimizer",
+      "planner",
+      "cbo",
+      "cost-based-optimizer",
+      "orca",
+      "greenplum",
+      "cloudberry",
+      "olap",
+      "analytics"
+   ]
+}
