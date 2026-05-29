@@ -1,0 +1,73 @@
+name: package
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-packages:
+    name: DEB + RPM / ubuntu-24.04 / Release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # required to create/update GitHub Releases
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Add PostgreSQL apt repository (pgdg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates lsb-release
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get install -y \
+            postgresql-server-dev-18 \
+            libxerces-c-dev \
+            cmake \
+            ninja-build \
+            rpm
+
+      - name: Build packages
+        run: |
+          packaging/build-packages.sh --all \
+            --pg-config /usr/lib/postgresql/18/bin/pg_config \
+            --build-dir build-pkg \
+            --build-type Release
+
+      - name: List built packages
+        run: |
+          find build-pkg -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' \) \
+            | sort
+
+      - name: Upload as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ github.sha }}
+          path: |
+            build-pkg/*.deb
+            build-pkg/*.rpm
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          mapfile -t pkgs < <(find build-pkg -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' \) | sort)
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" "${pkgs[@]}" --clobber
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --generate-notes \
+              --draft \
+              "${pkgs[@]}"
+          fi
