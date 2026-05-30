@@ -778,3 +778,48 @@ has_orderby_ordering_op(Query *query)
 
 	return found_ordering_op;
 }
+
+#if PG_VERSION_NUM >= 190000
+/* -----------------------------------------------------------------------
+ * has_window_null_treatment — detect RESPECT NULLS / IGNORE NULLS
+ *
+ * PG19 added the SQL:2003 RESPECT/IGNORE NULLS clause for window functions
+ * via the new WindowFunc::ignore_nulls field.  ORCA's DXL has no concept of
+ * this flag, so without intervention an "IGNORE NULLS" call is silently
+ * stripped during Query→DXL→PlannedStmt and the executor never reaches
+ * WinCheckAndInitializeNullTreatment() — meaning either wrong results
+ * (lead/lag/first_value/etc.) or no error for functions that should reject
+ * the clause (rank/dense_rank/row_number/etc.).  Bail out so PG plans it.
+ * ----------------------------------------------------------------------- */
+
+static bool
+has_window_null_treatment_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, WindowFunc))
+	{
+		WindowFunc *wf = (WindowFunc *) node;
+		if (wf->ignore_nulls != NO_NULLTREATMENT)
+			return true;
+	}
+
+	if (IsA(node, Query))
+		/* Pass flags=0 so query_tree_walker handles RTE recursion itself
+		 * (descending into RTE_SUBQUERY etc.) and never feeds a raw
+		 * RangeTblEntry into expression_tree_walker — which would otherwise
+		 * elog "unrecognized node type" since RTE is not an Expr node. */
+		return query_tree_walker((Query *) node,
+								 has_window_null_treatment_walker, context, 0);
+
+	return expression_tree_walker(node, has_window_null_treatment_walker,
+								  context);
+}
+
+bool
+has_window_null_treatment(Query *query)
+{
+	return has_window_null_treatment_walker((Node *) query, NULL);
+}
+#endif

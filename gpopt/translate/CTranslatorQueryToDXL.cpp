@@ -369,6 +369,20 @@ CTranslatorQueryToDXL::CheckUnsupportedNodeTypes(Query *query)
 				   GPOS_WSZ_LIT(
 					   "ORDER BY with ordering operator (amcanorderbyop)"));
 	}
+
+#if PG_VERSION_NUM >= 190000
+	// PG19: WindowFunc::ignore_nulls (SQL:2003 RESPECT/IGNORE NULLS).
+	// DXL does not model the null-treatment clause, so the flag would be
+	// silently dropped — either returning wrong rows from lead/lag/etc. or
+	// hiding the runtime error PG raises for functions like rank() that
+	// don't accept the clause. Fall back to the PG planner.
+	if (gpdb::HasWindowNullTreatment(query))
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+				   GPOS_WSZ_LIT(
+					   "window function with RESPECT/IGNORE NULLS"));
+	}
+#endif
 }
 
 //---------------------------------------------------------------------------
