@@ -603,6 +603,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenIndexClustered, GPOS_WSZ_LIT("IsClustered")},
 		{EdxltokenIndexPages, GPOS_WSZ_LIT("IndexPages")},
 		{EdxltokenIndexAmCanOrder, GPOS_WSZ_LIT("AmCanOrder")},
+		{EdxltokenIndexAmCanOrderByOp, GPOS_WSZ_LIT("AmCanOrderByOp")},
 		{EdxltokenIndexPartial, GPOS_WSZ_LIT("IsPartial")},
 		{EdxltokenIndexType, GPOS_WSZ_LIT("IndexType")},
 		{EdxltokenIndexTypeBtree, GPOS_WSZ_LIT("B-tree")},

@@ -55,6 +55,10 @@ private:
 	// Can index AM order
 	BOOL m_amcanorder;
 
+	// Can index AM return tuples in ORDER BY <operator> order
+	// (IndexAmRoutine::amcanorderbyop). Independent of m_amcanorder.
+	BOOL m_amcanorderbyop;
+
 	// index type
 	EmdindexType m_index_type;
 
@@ -94,7 +98,8 @@ public:
 	// ctor
 	CMDIndexGPDB(CMemoryPool *mp, IMDId *mdid, CMDName *mdname,
 				 BOOL is_clustered, BOOL is_partitioned, BOOL amcanorder,
-				 EmdindexType index_type, IMDId *mdid_item_type,
+				 BOOL amcanorderbyop, EmdindexType index_type,
+				 IMDId *mdid_item_type,
 				 ULongPtrArray *index_key_cols_array,
 				 ULongPtrArray *included_cols_array,
 				 ULongPtrArray *returnable_cols_array,
@@ -120,6 +125,9 @@ public:
 
 	// Does index AM support ordering
 	BOOL CanOrder() const override;
+
+	// Does index AM support ORDER BY <operator>
+	BOOL CanOrderByOp() const override;
 
 	// pg_class.relpages for the index
 	ULONG

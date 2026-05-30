@@ -541,6 +541,7 @@ enum Edxltoken
 	EdxltokenIndexClustered,
 	EdxltokenIndexPages,
 	EdxltokenIndexAmCanOrder,
+	EdxltokenIndexAmCanOrderByOp,
 	EdxltokenIndexPartial,
 	EdxltokenIndexType,
 	EdxltokenIndexTypeBtree,

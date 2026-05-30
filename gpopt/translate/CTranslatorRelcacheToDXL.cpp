@@ -1008,6 +1008,7 @@ CTranslatorRelcacheToDXL::RetrieveIndex(CMemoryPool *mp,
 	ULongPtrArray *sort_direction = nullptr;
 	ULongPtrArray *nulls_direction = nullptr;
 	bool index_amcanorder = false;
+	bool index_amcanorderbyop = false;
 
 	if (!IsIndexSupported(index_rel.get()))
 	{
@@ -1104,6 +1105,7 @@ CTranslatorRelcacheToDXL::RetrieveIndex(CMemoryPool *mp,
 	IndexAmRoutine *am_routine =
 		gpdb::GetIndexAmRoutineFromAmHandler(index_rel->rd_amhandler);
 	index_amcanorder = am_routine->amcanorder;
+	index_amcanorderbyop = am_routine->amcanorderbyop;
 	// Check if index can order
 	// If amcanorder is true, index AM must support INDOPTION_DESC,
 	// INDOPTION_NULLS_FIRST options and have provided Sort, Nulls directions
@@ -1157,9 +1159,10 @@ CTranslatorRelcacheToDXL::RetrieveIndex(CMemoryPool *mp,
 
 	CMDIndexGPDB *index = GPOS_NEW(mp) CMDIndexGPDB(
 		mp, mdid_index, mdname, index_clustered, index_partitioned,
-		index_amcanorder, index_type, mdid_item_type, index_key_cols_array,
-		included_cols, returnable_cols, op_families_mdids, child_index_oids,
-		sort_direction, nulls_direction, index_relpages);
+		index_amcanorder, index_amcanorderbyop, index_type, mdid_item_type,
+		index_key_cols_array, included_cols, returnable_cols,
+		op_families_mdids, child_index_oids, sort_direction, nulls_direction,
+		index_relpages);
 
 	GPOS_DELETE_ARRAY(attno_mapping);
 	return index;

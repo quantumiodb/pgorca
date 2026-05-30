@@ -48,6 +48,9 @@ private:
 	// Does Index AM support ordering
 	BOOL m_amcanorder;
 
+	// Does Index AM support ORDER BY <operator> (amcanorderbyop)
+	BOOL m_amcanorderbyop;
+
 	// index type
 	IMDIndex::EmdindexType m_index_type;
 

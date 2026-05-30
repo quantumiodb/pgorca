@@ -39,6 +39,7 @@ CParseHandlerMDIndex::CParseHandlerMDIndex(
 	  m_mdname(nullptr),
 	  m_clustered(false),
 	  m_amcanorder(false),
+	  m_amcanorderbyop(false),
 	  m_index_type(IMDIndex::EmdindSentinel),
 	  m_mdid_item_type(nullptr),
 	  m_index_key_cols_array(nullptr),
@@ -130,6 +131,13 @@ CParseHandlerMDIndex::StartElement(const XMLCh *const element_uri,
 	m_amcanorder = CDXLOperatorFactory::ExtractConvertAttrValueToBool(
 		m_parse_handler_mgr->GetDXLMemoryManager(), attrs,
 		EdxltokenIndexAmCanOrder, EdxltokenIndex, true);
+
+	// parse amcanorderbyop. Optional for backward compatibility with DXL
+	// streams produced by older planners that didn't emit this attribute.
+	m_amcanorderbyop = CDXLOperatorFactory::ExtractConvertAttrValueToBool(
+		m_parse_handler_mgr->GetDXLMemoryManager(), attrs,
+		EdxltokenIndexAmCanOrderByOp, EdxltokenIndex,
+		true /* fOptional */, false /* default */);
 
 	m_index_type = CDXLOperatorFactory::ParseIndexType(attrs);
 	const XMLCh *xmlszItemType =
@@ -236,7 +244,7 @@ CParseHandlerMDIndex::EndElement(const XMLCh *const,  // element_uri,
 
 	m_imd_obj = GPOS_NEW(m_mp) CMDIndexGPDB(
 		m_mp, m_mdid, m_mdname, m_clustered, is_partitioned, m_amcanorder,
-		m_index_type, m_mdid_item_type, m_index_key_cols_array,
+		m_amcanorderbyop, m_index_type, m_mdid_item_type, m_index_key_cols_array,
 		m_included_cols_array, m_returnable_cols_array, mdid_opfamilies_array,
 		child_indexes, m_sort_direction, m_nulls_direction, m_index_pages);
 

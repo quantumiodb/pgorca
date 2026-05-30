@@ -33,8 +33,9 @@ using namespace gpmd;
 //---------------------------------------------------------------------------
 CMDIndexGPDB::CMDIndexGPDB(
 	CMemoryPool *mp, IMDId *mdid, CMDName *mdname, BOOL is_clustered,
-	BOOL is_partitioned, BOOL amcanorder, EmdindexType index_type,
-	IMDId *mdid_item_type, ULongPtrArray *index_key_cols_array,
+	BOOL is_partitioned, BOOL amcanorder, BOOL amcanorderbyop,
+	EmdindexType index_type, IMDId *mdid_item_type,
+	ULongPtrArray *index_key_cols_array,
 	ULongPtrArray *included_cols_array, ULongPtrArray *returnable_cols_array,
 	IMdIdArray *mdid_opfamilies_array, IMdIdArray *child_index_oids,
 	ULongPtrArray *sort_direction, ULongPtrArray *nulls_direction,
@@ -46,6 +47,7 @@ CMDIndexGPDB::CMDIndexGPDB(
 	  m_clustered(is_clustered),
 	  m_partitioned(is_partitioned),
 	  m_amcanorder(amcanorder),
+	  m_amcanorderbyop(amcanorderbyop),
 	  m_index_type(index_type),
 	  m_mdid_item_type(mdid_item_type),
 	  m_index_key_cols_array(index_key_cols_array),
@@ -181,6 +183,20 @@ BOOL
 CMDIndexGPDB::CanOrder() const
 {
 	return m_amcanorder;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CMDIndexGPDB::CanOrderByOp
+//
+//	@doc:
+//		Does Index Access Method support ORDER BY <operator> (amcanorderbyop)
+//
+//---------------------------------------------------------------------------
+BOOL
+CMDIndexGPDB::CanOrderByOp() const
+{
+	return m_amcanorderbyop;
 }
 
 //---------------------------------------------------------------------------
@@ -391,6 +407,9 @@ CMDIndexGPDB::Serialize(CXMLSerializer *xml_serializer) const
 
 	xml_serializer->AddAttribute(
 		CDXLTokens::GetDXLTokenStr(EdxltokenIndexAmCanOrder), m_amcanorder);
+	xml_serializer->AddAttribute(
+		CDXLTokens::GetDXLTokenStr(EdxltokenIndexAmCanOrderByOp),
+		m_amcanorderbyop);
 
 	xml_serializer->AddAttribute(CDXLTokens::GetDXLTokenStr(EdxltokenIndexType),
 								 GetDXLStr(m_index_type));

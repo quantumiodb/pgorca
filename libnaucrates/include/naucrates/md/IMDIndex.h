@@ -65,6 +65,11 @@ public:
 	// Does index AM support ordering
 	virtual BOOL CanOrder() const = 0;
 
+	// Does index AM support ORDER BY <operator> (amcanorderbyop). True for
+	// pgvector ivfflat/hnsw, PostGIS GiST distance ops, cube GiST, btree_gist
+	// distance ops, etc. Consumed by the kNN xform.
+	virtual BOOL CanOrderByOp() const = 0;
+
 	// index type
 	virtual EmdindexType IndexType() const = 0;
 
