@@ -701,12 +701,14 @@ dts_exec(CustomScanState *node)
 		state->scan_desc = table_beginscan(state->cur_rel,
 										   estate->es_snapshot, 0, NULL
 #if PG_VERSION_NUM >= 190000
-										   /* PG19 lifted the flags arg out of
-										    * the table_beginscan inline wrapper.
-										    * Pass the same default a plain
-										    * sequential scan used in PG18. */
-										   , SO_TYPE_SEQSCAN | SO_ALLOW_STRAT |
-											 SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE
+										   /* PG19 added a user_flags arg to
+										    * table_beginscan(); the SO_TYPE_*
+										    * and SO_ALLOW_* bits are added by
+										    * the function itself and are
+										    * asserted NOT to appear in
+										    * user_flags. Pass 0 — we have no
+										    * hints to add. */
+										   , 0
 #endif
 										   );
 	}

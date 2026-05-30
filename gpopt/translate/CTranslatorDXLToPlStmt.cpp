@@ -704,6 +704,20 @@ CTranslatorDXLToPlStmt::FinalizeParamIds(Plan *plan)
 	if (plan == nullptr)
 		return;
 
+#if PG_VERSION_NUM >= 190000
+	/* PG19 added Result::result_type and asserts in explain.c:4989 that
+	 * "result_type != RESULT_TYPE_GATING" whenever a Result has no subplan.
+	 * MakeNode() zero-inits, which maps to GATING; convert any zero-init'd
+	 * Result-without-child to UPPER (the canonical "replace degenerate upper
+	 * rel" classification used by make_one_row_result()). */
+	if (IsA(plan, Result))
+	{
+		Result *r = (Result *) plan;
+		if (r->plan.lefttree == NULL && r->result_type == RESULT_TYPE_GATING)
+			r->result_type = RESULT_TYPE_UPPER;
+	}
+#endif
+
 	/* Recurse into all Plan-bearing children first (post-order).  SubPlan
 	 * bodies (referenced from initPlan / subPlan / qual expressions) live
 	 * in PlannedStmt.subplans[] and are finalized separately by the caller
