@@ -766,6 +766,14 @@ CTranslatorDXLToScalar::TranslateDXLScalarWindowRefToScalar(
 	window_func->winstar = dxlop->IsStarArg();
 	window_func->winagg = dxlop->IsSimpleAgg();
 
+#if PG_VERSION_NUM >= 190000
+	/* PG19 SQL:2003 RESPECT/IGNORE NULLS — restore the value carried
+	 * through DXL.  The executor's WinCheckAndInitializeNullTreatment
+	 * upgrades PARSER_IGNORE_NULLS -> IGNORE_NULLS or rejects the call
+	 * when the function does not opt into null-treatment. */
+	window_func->ignore_nulls = dxlop->GetNullTreatment();
+#endif
+
 	if (dxlop->GetDxlWinStage() != EdxlwinstageImmediate)
 	{
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLError,

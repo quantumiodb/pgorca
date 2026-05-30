@@ -6072,8 +6072,8 @@ CTranslatorExprToDXL::PdxlnScWindowFuncExpr(CExpression *pexprWindowFunc)
 	CDXLScalarWindowRef *pdxlopWindowref = GPOS_NEW(m_mp) CDXLScalarWindowRef(
 		m_mp, mdid_func, mdid_return_type, popScWindowFunc->IsDistinct(),
 		popScWindowFunc->IsStarArg(), popScWindowFunc->IsSimpleAgg(),
-		dxl_win_stage, 0 /* ulWinspecPosition */
-	);
+		dxl_win_stage, 0 /* ulWinspecPosition */,
+		popScWindowFunc->GetNullTreatment());
 
 	CDXLNode *pdxlnWindowRef = GPOS_NEW(m_mp) CDXLNode(m_mp, pdxlopWindowref);
 

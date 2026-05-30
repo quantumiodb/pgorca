@@ -1833,7 +1833,18 @@ CTranslatorScalarToDXL::TranslateWindowFuncToDXL(
 		GPOS_NEW(m_mp) CMDIdGPDB(IMDId::EmdidGeneral, window_func->winfnoid),
 		GPOS_NEW(m_mp) CMDIdGPDB(IMDId::EmdidGeneral, window_func->wintype),
 		false /*windistinct*/, window_func->winstar, window_func->winagg,
-		EdxlwinstageImmediate, win_spec_pos);
+		EdxlwinstageImmediate, win_spec_pos,
+#if PG_VERSION_NUM >= 190000
+		/* PG19 SQL:2003 RESPECT/IGNORE NULLS — carry the parser-issued code
+		 * (NO_NULLTREATMENT / PARSER_IGNORE_NULLS / PARSER_RESPECT_NULLS)
+		 * through DXL so the PG executor's WinCheckAndInitializeNullTreatment
+		 * still fires for unsupported functions and IGNORE NULLS is honoured
+		 * for lead/lag/first_value/etc. */
+		window_func->ignore_nulls
+#else
+		0 /*NO_NULLTREATMENT*/
+#endif
+	);
 
 	// create the DXL node holding the scalar aggref
 	CDXLNode *dxlnode = GPOS_NEW(m_mp) CDXLNode(m_mp, winref_dxlop);

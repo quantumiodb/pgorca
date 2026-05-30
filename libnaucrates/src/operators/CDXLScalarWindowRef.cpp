@@ -34,7 +34,8 @@ CDXLScalarWindowRef::CDXLScalarWindowRef(CMemoryPool *mp, IMDId *mdid_func,
 										 BOOL is_distinct, BOOL is_star_arg,
 										 BOOL is_simple_agg,
 										 EdxlWinStage dxl_win_stage,
-										 ULONG ulWinspecPosition)
+										 ULONG ulWinspecPosition,
+										 INT null_treatment)
 	: CDXLScalar(mp),
 	  m_func_mdid(mdid_func),
 	  m_return_type_mdid(mdid_return_type),
@@ -42,7 +43,8 @@ CDXLScalarWindowRef::CDXLScalarWindowRef(CMemoryPool *mp, IMDId *mdid_func,
 	  m_is_star_arg(is_star_arg),
 	  m_is_simple_agg(is_simple_agg),
 	  m_dxl_win_stage(dxl_win_stage),
-	  m_win_spec_pos(ulWinspecPosition)
+	  m_win_spec_pos(ulWinspecPosition),
+	  m_null_treatment(null_treatment)
 {
 	GPOS_ASSERT(m_func_mdid->IsValid());
 	GPOS_ASSERT(m_return_type_mdid->IsValid());
@@ -157,6 +159,17 @@ CDXLScalarWindowRef::SerializeToDXL(CXMLSerializer *xml_serializer,
 	xml_serializer->AddAttribute(
 		CDXLTokens::GetDXLTokenStr(EdxltokenWindowrefWinSpecPos),
 		m_win_spec_pos);
+
+	// SQL:2003 RESPECT/IGNORE NULLS (PG19+). Emit only when non-default so
+	// existing PG18 DXL dumps stay byte-identical and old DXL replays still
+	// parse cleanly (the parse handler defaults to 0 when the attribute is
+	// missing).
+	if (0 != m_null_treatment)
+	{
+		xml_serializer->AddAttribute(
+			CDXLTokens::GetDXLTokenStr(EdxltokenWindowrefNullTreatment),
+			m_null_treatment);
+	}
 
 	dxlnode->SerializeChildrenToDXL(xml_serializer);
 

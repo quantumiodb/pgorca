@@ -356,6 +356,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenWindowrefStagePreliminary, GPOS_WSZ_LIT("Preliminary")},
 		{EdxltokenWindowrefStageRowKey, GPOS_WSZ_LIT("RowKey")},
 		{EdxltokenWindowrefWinSpecPos, GPOS_WSZ_LIT("WinSpecPos")},
+		{EdxltokenWindowrefNullTreatment, GPOS_WSZ_LIT("NullTreatment")},
 
 		{EdxltokenAggStrategy, GPOS_WSZ_LIT("AggregationStrategy")},
 		{EdxltokenAggStrategyPlain, GPOS_WSZ_LIT("Plain")},

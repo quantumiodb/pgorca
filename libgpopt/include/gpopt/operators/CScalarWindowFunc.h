@@ -65,6 +65,14 @@ private:
 	// aggregate window function, e.g. count(*) over()
 	BOOL m_fAgg;
 
+	// SQL:2003 RESPECT/IGNORE NULLS clause (PG19+).  Mirrors the value of
+	// WindowFunc::ignore_nulls and is round-tripped through DXL.  Must be
+	// included in HashValue()/Matches() so that two window calls that
+	// differ only in null-treatment never share a memo group -- otherwise
+	// "lag(c) IGNORE NULLS" and "lag(c)" could be folded together and one
+	// would inherit the other's plan.
+	INT m_null_treatment;
+
 public:
 	CScalarWindowFunc(const CScalarWindowFunc &) = delete;
 
@@ -72,7 +80,7 @@ public:
 	CScalarWindowFunc(CMemoryPool *mp, IMDId *mdid_func,
 					  IMDId *mdid_return_type, const CWStringConst *pstrFunc,
 					  EWinStage ewinstage, BOOL is_distinct, BOOL is_star_arg,
-					  BOOL is_simple_agg);
+					  BOOL is_simple_agg, INT null_treatment = 0);
 
 	// dtor
 	~CScalarWindowFunc() override = default;
@@ -137,6 +145,13 @@ public:
 	FAgg() const
 	{
 		return m_fAgg;
+	}
+
+	// null-treatment clause (RESPECT/IGNORE NULLS); 0 == none
+	INT
+	GetNullTreatment() const
+	{
+		return m_null_treatment;
 	}
 
 	// print

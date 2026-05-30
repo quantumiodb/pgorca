@@ -37,13 +37,15 @@ CScalarWindowFunc::CScalarWindowFunc(CMemoryPool *mp, IMDId *mdid_func,
 									 IMDId *mdid_return_type,
 									 const CWStringConst *pstrFunc,
 									 EWinStage ewinstage, BOOL is_distinct,
-									 BOOL is_star_arg, BOOL is_simple_agg)
+									 BOOL is_star_arg, BOOL is_simple_agg,
+									 INT null_treatment)
 	: CScalarFunc(mp),
 	  m_ewinstage(ewinstage),
 	  m_is_distinct(is_distinct),
 	  m_is_star_arg(is_star_arg),
 	  m_is_simple_agg(is_simple_agg),
-	  m_fAgg(false)
+	  m_fAgg(false),
+	  m_null_treatment(null_treatment)
 {
 	GPOS_ASSERT(mdid_func->IsValid());
 	GPOS_ASSERT(mdid_return_type->IsValid());
@@ -76,18 +78,23 @@ CScalarWindowFunc::CScalarWindowFunc(CMemoryPool *mp, IMDId *mdid_func,
 ULONG
 CScalarWindowFunc::HashValue() const
 {
+	// m_null_treatment is mixed in so two calls that differ only in
+	// RESPECT/IGNORE NULLS produce different memo group keys.
 	return gpos::CombineHashes(
 		CombineHashes(
 			CombineHashes(
 				CombineHashes(
-					gpos::CombineHashes(
-						COperator::HashValue(),
-						gpos::CombineHashes(m_func_mdid->HashValue(),
-											m_return_type_mdid->HashValue())),
-					m_ewinstage),
-				gpos::HashValue<BOOL>(&m_is_distinct)),
-			gpos::HashValue<BOOL>(&m_is_star_arg)),
-		gpos::HashValue<BOOL>(&m_is_simple_agg));
+					CombineHashes(
+						gpos::CombineHashes(
+							COperator::HashValue(),
+							gpos::CombineHashes(
+								m_func_mdid->HashValue(),
+								m_return_type_mdid->HashValue())),
+						m_ewinstage),
+					gpos::HashValue<BOOL>(&m_is_distinct)),
+				gpos::HashValue<BOOL>(&m_is_star_arg)),
+			gpos::HashValue<BOOL>(&m_is_simple_agg)),
+		gpos::HashValue<INT>(&m_null_treatment));
 }
 
 
@@ -113,7 +120,8 @@ CScalarWindowFunc::Matches(COperator *pop) const
 				(popFunc->FAgg() == m_fAgg) &&
 				m_func_mdid->Equals(popFunc->FuncMdId()) &&
 				m_return_type_mdid->Equals(popFunc->MdidType()) &&
-				(popFunc->Ews() == m_ewinstage));
+				(popFunc->Ews() == m_ewinstage) &&
+				(popFunc->GetNullTreatment() == m_null_treatment));
 	}
 
 	return false;
@@ -136,6 +144,8 @@ CScalarWindowFunc::OsPrint(IOstream &os) const
 	os << " , Distinct: " << (m_is_distinct ? "true" : "false");
 	os << " , StarArgument: " << (m_is_star_arg ? "true" : "false");
 	os << " , SimpleAgg: " << (m_is_simple_agg ? "true" : "false");
+	if (0 != m_null_treatment)
+		os << " , NullTreatment: " << m_null_treatment;
 	os << ")";
 
 	return os;

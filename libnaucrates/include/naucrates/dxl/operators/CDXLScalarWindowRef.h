@@ -63,6 +63,16 @@ private:
 	// position the window specification in a parent window operator
 	ULONG m_win_spec_pos;
 
+	// SQL:2003 RESPECT/IGNORE NULLS clause (PG19+).  Stored as an integer
+	// so we can round-trip every state PG distinguishes:
+	//   0 = NO_NULLTREATMENT      (no clause)
+	//   1 = PARSER_IGNORE_NULLS   (IGNORE NULLS, awaiting executor check)
+	//   2 = PARSER_RESPECT_NULLS  (RESPECT NULLS, awaiting executor check)
+	//   3 = IGNORE_NULLS          (post-check, IGNORE NULLS active)
+	// On PG18 (or any input that pre-dates this field) the value is 0,
+	// which preserves PG18 semantics exactly.
+	INT m_null_treatment;
+
 public:
 	CDXLScalarWindowRef(const CDXLScalarWindowRef &) = delete;
 
@@ -70,7 +80,8 @@ public:
 	CDXLScalarWindowRef(CMemoryPool *mp, IMDId *pmdidWinfunc,
 						IMDId *mdid_return_type, BOOL is_distinct,
 						BOOL is_star_arg, BOOL is_simple_agg,
-						EdxlWinStage dxl_win_stage, ULONG ulWinspecPosition);
+						EdxlWinStage dxl_win_stage, ULONG ulWinspecPosition,
+						INT null_treatment = 0);
 
 	//dtor
 	~CDXLScalarWindowRef() override;
@@ -133,6 +144,13 @@ public:
 	SetWinSpecPos(ULONG win_spec_pos)
 	{
 		m_win_spec_pos = win_spec_pos;
+	}
+
+	// null-treatment clause (RESPECT/IGNORE NULLS); 0 == none
+	INT
+	GetNullTreatment() const
+	{
+		return m_null_treatment;
 	}
 
 	// string representation of win stage

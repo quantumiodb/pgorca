@@ -3668,9 +3668,15 @@ CDXLOperatorFactory::MakeWindowRef(CDXLMemoryManager *dxl_memory_manager,
 	}
 	GPOS_ASSERT(EdxlwinstageSentinel != dxl_win_stage);
 
+	// SQL:2003 RESPECT/IGNORE NULLS (PG19+). Optional with default 0
+	// (NO_NULLTREATMENT) so pre-PG19 DXL dumps and minidumps stay loadable.
+	INT null_treatment = ExtractConvertAttrValueToInt(
+		dxl_memory_manager, attrs, EdxltokenWindowrefNullTreatment,
+		EdxltokenScalarWindowref, true /*is_optional*/, 0 /*default*/);
+
 	return GPOS_NEW(mp) CDXLScalarWindowRef(
 		mp, mdid_func, mdid_return_type, is_distinct, is_star_arg,
-		is_simple_agg, dxl_win_stage, win_spec_pos);
+		is_simple_agg, dxl_win_stage, win_spec_pos, null_treatment);
 }
 
 //---------------------------------------------------------------------------

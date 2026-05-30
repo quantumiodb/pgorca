@@ -530,9 +530,6 @@ extern "C" List *extract_nodes_plan(Plan *pl, int nodeTag, bool descendIntoSubqu
 extern "C" int find_nodes(Node *node, List *nodeTags);
 extern "C" int check_collation(Node *node);
 extern "C" bool has_orderby_ordering_op(Query *query);
-#if PG_VERSION_NUM >= 190000
-extern "C" bool has_window_null_treatment(Query *query);
-#endif
 
 List *
 gpdb::ExtractNodesPlan(Plan *pl, int node_tag, bool descend_into_subqueries)
@@ -2570,19 +2567,6 @@ gpdb::HasOrderByOrderingOp(Query *query)
 	GP_WRAP_END;
 	return false;
 }
-
-#if PG_VERSION_NUM >= 190000
-bool
-gpdb::HasWindowNullTreatment(Query *query)
-{
-	GP_WRAP_START;
-	{
-		return has_window_null_treatment(query);
-	}
-	GP_WRAP_END;
-	return false;
-}
-#endif
 
 Node *
 gpdb::CoerceToCommonType(ParseState *pstate, Node *node, Oid target_type,

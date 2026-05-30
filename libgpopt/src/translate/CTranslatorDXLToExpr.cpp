@@ -3088,7 +3088,8 @@ CTranslatorDXLToExpr::PexprWindowFunc(const CDXLNode *pdxlnWindowRef)
 	CScalarWindowFunc *popWindowFunc = GPOS_NEW(m_mp)
 		CScalarWindowFunc(m_mp, mdid_func, mdid_return_type, str_name, ews,
 						  pdxlopWinref->IsDistinct(), pdxlopWinref->IsStarArg(),
-						  pdxlopWinref->IsSimpleAgg());
+						  pdxlopWinref->IsSimpleAgg(),
+						  pdxlopWinref->GetNullTreatment());
 
 	CExpression *pexprWindowFunc = nullptr;
 	if (0 < pdxlnWindowRef->Arity())

@@ -276,6 +276,7 @@ enum Edxltoken
 	EdxltokenWindowrefStagePreliminary,
 	EdxltokenWindowrefStageRowKey,
 	EdxltokenWindowrefWinSpecPos,
+	EdxltokenWindowrefNullTreatment,	// PG19 SQL:2003 RESPECT/IGNORE NULLS
 
 	// FIELDSELECT
 	EdxltokenScalarFieldSelect,

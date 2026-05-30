@@ -621,13 +621,6 @@ int CheckCollation(Node *node);
 // ordered index scans; caller should fall back to the PG planner.
 bool HasOrderByOrderingOp(Query *query);
 
-#if PG_VERSION_NUM >= 190000
-// PG19: detect WindowFunc::ignore_nulls (SQL:2003 RESPECT/IGNORE NULLS).
-// ORCA's DXL does not model the null-treatment clause, so any non-default
-// value must trigger fallback to the PG planner.
-bool HasWindowNullTreatment(Query *query);
-#endif
-
 Node *CoerceToCommonType(ParseState *pstate, Node *node, Oid target_type,
 						 const char *context);
 
