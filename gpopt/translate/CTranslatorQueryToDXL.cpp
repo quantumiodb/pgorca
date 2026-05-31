@@ -25,7 +25,14 @@ extern "C" {
 #include "nodes/parsenodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/nodeFuncs.h"
-/* optimizer/walkers.h not in PG18 — walker macros defined inline */
+/* Override PG18's variadic walker/mutator macros with fixed-arity wrappers
+ * that insert the void* cast ORCA's typed callbacks need.  #undef first. */
+#undef query_or_expression_tree_walker
+#undef expression_tree_walker
+#undef query_tree_walker
+#undef expression_tree_mutator
+#undef query_tree_mutator
+#undef query_or_expression_tree_mutator
 #define query_or_expression_tree_walker(n,w,c,f) \
 	query_or_expression_tree_walker_impl(n,(bool(*)(Node*,void*))w,c,f)
 #define expression_tree_walker(n,w,c) \

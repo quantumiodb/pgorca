@@ -47,8 +47,8 @@ CParseHandlerMDIndex::CParseHandlerMDIndex(
 	  m_returnable_cols_array(nullptr),
 	  m_sort_direction(nullptr),
 	  m_nulls_direction(nullptr),
-	  m_child_indexes_parse_handler(nullptr),
-	  m_index_pages(0)
+	  m_index_pages(0),
+	  m_child_indexes_parse_handler(nullptr)
 {
 }
 

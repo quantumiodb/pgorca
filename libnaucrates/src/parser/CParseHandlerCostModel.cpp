@@ -15,6 +15,7 @@
 #include "gpos/common/CBitSet.h"
 
 #include "gpdbcost/CCostModelGPDB.h"
+#include "gpdbcost/CCostModelPG.h"
 #include "naucrates/dxl/operators/CDXLOperatorFactory.h"
 #include "naucrates/dxl/parser/CParseHandlerCostParams.h"
 #include "naucrates/dxl/parser/CParseHandlerFactory.h"
@@ -141,6 +142,7 @@ CParseHandlerCostModel::EndElement(const XMLCh *const,	// element_uri,
 		case ICostModel::EcmtGPDBLegacy:
 		case ICostModel::EcmtGPDBExperimental:
 		case ICostModel::EcmtGPDBCalibrated:
+		{
 			CCostModelParamsGPDB *pcp;
 
 			if (nullptr == m_parse_handler_cost_params)
@@ -156,6 +158,13 @@ CParseHandlerCostModel::EndElement(const XMLCh *const,	// element_uri,
 			}
 			m_cost_model =
 				GPOS_NEW(m_mp) CCostModelGPDB(m_mp, m_num_of_segments, pcp);
+			break;
+		}
+		case ICostModel::EcmtPG:
+			/* CParseHandlerCostParams only produces CCostModelParamsGPDB,
+			 * which CCostModelPG cannot consume; pass nullptr for now. */
+			m_cost_model =
+				GPOS_NEW(m_mp) CCostModelPG(m_mp, m_num_of_segments);
 			break;
 		case ICostModel::EcmtSentinel:
 			GPOS_ASSERT(false && "Unexpected cost model type");

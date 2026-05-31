@@ -391,28 +391,6 @@ CountQualOps(CExpression *expr)
 	return n;
 }
 
-// Count aggregate functions in the agg's project list (child 1).
-// PG's cost_agg uses numAggs from AggInfos; in ORCA each project element
-// in the agg's project list wraps a CScalarAggFunc, so its arity is the
-// closest equivalent.  Non-agg expressions in the project list (rare for
-// CPhysicalAgg) would inflate this count slightly — acceptable for cost.
-static ULONG
-NumAggsFromExprHdl(CExpressionHandle &exprhdl)
-{
-	// child 1 is the scalar project list of the agg operator
-	const ULONG nchildren = exprhdl.Arity();
-	if (nchildren < 2)
-	{
-		return 0;
-	}
-	CExpression *proj_list = exprhdl.PexprScalarRepChild(1);
-	if (nullptr == proj_list)
-	{
-		return 0;
-	}
-	return proj_list->Arity();
-}
-
 // PG's cost_agg uses numGroupCols deduplicated across the projection
 // (parse_agg.c canonicalizes GROUP BY before costing).  ORCA's
 // PdrgpcrGroupingCols can carry duplicates — e.g. when CTranslatorQueryToDXL
@@ -434,43 +412,6 @@ NumDistinctGroupCols(CExpressionHandle &exprhdl)
 		uniq.insert((*cols)[i]);
 	}
 	return static_cast<ULONG>(uniq.size());
-}
-
-// Count operator-cost ops inside every aggregate's argument list,
-// matching PG cost_qual_eval over aggref->args + aggref->aggfilter.
-// For `avg(unique1::numeric)` this returns 1 (the cast); for
-// `sum(CASE WHEN ten = 5 THEN unique1 ELSE 0 END)` returns 2 (the
-// comparison + the if node).  Without this, ORCA undercounts
-// transCost.per_tuple and underestimates per-row agg cost by ~25/agg.
-static ULONG
-CountAggArgOps(CExpressionHandle &exprhdl)
-{
-	if (exprhdl.Arity() < 2)
-	{
-		return 0;
-	}
-	CExpression *proj_list = exprhdl.PexprScalarRepChild(1);
-	if (nullptr == proj_list)
-	{
-		return 0;
-	}
-	ULONG total = 0;
-	for (ULONG i = 0; i < proj_list->Arity(); i++)
-	{
-		CExpression *pr_el = (*proj_list)[i];
-		if (nullptr == pr_el || pr_el->Arity() == 0) continue;
-		CExpression *agg_func = (*pr_el)[0];
-		if (nullptr == agg_func ||
-			COperator::EopScalarAggFunc != agg_func->Pop()->Eopid())
-			continue;
-		// Walk the agg's children (args / direct args / order / qual);
-		// CountQualOps skips Ident/Const/BoolOp so plain `sum(col)` adds 0.
-		for (ULONG c = 0; c < agg_func->Arity(); c++)
-		{
-			total += CountQualOps((*agg_func)[c]);
-		}
-	}
-	return total;
 }
 
 // PG `get_agg_clause_costs` calls `find_compatible_pertrans` (nodeAgg.c)

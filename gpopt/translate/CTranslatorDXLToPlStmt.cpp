@@ -4898,24 +4898,12 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 		m_md_accessor->RetrieveRel(dxl_table_descr->MDId());
 	OID oidRel = CMDIdGPDB::CastMdid(md_rel->MDId())->Oid();
 
-	// Get param_id for DPE communication with PartitionSelectorCS
+	// DPE param_id is keyed on scan_id so DTS and PartitionSelectorCS
+	// share the same PARAM_EXEC slot (selector_id keys would diverge).
 	OID oid_type =
 		CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
 			->Oid();
-	List *join_prune_paramids =
-		TranslateJoinPruneParamids(dyn_tbl_scan_dxlop->GetSelectorIds(),
-								   oid_type, m_dxl_to_plstmt_context);
-
-	// Use ORCA's scan_id (stored in the DXL node) as the key for param slot
-	// allocation.  CDXLPhysicalPartitionSelector::ScanId() references the same
-	// value, so both sides always agree on the same PARAM_EXEC slot.
 	ULONG scan_id = dyn_tbl_scan_dxlop->ScanId();
-
-	// Always key on scan_id so DTS and PartitionSelectorCS agree on the same
-	// PARAM_EXEC slot.  PartitionSelectorCS uses GetParamIdForScanId(scan_id),
-	// and we must match that.  The selector_ids / join_prune_paramids path used
-	// GetParamIdForSelector (a different map) and produced a different slot —
-	// causing the DPE shared-state pointer mismatch that broke HashJoin DPE.
 	int param_id =
 		(int) m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
 
