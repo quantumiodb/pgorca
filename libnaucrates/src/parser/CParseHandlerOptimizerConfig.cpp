@@ -26,7 +26,6 @@
 #include "naucrates/dxl/parser/CParseHandlerFactory.h"
 #include "naucrates/dxl/parser/CParseHandlerHint.h"
 #include "naucrates/dxl/parser/CParseHandlerManager.h"
-#include "naucrates/dxl/parser/CParseHandlerPlanHint.h"
 #include "naucrates/dxl/parser/CParseHandlerStatisticsConfig.h"
 #include "naucrates/dxl/parser/CParseHandlerTraceFlags.h"
 #include "naucrates/dxl/parser/CParseHandlerWindowOids.h"
@@ -88,20 +87,6 @@ CParseHandlerOptimizerConfig::StartElement(
 		CParseHandlerBase *pphHint = CParseHandlerFactory::GetParseHandler(
 			m_mp, CDXLTokens::XmlstrToken(EdxltokenHint), m_parse_handler_mgr,
 			this);
-		m_parse_handler_mgr->ActivateParseHandler(pphHint);
-		pphHint->startElement(element_uri, element_local_name, element_qname,
-							  attrs);
-		this->Append(pphHint);
-		return;
-	}
-	else if (0 == XMLString::compareString(
-					  CDXLTokens::XmlstrToken(EdxltokenPlanHint),
-					  element_local_name))
-	{
-		// install a parse handler for the plan hint config
-		CParseHandlerBase *pphHint = CParseHandlerFactory::GetParseHandler(
-			m_mp, CDXLTokens::XmlstrToken(EdxltokenPlanHint),
-			m_parse_handler_mgr, this);
 		m_parse_handler_mgr->ActivateParseHandler(pphHint);
 		pphHint->startElement(element_uri, element_local_name, element_qname,
 							  attrs);
@@ -264,16 +249,8 @@ CParseHandlerOptimizerConfig::EndElement(const XMLCh *const,  // element_uri,
 
 	// XXX: Add new fields to COptimizerConfig at (*this)[Length - N].
 
-	CParseHandlerPlanHint *pphHint =
-		dynamic_cast<CParseHandlerPlanHint *>((*this)[this->Length() - 2]);
-	CPlanHint *pplanhint = pphHint->GetPlanHint();
-	if (nullptr != pplanhint)
-	{
-		pplanhint->AddRef();
-	}
-
 	m_optimizer_config = GPOS_NEW(m_mp) COptimizerConfig(
-		pec, stats_config, pcteconfig, pcm, phint, pplanhint, pwindowoidsGPDB);
+		pec, stats_config, pcteconfig, pcm, phint, pwindowoidsGPDB);
 
 	CParseHandlerTraceFlags *pphTraceFlags =
 		dynamic_cast<CParseHandlerTraceFlags *>((*this)[this->Length() - 1]);

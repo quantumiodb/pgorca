@@ -32,14 +32,13 @@ using namespace gpopt;
 COptimizerConfig::COptimizerConfig(CEnumeratorConfig *pec,
 								   CStatisticsConfig *stats_config,
 								   CCTEConfig *pcteconf, ICostModel *cost_model,
-								   CHint *phint, CPlanHint *pplanhint,
+								   CHint *phint,
 								   CWindowOids *pwindowoids)
 	: m_enumerator_cfg(pec),
 	  m_stats_conf(stats_config),
 	  m_cte_conf(pcteconf),
 	  m_cost_model(cost_model),
 	  m_hint(phint),
-	  m_plan_hint(pplanhint),
 	  m_window_oids(pwindowoids)
 {
 	GPOS_ASSERT(nullptr != pec);
@@ -64,7 +63,6 @@ COptimizerConfig::~COptimizerConfig()
 	m_stats_conf->Release();
 	m_cte_conf->Release();
 	m_cost_model->Release();
-	CRefCount::SafeRelease(m_plan_hint);
 	m_hint->Release();
 	m_window_oids->Release();
 }
@@ -84,7 +82,7 @@ COptimizerConfig::PoconfDefault(CMemoryPool *mp)
 		GPOS_NEW(mp) CEnumeratorConfig(mp, 0 /*plan_id*/, 0 /*ullSamples*/),
 		CStatisticsConfig::PstatsconfDefault(mp),
 		CCTEConfig::PcteconfDefault(mp), ICostModel::PcmDefault(mp),
-		CHint::PhintDefault(mp), nullptr /* pplanhint */,
+		CHint::PhintDefault(mp),
 		CWindowOids::GetWindowOids(mp));
 }
 
@@ -105,7 +103,7 @@ COptimizerConfig::PoconfDefault(CMemoryPool *mp, ICostModel *pcm)
 		GPOS_NEW(mp) CEnumeratorConfig(mp, 0 /*plan_id*/, 0 /*ullSamples*/),
 		CStatisticsConfig::PstatsconfDefault(mp),
 		CCTEConfig::PcteconfDefault(mp), pcm, CHint::PhintDefault(mp),
-		nullptr /* pplanhint */, CWindowOids::GetWindowOids(mp));
+		CWindowOids::GetWindowOids(mp));
 }
 
 //---------------------------------------------------------------------------
@@ -219,19 +217,6 @@ COptimizerConfig::Serialize(CMemoryPool *mp, CXMLSerializer *xml_serializer,
 	xml_serializer->CloseElement(
 		CDXLTokens::GetDXLTokenStr(EdxltokenNamespacePrefix),
 		CDXLTokens::GetDXLTokenStr(EdxltokenHint));
-
-	xml_serializer->OpenElement(
-		CDXLTokens::GetDXLTokenStr(EdxltokenNamespacePrefix),
-		CDXLTokens::GetDXLTokenStr(EdxltokenPlanHint));
-
-	if (nullptr != GetPlanHint())
-	{
-		GetPlanHint()->Serialize(xml_serializer);
-	}
-
-	xml_serializer->CloseElement(
-		CDXLTokens::GetDXLTokenStr(EdxltokenNamespacePrefix),
-		CDXLTokens::GetDXLTokenStr(EdxltokenPlanHint));
 
 	// Serialize traceflags represented in bitset into stream
 	gpos::CBitSetIter bsi(*pbsTrace);

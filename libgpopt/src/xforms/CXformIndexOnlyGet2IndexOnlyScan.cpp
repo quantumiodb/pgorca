@@ -16,7 +16,6 @@
 #include "gpos/base.h"
 
 #include "gpopt/base/COptCtxt.h"
-#include "gpopt/hints/CHintUtils.h"
 #include "gpopt/metadata/CIndexDescriptor.h"
 #include "gpopt/metadata/CTableDescriptor.h"
 #include "gpopt/operators/CExpressionHandle.h"
@@ -91,12 +90,6 @@ CXformIndexOnlyGet2IndexOnlyScan::Transform(CXformContext *pxfctxt,
 		return;
 	}
 
-	if (!CHintUtils::SatisfiesPlanHints(
-			pop,
-			COptCtxt::PoctxtFromTLS()->GetOptimizerConfig()->GetPlanHint()))
-	{
-		return;
-	}
 
 	pindexdesc->AddRef();
 	ptabdesc->AddRef();

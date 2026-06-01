@@ -98,17 +98,8 @@ public:
 			pexprLeft, pexprRight, pexprScalar);
 
 
-		if (!CHintUtils::SatisfiesJoinTypeHints(
-				mp, pexprPhysicalApply,
-				COptCtxt::PoctxtFromTLS()->GetOptimizerConfig()->GetPlanHint()))
-		{
-			pexprPhysicalApply->Release();
-		}
-		else
-		{
-			// add alternative to results
-			pxfres->Add(pexprPhysicalApply);
-		}
+		// hints removed -- always accept the alternative
+		pxfres->Add(pexprPhysicalApply);
 	}
 
 };	// class CXformImplementCorrelatedApply

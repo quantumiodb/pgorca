@@ -155,24 +155,6 @@ CLogicalLeftSemiJoin::PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	IStatistics *pstatsSemiJoin =
 		PstatsDerive(mp, join_preds_stats, outer_stats, inner_side_stats);
 
-	// Check whether a row plan hint exists for this join operators relations.
-	// And if one does exist, then evaluate the hint to overwrite the estimated
-	// rows.
-	CPlanHint *planhint =
-		COptCtxt::PoctxtFromTLS()->GetOptimizerConfig()->GetPlanHint();
-	if (nullptr != planhint)
-	{
-		CRowHint *rowhint =
-			planhint->GetRowHint(exprhdl.DeriveTableDescriptor());
-		if (nullptr != rowhint)
-		{
-			pstatsSemiJoin->SetRows(
-				rowhint->ComputeRows(pstatsSemiJoin->Rows()));
-		}
-	}
-
-	join_preds_stats->Release();
-
 	return pstatsSemiJoin;
 }
 // EOF

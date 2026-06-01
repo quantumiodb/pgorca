@@ -185,18 +185,6 @@ CLogicalLeftSemiApply::PstatsDerive(CMemoryPool *mp,
 	IStatistics *pstatsSemiJoin = CLogicalLeftSemiJoin::PstatsDerive(
 		mp, join_preds_stats, outer_stats, inner_stats);
 
-	CPlanHint *planhint =
-		COptCtxt::PoctxtFromTLS()->GetOptimizerConfig()->GetPlanHint();
-	if (nullptr != planhint)
-	{
-		CRowHint *rowhint =
-			planhint->GetRowHint(exprhdl.DeriveTableDescriptor());
-		if (nullptr != rowhint)
-		{
-			pstatsSemiJoin->SetRows(
-				rowhint->ComputeRows(pstatsSemiJoin->Rows()));
-		}
-	}
 
 	join_preds_stats->Release();
 	return pstatsSemiJoin;
