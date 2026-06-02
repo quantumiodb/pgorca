@@ -1,0 +1,107 @@
+# Two-stage Dockerfile: build pg_orca from source on Rocky Linux 9 against the
+# PGDG postgresql18 packages, then ship a slim Rocky 9 runtime with just the
+# server, the libxerces-c runtime, and the resulting .so/control/sql files.
+#
+# Compared to the Debian Dockerfile, Rocky has no upstream "postgres:18" image
+# with a pre-baked entrypoint, so this image ships a small entrypoint shim
+# (docker/docker-entrypoint-rocky9.sh) that does first-boot initdb, applies
+# POSTGRES_PASSWORD / POSTGRES_DB / POSTGRES_USER, runs any SQL dropped under
+# /docker-entrypoint-initdb.d/, and then execs postgres in the foreground.
+#
+# Build:
+#   docker build -f Dockerfile.rocky9 -t pg_orca:18-rocky9-1.0.0 .
+#
+# Run:
+#   docker run --name pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres \
+#       -d pg_orca:18-rocky9-1.0.0
+#   docker exec -it pg psql -U postgres -c \
+#       "CREATE EXTENSION pg_orca; SHOW pg_orca.enable_orca;"
+
+# ----------------------------------------------------------------------------
+# Stage 1: builder
+# ----------------------------------------------------------------------------
+FROM rockylinux:9 AS builder
+
+# PGDG repo + CRB (CodeReady Builder) for headers/devel packages.
+# `module disable postgresql` so dnf doesn't prefer the AppStream PG.
+RUN set -eux; \
+    dnf -y install dnf-plugins-core epel-release; \
+    dnf -y config-manager --set-enabled crb; \
+    dnf -qy module disable postgresql; \
+    dnf -y install \
+        https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm; \
+    dnf -y install \
+        postgresql18-devel \
+        xerces-c-devel \
+        cmake ninja-build gcc-c++ \
+        make git; \
+    dnf clean all
+
+WORKDIR /src
+COPY . /src/
+
+# Configure & build Release; install into a staging DESTDIR so the runtime
+# stage only pulls the extension files.  PGDG layout puts pg_config under
+# /usr/pgsql-18/.
+RUN set -eux; \
+    cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DPG_CONFIG=/usr/pgsql-18/bin/pg_config; \
+    cmake --build build -j "$(nproc)"; \
+    DESTDIR=/staging cmake --install build; \
+    ls -la /staging/usr/pgsql-18/lib/pg_orca.so
+
+# ----------------------------------------------------------------------------
+# Stage 2: runtime
+# ----------------------------------------------------------------------------
+FROM rockylinux:9
+
+# Runtime deps: PG18 server, libxerces-c runtime, glibc-langpack-en for the
+# en_US.UTF-8 locale that initdb defaults to.
+RUN set -eux; \
+    dnf -y install dnf-plugins-core epel-release; \
+    dnf -y config-manager --set-enabled crb; \
+    dnf -qy module disable postgresql; \
+    dnf -y install \
+        https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm; \
+    dnf -y install \
+        postgresql18-server postgresql18-contrib \
+        xerces-c \
+        glibc-langpack-en \
+        shadow-utils; \
+    dnf clean all
+
+# Copy pg_orca artifacts from the builder.
+COPY --from=builder /staging/usr/pgsql-18/lib/pg_orca.so \
+                    /usr/pgsql-18/lib/pg_orca.so
+COPY --from=builder /staging/usr/pgsql-18/share/extension/pg_orca.control \
+                    /usr/pgsql-18/share/extension/pg_orca.control
+COPY --from=builder /staging/usr/pgsql-18/share/extension/pg_orca--1.0.0.sql \
+                    /usr/pgsql-18/share/extension/pg_orca--1.0.0.sql
+
+# Bootstrap SQL: same one the Debian image uses.
+COPY docker/pg_orca-bootstrap.sql /docker-entrypoint-initdb.d/00-pg_orca-bootstrap.sql
+
+# Entrypoint shim (initdb on first boot, run /docker-entrypoint-initdb.d/*.sql,
+# then exec postgres).  PGDG's postgresql18-server package already creates the
+# `postgres` user with home /var/lib/pgsql.
+COPY docker/docker-entrypoint-rocky9.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENV PATH=/usr/pgsql-18/bin:$PATH \
+    PGDATA=/var/lib/pgsql/18/data \
+    LANG=en_US.utf8
+
+# Run as root so the entrypoint can chown a fresh PGDATA volume before
+# dropping to the postgres user (matches docker-library/postgres behaviour).
+VOLUME ["/var/lib/pgsql/18/data"]
+EXPOSE 5432
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["postgres"]
+
+LABEL org.opencontainers.image.title="pg_orca"
+LABEL org.opencontainers.image.description="PostgreSQL 18 (Rocky Linux 9) with ORCA query optimizer (Apache Cloudberry/Greenplum) preloaded as a planner_hook extension"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.source="https://github.com/quantumiodb/pgorca"
+LABEL org.opencontainers.image.version="1.0.0-rocky9"
