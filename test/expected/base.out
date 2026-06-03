@@ -164,15 +164,13 @@ EXPLAIN (COSTS OFF, VERBOSE) SELECT o_orderkey FROM orders WHERE o_custkey > 10;
 
 -- Column aliases with WHERE
 EXPLAIN (COSTS OFF, VERBOSE) SELECT n_regionkey AS x, n_regionkey AS y FROM nation WHERE n_regionkey < 10;
-                QUERY PLAN                 
--------------------------------------------
- Result
+             QUERY PLAN              
+-------------------------------------
+ Seq Scan on public.nation
    Output: n_regionkey, n_regionkey
-   ->  Seq Scan on public.nation
-         Output: n_regionkey
-         Filter: (nation.n_regionkey < 10)
+   Filter: (nation.n_regionkey < 10)
  Optimizer: pg_orca
-(6 rows)
+(4 rows)
 
 -- IN-list constant
 EXPLAIN (COSTS OFF, VERBOSE) SELECT 1 WHERE 1 IN (2, 3);
@@ -187,24 +185,20 @@ EXPLAIN (COSTS OFF, VERBOSE) SELECT 1 WHERE 1 IN (2, 3);
 EXPLAIN (COSTS OFF, VERBOSE) SELECT n_regionkey AS x, n_regionkey + 1 AS y FROM nation;
                 QUERY PLAN                
 ------------------------------------------
- Result
+ Seq Scan on public.nation
    Output: n_regionkey, (n_regionkey + 1)
-   ->  Seq Scan on public.nation
-         Output: n_regionkey
  Optimizer: pg_orca
-(5 rows)
+(3 rows)
 
 -- generate_series
 EXPLAIN (COSTS OFF, VERBOSE) SELECT 1 FROM generate_series(1,10);
-                    QUERY PLAN                     
----------------------------------------------------
- Result
+                 QUERY PLAN                  
+---------------------------------------------
+ Function Scan on pg_catalog.generate_series
    Output: 1
-   ->  Function Scan on pg_catalog.generate_series
-         Output: generate_series
-         Function Call: generate_series(1, 10)
+   Function Call: generate_series(1, 10)
  Optimizer: pg_orca
-(6 rows)
+(4 rows)
 
 EXPLAIN (COSTS OFF, VERBOSE) SELECT g FROM generate_series(1,10) g;
                   QUERY PLAN                   
@@ -216,26 +210,22 @@ EXPLAIN (COSTS OFF, VERBOSE) SELECT g FROM generate_series(1,10) g;
 (4 rows)
 
 EXPLAIN (COSTS OFF, VERBOSE) SELECT g + 1 FROM generate_series(1,10) g;
-                     QUERY PLAN                      
------------------------------------------------------
- Result
+                  QUERY PLAN                   
+-----------------------------------------------
+ Function Scan on pg_catalog.generate_series g
    Output: (g + 1)
-   ->  Function Scan on pg_catalog.generate_series g
-         Output: g
-         Function Call: generate_series(1, 10)
+   Function Call: generate_series(1, 10)
  Optimizer: pg_orca
-(6 rows)
+(4 rows)
 
 EXPLAIN (COSTS OFF, VERBOSE) SELECT g + 1 AS x FROM generate_series(1,10) g WHERE 1 < 10;
-                     QUERY PLAN                      
------------------------------------------------------
- Result
+                  QUERY PLAN                   
+-----------------------------------------------
+ Function Scan on pg_catalog.generate_series g
    Output: (g + 1)
-   ->  Function Scan on pg_catalog.generate_series g
-         Output: g
-         Function Call: generate_series(1, 10)
+   Function Call: generate_series(1, 10)
  Optimizer: pg_orca
-(6 rows)
+(4 rows)
 
 -- LIMIT
 EXPLAIN (COSTS OFF, VERBOSE) SELECT n_regionkey AS x, n_regionkey + 1 AS y FROM nation LIMIT 10;
@@ -243,24 +233,20 @@ EXPLAIN (COSTS OFF, VERBOSE) SELECT n_regionkey AS x, n_regionkey + 1 AS y FROM 
 ------------------------------------------------
  Limit
    Output: n_regionkey, ((n_regionkey + 1))
-   ->  Result
+   ->  Seq Scan on public.nation
          Output: n_regionkey, (n_regionkey + 1)
-         ->  Seq Scan on public.nation
-               Output: n_regionkey
  Optimizer: pg_orca
-(7 rows)
+(5 rows)
 
 -- Arithmetic
 EXPLAIN (COSTS OFF, VERBOSE) SELECT o_totalprice + 1, o_totalprice - 1, o_totalprice * 1, o_totalprice / 1 FROM orders WHERE o_orderkey = 1000 AND o_shippriority + 1 > 10;
                                                                                 QUERY PLAN                                                                                
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Result
+ Seq Scan on public.orders
    Output: (o_totalprice + '1'::double precision), (o_totalprice - '1'::double precision), (o_totalprice * '1'::double precision), (o_totalprice / '1'::double precision)
-   ->  Seq Scan on public.orders
-         Output: o_totalprice
-         Filter: ((orders.o_orderkey = 1000) AND ((orders.o_shippriority + 1) > 10))
+   Filter: ((orders.o_orderkey = 1000) AND ((orders.o_shippriority + 1) > 10))
  Optimizer: pg_orca
-(6 rows)
+(4 rows)
 
 -- ORDER BY + LIMIT (index scan tests)
 EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM nation ORDER BY 1 LIMIT 10;
@@ -381,15 +367,13 @@ EXPLAIN (costs off) SELECT * FROM boolindex ORDER BY b, i LIMIT 10;
 DROP TABLE boolindex;
 -- Basic filter
 EXPLAIN (COSTS OFF, VERBOSE) SELECT o_totalprice + 1 FROM orders WHERE o_orderkey = 1000 AND o_shippriority + 1 < 10;
-                                     QUERY PLAN                                      
--------------------------------------------------------------------------------------
- Result
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Seq Scan on public.orders
    Output: (o_totalprice + '1'::double precision)
-   ->  Seq Scan on public.orders
-         Output: o_totalprice
-         Filter: ((orders.o_orderkey = 1000) AND ((orders.o_shippriority + 1) < 10))
+   Filter: ((orders.o_orderkey = 1000) AND ((orders.o_shippriority + 1) < 10))
  Optimizer: pg_orca
-(6 rows)
+(4 rows)
 
 -- IN-list
 EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM customer WHERE c_custkey IN (1,2,2,3,123,34,345,453,56,567,23,213);
@@ -421,17 +405,15 @@ EXPLAIN (COSTS OFF, VERBOSE) SELECT sum(n_regionkey) FROM nation;
 (5 rows)
 
 EXPLAIN (COSTS OFF, VERBOSE) SELECT sum(n_regionkey) FROM nation GROUP BY n_name;
-                QUERY PLAN                 
--------------------------------------------
- Result
-   Output: (sum(n_regionkey))
-   ->  HashAggregate
-         Output: sum(n_regionkey), n_name
-         Group Key: nation.n_name
-         ->  Seq Scan on public.nation
-               Output: n_name, n_regionkey
+             QUERY PLAN              
+-------------------------------------
+ HashAggregate
+   Output: sum(n_regionkey)
+   Group Key: nation.n_name
+   ->  Seq Scan on public.nation
+         Output: n_name, n_regionkey
  Optimizer: pg_orca
-(8 rows)
+(6 rows)
 
 EXPLAIN (COSTS OFF, VERBOSE) SELECT o_orderkey, sum(o_custkey) FROM orders GROUP BY o_orderkey ORDER BY o_orderkey;
                  QUERY PLAN                  
@@ -857,26 +839,22 @@ EXPLAIN (COSTS OFF) SELECT * FROM customer WHERE 1+c_custkey IN (SELECT c_nation
 -- count/case-rewrite based on minor cost-model perturbations; the result is
 -- semantically identical, but the EXPLAIN text isn't stable. Ignore output.
 EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM customer WHERE 2 IN (SELECT n_nationkey + 1 FROM nation);
-                                                                                                QUERY PLAN                                                                                                 
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Result
+                                                                                             QUERY PLAN                                                                                              
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ HashAggregate
    Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment
-   ->  HashAggregate
+   Group Key: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
+   ->  Nested Loop
          Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
-         Group Key: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
-         ->  Nested Loop
+         Join Filter: true
+         ->  Result
+               Filter: (2 = ((nation.n_nationkey + 1)))
+               ->  Seq Scan on public.nation
+                     Output: (nation.n_nationkey + 1)
+         ->  Seq Scan on public.customer
                Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
-               Join Filter: true
-               ->  Result
-                     Filter: (2 = ((nation.n_nationkey + 1)))
-                     ->  Result
-                           Output: (nation.n_nationkey + 1)
-                           ->  Seq Scan on public.nation
-                                 Output: nation.n_nationkey
-               ->  Seq Scan on public.customer
-                     Output: customer.c_custkey, customer.c_name, customer.c_address, customer.c_nationkey, customer.c_phone, customer.c_acctbal, customer.c_mktsegment, customer.c_comment, customer.ctid
  Optimizer: pg_orca
-(17 rows)
+(13 rows)
 
 -- end_ignore
 -- Correlated EXISTS
@@ -895,40 +873,35 @@ EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM customer WHERE EXISTS(SELECT n_nation
 
 -- Nested EXISTS
 EXPLAIN (COSTS OFF, VERBOSE) SELECT pn, cn, vn FROM sale s WHERE EXISTS (SELECT * FROM customer WHERE EXISTS (SELECT * FROM product WHERE pn = s.pn));
-                             QUERY PLAN                              
----------------------------------------------------------------------
+                           QUERY PLAN                           
+----------------------------------------------------------------
  Result
    Output: s.pn, s.cn, s.vn
    Filter: (COALESCE(((SubPlan 1)), '0'::bigint) > '0'::bigint)
-   ->  Result
+   ->  Seq Scan on public.sale s
          Output: (SubPlan 1), s.cn, s.vn, s.pn
-         ->  Seq Scan on public.sale s
-               Output: s.cn, s.vn, s.pn
          SubPlan 1
            ->  Aggregate
                  Output: count(*)
-                 ->  Result
-                       ->  HashAggregate
+                 ->  HashAggregate
+                       Group Key: customer.ctid
+                       ->  Nested Loop
                              Output: customer.ctid
-                             Group Key: customer.ctid
-                             ->  Nested Loop
+                             Join Filter: true
+                             ->  Seq Scan on public.product
+                                   Filter: (product.pn = s.pn)
+                             ->  Seq Scan on public.customer
                                    Output: customer.ctid
-                                   Join Filter: true
-                                   ->  Seq Scan on public.product
-                                         Filter: (product.pn = s.pn)
-                                   ->  Seq Scan on public.customer
-                                         Output: customer.ctid
  Optimizer: pg_orca
-(22 rows)
+(18 rows)
 
 EXPLAIN (COSTS OFF) SELECT pn, cn, vn FROM sale s WHERE cn IN (SELECT s.pn FROM customer WHERE cn NOT IN (SELECT pn FROM product WHERE pn = s.pn));
                                                                                                                                                                                       QUERY PLAN                                                                                                                                                                                       
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Result
    Filter: (COALESCE(((SubPlan 1)), '0'::bigint) > '0'::bigint)
-   ->  Result
-         ->  Seq Scan on sale s
-               Filter: (cn = pn)
+   ->  Seq Scan on sale s
+         Filter: (cn = pn)
          SubPlan 1
            ->  Aggregate
                  ->  Nested Loop
@@ -942,7 +915,7 @@ EXPLAIN (COSTS OFF) SELECT pn, cn, vn FROM sale s WHERE cn IN (SELECT s.pn FROM 
                                                      Filter: (pn = s.pn)
                        ->  Seq Scan on customer
  Optimizer: pg_orca
-(18 rows)
+(17 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM customer WHERE EXISTS (SELECT 1 FROM nation WHERE nation.n_nationkey = customer.c_custkey AND customer.c_custkey > 1);
                        QUERY PLAN                       
@@ -954,11 +927,10 @@ EXPLAIN (COSTS OFF) SELECT * FROM customer WHERE EXISTS (SELECT 1 FROM nation WH
          ->  Seq Scan on customer
                Filter: (c_custkey > 1)
    ->  Hash
-         ->  Result
-               ->  Seq Scan on nation
-                     Filter: (n_nationkey > 1)
+         ->  Seq Scan on nation
+               Filter: (n_nationkey > 1)
  Optimizer: pg_orca
-(11 rows)
+(10 rows)
 
 -- Actual query execution with aggregate
 SELECT o_orderkey, sum(o_custkey + o_orderkey)/20 FROM orders GROUP BY o_orderkey ORDER BY o_orderkey LIMIT 10;

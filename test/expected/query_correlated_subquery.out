@@ -298,44 +298,42 @@ explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j fr
 \echo '-- force_explain'
 -- force_explain
 explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i);
-                    QUERY PLAN                     
----------------------------------------------------
+                 QUERY PLAN                  
+---------------------------------------------
  Result
-   ->  Result
-         Filter: (a.j = (SubPlan 1))
+   Filter: (a.j = (SubPlan 1))
+   ->  Nested Loop
+         Join Filter: true
          ->  Nested Loop
                Join Filter: true
-               ->  Nested Loop
-                     Join Filter: true
-                     ->  Seq Scan on a
-                     ->  Seq Scan on b
-               ->  Seq Scan on c
-         SubPlan 1
-           ->  Seq Scan on c c_1
-                 Filter: ((j = a.j) AND (i = b.i))
+               ->  Seq Scan on a
+               ->  Seq Scan on b
+         ->  Seq Scan on c
+   SubPlan 1
+     ->  Seq Scan on c c_1
+           Filter: ((j = a.j) AND (i = b.i))
  Optimizer: pg_orca
-(14 rows)
+(13 rows)
 
 \echo '-- force_explain'
 -- force_explain
 explain (costs off) select A.i, B.i, C.j from A, B, C where A.j = (select C.j from C where C.j = A.j and C.i = B.i and A.j = B.j);
-                            QUERY PLAN                             
--------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Result
-   ->  Result
-         Filter: (a.j = (SubPlan 1))
+   Filter: (a.j = (SubPlan 1))
+   ->  Nested Loop
+         Join Filter: true
          ->  Nested Loop
                Join Filter: true
-               ->  Nested Loop
-                     Join Filter: true
-                     ->  Seq Scan on a
-                     ->  Seq Scan on b
-               ->  Seq Scan on c
-         SubPlan 1
-           ->  Seq Scan on c c_1
-                 Filter: ((j = a.j) AND (i = b.i) AND (a.j = b.j))
+               ->  Seq Scan on a
+               ->  Seq Scan on b
+         ->  Seq Scan on c
+   SubPlan 1
+     ->  Seq Scan on c c_1
+           Filter: ((j = a.j) AND (i = b.i) AND (a.j = b.j))
  Optimizer: pg_orca
-(14 rows)
+(13 rows)
 
 --select distinct(C.j) as C_j ,A.i as A_i, B.i as B_i from A, B, C where A.j = (select sum(C.j) from C where C.j = A.j and C.i = B.i) and C.j > 600 limit 10;
 \echo '-- force_explain'
@@ -421,44 +419,42 @@ explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and
 \echo '-- force_explain'
 -- force_explain
 explain (costs off) select A.i, A.j, (select sum(C.j) from C where C.j = A.j and C.i = (select A.i from A where A.i = C.i)) from A;
-                  QUERY PLAN                   
------------------------------------------------
- Result
-   ->  Hash Right Join
-         Hash Cond: (c.j = a_1.j)
-         ->  HashAggregate
-               Group Key: c.j
-               ->  Seq Scan on c
-                     Filter: (i = (SubPlan 1))
-                     SubPlan 1
-                       ->  Seq Scan on a
-                             Filter: (i = c.i)
-         ->  Hash
-               ->  Seq Scan on a a_1
+               QUERY PLAN                
+-----------------------------------------
+ Hash Right Join
+   Hash Cond: (c.j = a_1.j)
+   ->  HashAggregate
+         Group Key: c.j
+         ->  Seq Scan on c
+               Filter: (i = (SubPlan 1))
+               SubPlan 1
+                 ->  Seq Scan on a
+                       Filter: (i = c.i)
+   ->  Hash
+         ->  Seq Scan on a a_1
  Optimizer: pg_orca
-(13 rows)
+(12 rows)
 
 --MPP-13603
 \echo '-- force_explain'
 -- force_explain
 explain (costs off) select * from t1 where t1.x >ALL (select t2.x from t2 where abs(t2.y+t1.y) > 2 and t2.y > 20 and abs(t2.y::float) - 10 > 100.0);
-                                                                                                                                                                        QUERY PLAN                                                                                                                                                                         
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                                                                                                                     QUERY PLAN                                                                                                                                                                      
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Seq Scan on t1
    Filter: (SubPlan 1)
    SubPlan 1
      ->  Result
+           Filter: ((CASE WHEN ((sum((CASE WHEN (t1.x <= t2.x) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (t2.x IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (t1.x IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (t1.x <= t2.x) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
            ->  Result
-                 Filter: ((CASE WHEN ((sum((CASE WHEN (t1.x <= t2.x) THEN 1 ELSE 0 END))) IS NULL) THEN true WHEN ((sum((CASE WHEN (t2.x IS NULL) THEN 1 ELSE 0 END))) > '0'::bigint) THEN NULL::boolean WHEN (t1.x IS NULL) THEN NULL::boolean WHEN ((sum((CASE WHEN (t1.x <= t2.x) THEN 1 ELSE 0 END))) = '0'::bigint) THEN true ELSE false END) = true)
-                 ->  Result
-                       ->  Aggregate
+                 ->  Aggregate
+                       ->  Result
                              ->  Result
-                                   ->  Result
-                                         Filter: (abs((t2.y + t1.y)) > 2)
-                                         ->  Seq Scan on t2
-                                               Filter: ((y > 20) AND ((abs((y)::double precision) - (10)::double precision) > (100.0)::double precision))
+                                   Filter: (abs((t2.y + t1.y)) > 2)
+                                   ->  Seq Scan on t2
+                                         Filter: ((y > 20) AND ((abs((y)::double precision) - (10)::double precision) > (100.0)::double precision))
  Optimizer: pg_orca
-(14 rows)
+(13 rows)
 
 -- csq_heap_all.sql
 -- start_ignore
@@ -3413,21 +3409,20 @@ CREATE TABLE t2 (a int, b int);
 CREATE TABLE x (a int);
 -- csq_mpp24370.sql
 explain (costs off) select * from x where a=  (select sum(t1.a)  from t1 inner join (select x.a as outer_ref, * from t2) as foo on (foo.a=t1.a+ outer_ref)  group by foo.a);
-                         QUERY PLAN                         
-------------------------------------------------------------
+                      QUERY PLAN                      
+------------------------------------------------------
  Seq Scan on x
    Filter: (a = (SubPlan 1))
    SubPlan 1
-     ->  Result
-           ->  HashAggregate
-                 Group Key: t2.a
-                 ->  Nested Loop
-                       Join Filter: (t2.a = (t1.a + (x.a)))
-                       ->  Result
-                             ->  Seq Scan on t2
-                       ->  Seq Scan on t1
+     ->  HashAggregate
+           Group Key: t2.a
+           ->  Nested Loop
+                 Join Filter: (t2.a = (t1.a + (x.a)))
+                 ->  Result
+                       ->  Seq Scan on t2
+                 ->  Seq Scan on t1
  Optimizer: pg_orca
-(12 rows)
+(11 rows)
 
 -- csq_mpp24370_teardown.sql
 DROP TABLE t1;

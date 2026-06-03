@@ -308,13 +308,12 @@ SELECT * FROM foo WHERE b < 15 OR b > 60 ORDER BY a, b, c;
 -- Test 6: Out-of-range b = 150 -- 0 partitions (empty result)
 -- ===================================================================
 EXPLAIN (costs off) SELECT * FROM foo WHERE b = 150;
-           QUERY PLAN           
---------------------------------
+        QUERY PLAN        
+--------------------------
  Result
-   ->  Result
-         One-Time Filter: false
+   One-Time Filter: false
  Optimizer: pg_orca
-(4 rows)
+(3 rows)
 
 SELECT * FROM foo WHERE b = 150 ORDER BY a, b, c;
  a | b | c 

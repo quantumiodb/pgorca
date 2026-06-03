@@ -54,13 +54,12 @@ WHERE
 (f1>=10 AND f1<14 AND f2<3)
 OR
 (f1>=15 AND f1<16 AND f2<3);
-           QUERY PLAN           
---------------------------------
+        QUERY PLAN        
+--------------------------
  Result
-   ->  Result
-         One-Time Filter: false
+   One-Time Filter: false
  Optimizer: pg_orca
-(4 rows)
+(3 rows)
 
 DROP TABLE INT4_TBL;
 -- ===================================================================

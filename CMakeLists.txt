@@ -180,6 +180,7 @@ add_library(pg_orca MODULE
     compat/utils/walkers.c
     compat/utils/misc.c
     compat/utils/flatten_join_alias_var.c
+    compat/utils/remove_redundant_results.cpp
     compat/executor/dyn_scan.c
 )
 

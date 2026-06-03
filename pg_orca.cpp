@@ -27,6 +27,7 @@ extern "C" {
 #include "optimizer/planmain.h"
 #include "compat/utils/misc.h"
 #include "compat/executor/dyn_scan.h"
+#include "compat/utils/remove_redundant_results.h"
 #include "utils/rel.h"
 #include "access/table.h"
 #include "catalog/pg_attribute.h"
@@ -647,6 +648,18 @@ pg_orca_planner(Query *parse, const char *query_string,
         if (result != nullptr)
         {
             result->planId = ORCA_PLAN_ID;
+
+            /*
+             * Strip gratuitous Result nodes ORCA emits for pure projection.
+             * Ported from Cloudberry's post-ORCA cleanup
+             * (src/backend/optimizer/plan/orca.c).
+             */
+            result->planTree = pg_orca_remove_redundant_results(result->planTree);
+            {
+                ListCell *lp;
+                foreach(lp, result->subplans)
+                    lfirst(lp) = pg_orca_remove_redundant_results((Plan *) lfirst(lp));
+            }
 
             /*
              * Like standard_planner, add a Material node on top if this is a
