@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- pg_orca logo: abstract query plan tree.
+       Transparent background. Works on light or dark surfaces.
+       Dim branches = explored alternatives.
+       Accent branch + leaf = chosen optimal plan. -->
+
+  <!-- Dim branches (PostgreSQL blue) -->
+  <g stroke="#336791" stroke-width="9" stroke-linecap="round">
+    <line x1="128" y1="64"  x2="80"  y2="128"/>
+    <line x1="80"  y1="128" x2="56"  y2="192"/>
+    <line x1="80"  y1="128" x2="104" y2="192"/>
+    <line x1="176" y1="128" x2="152" y2="192"/>
+  </g>
+
+  <!-- Accent path: root -> right join -> right scan -->
+  <g stroke="#f5a623" stroke-width="11" stroke-linecap="round">
+    <line x1="128" y1="64"  x2="176" y2="128"/>
+    <line x1="176" y1="128" x2="200" y2="192"/>
+  </g>
+
+  <!-- Nodes (PostgreSQL blue) -->
+  <circle cx="128" cy="64"  r="14" fill="#336791"/>
+  <circle cx="80"  cy="128" r="12" fill="#336791"/>
+  <circle cx="176" cy="128" r="12" fill="#336791"/>
+  <circle cx="56"  cy="192" r="10" fill="#336791"/>
+  <circle cx="104" cy="192" r="10" fill="#336791"/>
+  <circle cx="152" cy="192" r="10" fill="#336791"/>
+
+  <!-- Chosen leaf in accent color -->
+  <circle cx="200" cy="192" r="13" fill="#f5a623"/>
+</svg>
