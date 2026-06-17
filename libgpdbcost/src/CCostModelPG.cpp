@@ -42,7 +42,10 @@
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
 #include "gpopt/operators/CScalarConst.h"
 #include "gpopt/operators/CScalarIdent.h"
+#include "gpopt/operators/CPredicateUtils.h"
 #include "gpopt/base/CColRefTable.h"
+#include "gpopt/base/CColRefSet.h"
+#include "gpopt/base/CKeyCollection.h"
 #include <functional>
 #include <unordered_set>
 #include "naucrates/md/CMDIdColStats.h"
@@ -901,6 +904,62 @@ FindIndexScanInGroup(CGroup *group, ULONG max_depth)
 	return nullptr;
 }
 
+// Detect whether the inner side of an INNER NL is unique on the join keys —
+// the cost-model analogue of PG's `inner_unique` flag (final_cost_nestloop
+// costsize.c:3389).  When true, each outer row matches AT MOST one inner row,
+// so for the cost of unmatched outers we can use the SEMI branch's cheap
+// "1-tuple worth of rescan" formula instead of charging a full inner rescan
+// per outer row.
+//
+// Criterion (conservative): some key set in the inner's CKeyCollection must
+// be fully covered by inner-side colrefs that appear in equi-clauses of the
+// form `inner_ident op outer_ident` in the join predicate.  Non-equi quals,
+// constant-comparison quals, and expression-on-expression quals are ignored
+// (they can only further filter, never relax uniqueness).
+static BOOL
+IsInnerUniqueOnJoinKeys(CMemoryPool *mp, CExpressionHandle &exprhdl,
+						CExpression *pexprJoinPred)
+{
+	CKeyCollection *pkc = exprhdl.DeriveKeyCollection(1);
+	if (nullptr == pkc || nullptr == pexprJoinPred) return false;
+
+	CColRefSet *pcrsOuterOut = exprhdl.DeriveOutputColumns(0);
+	CColRefSet *pcrsInnerOut = exprhdl.DeriveOutputColumns(1);
+	if (nullptr == pcrsOuterOut || nullptr == pcrsInnerOut) return false;
+
+	CColRefSet *pcrsInnerEqui = GPOS_NEW(mp) CColRefSet(mp);
+	CExpressionArray *conjs =
+		CPredicateUtils::PdrgpexprConjuncts(mp, pexprJoinPred);
+	for (ULONG i = 0; i < conjs->Size(); i++)
+	{
+		CExpression *conj = (*conjs)[i];
+		if (!CPredicateUtils::IsEqualityOp(conj)) continue;
+		if (2 != conj->Arity()) continue;
+		CExpression *e0 = (*conj)[0];
+		CExpression *e1 = (*conj)[1];
+		if (COperator::EopScalarIdent != e0->Pop()->Eopid() ||
+			COperator::EopScalarIdent != e1->Pop()->Eopid())
+			continue;
+		const CColRef *cr0 = CScalarIdent::PopConvert(e0->Pop())->Pcr();
+		const CColRef *cr1 = CScalarIdent::PopConvert(e1->Pop())->Pcr();
+		if (pcrsInnerOut->FMember(cr0) && pcrsOuterOut->FMember(cr1))
+		{
+			pcrsInnerEqui->Include(cr0);
+		}
+		else if (pcrsOuterOut->FMember(cr0) && pcrsInnerOut->FMember(cr1))
+		{
+			pcrsInnerEqui->Include(cr1);
+		}
+	}
+	conjs->Release();
+
+	const BOOL covers_a_key =
+		(pcrsInnerEqui->Size() > 0) &&
+		pkc->FKey(pcrsInnerEqui, false /* fExactMatch */);
+	pcrsInnerEqui->Release();
+	return covers_a_key;
+}
+
 //	Semi/anti joins (early termination on first match) follow PG's
 //	final_cost_nestloop SEMI branch (costsize.c:3389): matched outer rows
 //	scan only inner_scan_frac = 2/(match_count+1) of the inner per probe,
@@ -911,7 +970,7 @@ FindIndexScanInGroup(CGroup *group, ULONG max_depth)
 //	HashJoin+HashAggregate dedup plans that build the entire inner.
 //---------------------------------------------------------------------------
 CCost
-CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
+CCostModelPG::CostNLJoin(CMemoryPool *mp,
 						 CExpressionHandle &exprhdl,
 						 const SCostingInfo *pci)
 {
@@ -986,6 +1045,19 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 		 COperator::EopPhysicalCorrelatedNotInLeftAntiSemiNLJoin == nl_op_id);
 	const BOOL is_semi_or_anti = is_semi || is_anti;
 
+	// Inner-unique INNER NL: each outer row matches AT MOST one inner row, so
+	// PG (costsize.c:3389) routes through the same early-stop branch as
+	// SEMI/ANTI.  Only check for plain (uncorrelated) INNER NLs — correlated
+	// IndexApply variants already bill exactly one probe per outer row.
+	const BOOL is_inner_nl_kind =
+		(COperator::EopPhysicalInnerNLJoin == nl_op_id ||
+		 COperator::EopPhysicalInnerIndexNLJoin == nl_op_id);
+	const BOOL is_inner_unique =
+		(!is_semi_or_anti && is_inner_nl_kind && inner_rebinds <= 1.0 &&
+		 IsInnerUniqueOnJoinKeys(mp, exprhdl,
+								 exprhdl.PexprScalarRepChild(2)));
+	const BOOL early_stop_branch = is_semi_or_anti || is_inner_unique;
+
 	// Inner is "indexed" (analogue of PG's has_indexed_join_quals) when the
 	// physical operator under the NL is an IndexScan/IndexOnlyScan, or when
 	// the NL itself is a CPhysicalInner/SemiIndexNLJoin shape (where the
@@ -1004,7 +1076,7 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 
 	DOUBLE extra_rescan = 0.0;
 	DOUBLE ntuples = outer_rows * inner_rows;
-	if (is_semi_or_anti && outer_rows > 0.0 && inner_rows > 0.0)
+	if (early_stop_branch && outer_rows > 0.0 && inner_rows > 0.0)
 	{
 		// PG's match_count = avg # matches per matched outer row, derived
 		// from compute_semi_anti_join_factors via clauselist_selectivity
@@ -1026,10 +1098,25 @@ CCostModelPG::CostNLJoin(CMemoryPool *,	 // mp
 		//     per-outer matches as inner_rows / outer_rows (uniform
 		//     distribution); not exact but better-by-orders than treating
 		//     full inner as a single match group.
-		const BOOL inner_is_correlated = (inner_rebinds > 1.0);
-		const DOUBLE match_count = inner_is_correlated
-			? std::max(1.0, inner_rows)
-			: std::max(1.0, inner_rows / std::max(1.0, outer_rows));
+		// match_count semantics:
+		//   - inner_unique INNER: PG sets match_count=1 explicitly (each
+		//     outer matches at most one inner row).
+		//   - correlated SEMI/ANTI: inner_rows is already the per-probe
+		//     expected match count (CJoinStatsProcessor scales it).
+		//   - uncorrelated SEMI/ANTI: inner_rows is total inner cardinality;
+		//     approximate per-outer matches as inner_rows / outer_rows.
+		DOUBLE match_count;
+		if (is_inner_unique)
+		{
+			match_count = 1.0;
+		}
+		else
+		{
+			const BOOL inner_is_correlated = (inner_rebinds > 1.0);
+			match_count = inner_is_correlated
+				? std::max(1.0, inner_rows)
+				: std::max(1.0, inner_rows / std::max(1.0, outer_rows));
+		}
 		const DOUBLE inner_scan_frac = 2.0 / (match_count + 1.0);
 
 		// PG's outer_match_frac = jselec (SEMI selectivity) = fraction of
