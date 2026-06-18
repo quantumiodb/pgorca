@@ -55,17 +55,26 @@ message(STATUS "  pkglibdir:      ${PG_PKGLIBDIR}")
 # -------------------------------------------------------------------
 # xerces-c (needed by ORCA for DXL XML parsing).
 #
-# Default: build the bundled submodule under third_party/xerces-c as a
-# static library and link it into pg_orca.so. This makes the extension
-# self-contained: no runtime libxerces-c.so dependency, which matters
-# for container/Supabase deployments where the host image may not have
-# a compatible xerces-c package.
+# Default on Linux: build the bundled submodule under third_party/xerces-c
+# as a static library folded into pg_orca.so. This makes the extension
+# self-contained — no runtime libxerces-c.so dependency — which matters
+# for the deb/rpm release packages (self-hosted Supabase, distroless
+# containers, hosts without a matching xerces-c package).
 #
-# Set -DPG_ORCA_BUNDLED_XERCES=OFF to use a system-installed xerces-c
-# (the legacy pkg-config / manual search path).
+# Default on macOS: use Homebrew's xerces-c. Release packaging is
+# Linux-only; for macOS dev builds the system library is easier and
+# avoids quirks of the static build on the Apple toolchain.
+#
+# Override either way with -DPG_ORCA_BUNDLED_XERCES=ON/OFF.
 # -------------------------------------------------------------------
+if(APPLE)
+    set(_pg_orca_bundled_default OFF)
+else()
+    set(_pg_orca_bundled_default ON)
+endif()
 option(PG_ORCA_BUNDLED_XERCES
-    "Build xerces-c from third_party/ submodule and link statically" ON)
+    "Build xerces-c from third_party/ submodule and link statically"
+    ${_pg_orca_bundled_default})
 
 if(PG_ORCA_BUNDLED_XERCES)
     set(_xerces_src "${CMAKE_SOURCE_DIR}/third_party/xerces-c")
