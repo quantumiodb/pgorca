@@ -58,9 +58,12 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
 echo "==> Configuring ($build_type) with PG_CONFIG=$pg_config"
+# PG_ORCA_BUNDLED_XERCES=ON is required for release packages so xerces-c
+# is statically linked into pg_orca.so (no runtime libxerces-c dep).
 cmake -S . -B "$build_dir" \
     -DCMAKE_BUILD_TYPE="$build_type" \
     -DPG_CONFIG="$pg_config" \
+    -DPG_ORCA_BUNDLED_XERCES=ON \
     -GNinja
 
 echo "==> Building"
