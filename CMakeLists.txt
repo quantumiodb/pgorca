@@ -78,11 +78,19 @@ if(PG_ORCA_BUNDLED_XERCES)
     # Force xerces options before adding its subdirectory. FORCE is required
     # because xerces-c declares these with CACHE; without FORCE our values
     # would be ignored on the second cmake run.
-    set(BUILD_SHARED_LIBS    OFF       CACHE BOOL   "" FORCE)
-    set(network              OFF       CACHE BOOL   "" FORCE)  # no socket-based entity resolver
-    set(transcoder           "gnuiconv" CACHE STRING "" FORCE) # use glibc iconv, not ICU
-    set(message-loader       "inmemory" CACHE STRING "" FORCE) # no external catalog files
-    set(threads              ON        CACHE BOOL   "" FORCE)
+    #
+    # Transcoder selection: glibc iconv on Linux, CoreServices on macOS.
+    # Both keep us off ICU so we don't pull in another large runtime dep.
+    if(APPLE)
+        set(_xerces_transcoder "macosunicodeconverter")
+    else()
+        set(_xerces_transcoder "gnuiconv")
+    endif()
+    set(BUILD_SHARED_LIBS    OFF                       CACHE BOOL   "" FORCE)
+    set(network              OFF                       CACHE BOOL   "" FORCE)  # no socket-based entity resolver
+    set(transcoder           "${_xerces_transcoder}"   CACHE STRING "" FORCE)
+    set(message-loader       "inmemory"                CACHE STRING "" FORCE)  # no external catalog files
+    set(threads              ON                        CACHE BOOL   "" FORCE)
     # Suppress xerces install rules; we never install its headers/libs.
     set(CMAKE_SKIP_INSTALL_RULES_BACKUP "${CMAKE_SKIP_INSTALL_RULES}")
     set(CMAKE_SKIP_INSTALL_RULES TRUE)
