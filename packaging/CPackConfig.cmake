@@ -69,9 +69,15 @@ set(CPACK_DEBIAN_PACKAGE_SECTION    "database")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY   "optional")
 # Match dpkg arch (amd64/arm64) rather than CMAKE_SYSTEM_PROCESSOR (x86_64/aarch64).
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS  ON)
-# postgresql-NN supplies pkglibdir/sharedir; libxerces-c is the runtime XML lib.
-set(CPACK_DEBIAN_PACKAGE_DEPENDS
-    "postgresql-${PG_MAJOR}, libxerces-c3.2 | libxerces-c3.2t64")
+# postgresql-NN supplies pkglibdir/sharedir. When PG_ORCA_BUNDLED_XERCES=ON
+# (default) xerces-c is statically linked into pg_orca.so, so no runtime
+# libxerces-c package is required; otherwise add it back as a dependency.
+if(PG_ORCA_BUNDLED_XERCES)
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "postgresql-${PG_MAJOR}")
+else()
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "postgresql-${PG_MAJOR}, libxerces-c3.2 | libxerces-c3.2t64")
+endif()
 # Override default file name to use dpkg arch.
 execute_process(COMMAND dpkg --print-architecture
     OUTPUT_VARIABLE _deb_arch OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -92,8 +98,13 @@ set(CPACK_RPM_PACKAGE_URL         "${CPACK_PACKAGE_HOMEPAGE_URL}")
 set(CPACK_RPM_PACKAGE_VENDOR      "${CPACK_PACKAGE_VENDOR}")
 set(CPACK_RPM_PACKAGE_SUMMARY     "${CPACK_PACKAGE_DESCRIPTION_SUMMARY}")
 set(CPACK_RPM_PACKAGE_DESCRIPTION "${CPACK_PACKAGE_DESCRIPTION}")
-# PGDG postgresqlNN-server, distro xerces-c. autoreq picks up the rest.
-set(CPACK_RPM_PACKAGE_REQUIRES "postgresql${PG_MAJOR}-server, xerces-c")
+# PGDG postgresqlNN-server. xerces-c is bundled into pg_orca.so by default
+# (PG_ORCA_BUNDLED_XERCES=ON); fall back to a distro xerces-c dep otherwise.
+if(PG_ORCA_BUNDLED_XERCES)
+    set(CPACK_RPM_PACKAGE_REQUIRES "postgresql${PG_MAJOR}-server")
+else()
+    set(CPACK_RPM_PACKAGE_REQUIRES "postgresql${PG_MAJOR}-server, xerces-c")
+endif()
 set(CPACK_RPM_PACKAGE_AUTOREQ  ON)
 # Don't claim ownership of system dirs we install into.
 set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION

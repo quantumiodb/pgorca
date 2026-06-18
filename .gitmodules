@@ -1,0 +1,8 @@
+# Submodule pin: the recorded gitlink SHA below freezes xerces-c to a
+# specific commit (currently tag v3.2.5). The ABI namespace `xercesc_3_2`
+# is hard-coded throughout ORCA, so we cannot bump to the 3.3.x line
+# without a coordinated source change. Run `git submodule update --init
+# --recursive` after cloning.
+[submodule "third_party/xerces-c"]
+	path = third_party/xerces-c
+	url = https://github.com/apache/xerces-c
