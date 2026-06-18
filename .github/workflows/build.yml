@@ -23,6 +23,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - name: Add PostgreSQL apt repository (pgdg)
         run: |
@@ -95,6 +97,8 @@ jobs:
             perl perl-IPC-Run
 
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - name: Show toolchain versions
         run: |
@@ -161,6 +165,8 @@ jobs:
             git
 
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - name: Show toolchain versions
         run: |
@@ -208,6 +214,8 @@ jobs:
             perl perl-IPC-Run
 
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - name: Show toolchain versions
         run: |
@@ -258,6 +266,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - name: Add PostgreSQL apt repository (pgdg)
         run: |
@@ -303,6 +313,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - name: Install build dependencies
         run: |
