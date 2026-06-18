@@ -185,6 +185,15 @@ file(GLOB_RECURSE ORCA_CORE_SRC CONFIGURE_DEPENDS
 
 add_library(orca_core OBJECT ${ORCA_CORE_SRC})
 
+# Pull in xerces-c headers via the target's PUBLIC interface. For the
+# bundled build XERCES_LIB is the "xerces-c" target which propagates its
+# header search path; for the system build XERCES_LIB is a library path
+# with no usage requirements (XERCES_INCLUDE supplies headers separately,
+# see target_include_directories below). OBJECT libs accept
+# target_link_libraries since CMake 3.12 — no symbol is actually linked,
+# but compile-time properties propagate.
+target_link_libraries(orca_core PUBLIC ${XERCES_LIB})
+
 target_compile_definitions(orca_core PUBLIC
     $<$<CONFIG:Debug>:GPOS_DEBUG>
     USE_CMAKE
