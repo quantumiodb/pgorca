@@ -4513,22 +4513,11 @@ CTranslatorExprToDXL::PdxlnNLJoin(CExpression *pexprInnerNLJ,
 	CExpression *pexprScalar = (*pexprInnerNLJ)[2];
 
 
-#ifdef GPOS_DEBUG
-	// Allow outer refs in inner child when:
-	//  (a) it's an index NLJ (outer refs are explicit and expected), or
-	//  (b) inner child is PartitionSelector for DPE NLJ (outer refs are
-	//      partition-key predicates referencing the probe child).
-	GPOS_ASSERT_IMP(
-		COperator::EopPhysicalInnerIndexNLJoin != pop->Eopid() &&
-			COperator::EopPhysicalLeftOuterIndexNLJoin != pop->Eopid() &&
-			COperator::EopPhysicalLeftSemiIndexNLJoin != pop->Eopid() &&
-			COperator::EopPhysicalLeftAntiSemiIndexNLJoin != pop->Eopid() &&
-			COperator::EopPhysicalPartitionSelector !=
-				pexprInnerChild->Pop()->Eopid(),
-		pexprInnerChild->DeriveOuterReferences()->IsDisjoint(
-			pexprOuterChild->DeriveOutputColumns()) &&
-			"detected outer references in NL inner child");
-#endif	// GPOS_DEBUG
+	// Outer refs in NL inner child are legal when handled below: (a) explicit
+	// index NLJ flavors, (b) DPE PartitionSelector, or (c) general LATERAL /
+	// correlated NL where the inner side references outer's output columns —
+	// in all three cases the refs are bound to PARAM_EXEC slots via the
+	// nest-params machinery in PdxlnNLJoin.
 
 	EdxlJoinType join_type = EdxljtSentinel;
 	BOOL is_index_nlj = false;
@@ -4589,6 +4578,42 @@ CTranslatorExprToDXL::PdxlnNLJoin(CExpression *pexprInnerNLJ,
 
 		default:
 			GPOS_ASSERT(!"Invalid join type");
+	}
+
+	// General correlated NLJ (LATERAL, decorrelated subquery, or any case where
+	// ORCA picked plain CPhysicalInnerNLJoin / LeftOuterNLJoin with outer
+	// references in the inner subtree pointing back at the outer child's
+	// output columns). Treat as an index NLJ so the refs are bound via
+	// PARAM_EXEC nest params, matching the IndexNLJ code path below.
+	if (!is_index_nlj &&
+		COperator::EopPhysicalPartitionSelector !=
+			pexprInnerChild->Pop()->Eopid())
+	{
+		CColRefSet *pcrsInnerOuterRefs =
+			pexprInnerChild->DeriveOuterReferences();
+		CColRefSet *pcrsOuterOutput = pexprOuterChild->DeriveOutputColumns();
+		if (!pcrsInnerOuterRefs->IsDisjoint(pcrsOuterOutput))
+		{
+			CColRefSet *pcrsIntersect =
+				GPOS_NEW(m_mp) CColRefSet(m_mp, *pcrsInnerOuterRefs);
+			pcrsIntersect->Intersection(pcrsOuterOutput);
+			outer_refs = pcrsIntersect->Pdrgpcr(m_mp);
+			pcrsIntersect->Release();
+			is_index_nlj = true;
+			// Pre-populate the ident map so PdxlnScalar resolves these outer
+			// refs while emitting scalar DXL inside the inner subtree.
+			for (ULONG ul = 0; ul < outer_refs->Size(); ul++)
+			{
+				CColRef *pcr = (*outer_refs)[ul];
+				if (nullptr == m_phmcrdxlnIndexLookup->Find(pcr))
+				{
+					CDXLNode *dxlnode = CTranslatorExprToDXLUtils::PdxlnIdent(
+						m_mp, m_phmcrdxln, m_phmcrdxlnIndexLookup,
+						m_phmcrulPartColId, pcr);
+					m_phmcrdxlnIndexLookup->Insert(pcr, dxlnode);
+				}
+			}
+		}
 	}
 
 	// DPE NLJ: inner child is PartitionSelector wrapping AppendTableScan.

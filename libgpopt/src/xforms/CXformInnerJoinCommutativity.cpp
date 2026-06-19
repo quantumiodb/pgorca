@@ -73,6 +73,38 @@ CXformInnerJoinCommutativity::FCompatible(CXform::EXformId exfid)
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CXformInnerJoinCommutativity::Exfp
+//
+//	@doc:
+//		Promise: refuse to commute when one child's outer references reach
+//		into the other child's output (LATERAL / decorrelated subquery /
+//		other correlated join shapes). Swapping such a join would push the
+//		correlated side to the NL outer slot, but the executor evaluates
+//		outer first — the outer-ref columns are not yet bound, producing an
+//		unexecutable plan.
+//
+//---------------------------------------------------------------------------
+CXform::EXformPromise
+CXformInnerJoinCommutativity::Exfp(CExpressionHandle &exprhdl) const
+{
+	CColRefSet *pcrsLeftOutput = exprhdl.DeriveOutputColumns(0);
+	CColRefSet *pcrsRightOuterRefs = exprhdl.DeriveOuterReferences(1);
+	if (!pcrsRightOuterRefs->IsDisjoint(pcrsLeftOutput))
+	{
+		return CXform::ExfpNone;
+	}
+	CColRefSet *pcrsRightOutput = exprhdl.DeriveOutputColumns(1);
+	CColRefSet *pcrsLeftOuterRefs = exprhdl.DeriveOuterReferences(0);
+	if (!pcrsLeftOuterRefs->IsDisjoint(pcrsRightOutput))
+	{
+		return CXform::ExfpNone;
+	}
+	return CXform::ExfpHigh;
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CXformInnerJoinCommutativity::Transform
 //
 //	@doc:

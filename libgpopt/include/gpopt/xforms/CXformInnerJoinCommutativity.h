@@ -57,12 +57,7 @@ public:
 	BOOL FCompatible(CXform::EXformId exfid) override;
 
 	// compute xform promise for a given expression handle
-	EXformPromise
-	Exfp(CExpressionHandle &  // exprhdl
-	) const override
-	{
-		return CXform::ExfpHigh;
-	}
+	EXformPromise Exfp(CExpressionHandle &exprhdl) const override;
 
 	// actual transform
 	void Transform(CXformContext *pxfctxt, CXformResult *pxfres,
