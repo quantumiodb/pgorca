@@ -2486,6 +2486,23 @@ CExpressionPreprocessor::PexprPruneUnusedComputedColsRecursive(
 	CExpressionArray *pdrgpexpr = GPOS_NEW(mp) CExpressionArray(mp);
 	const ULONG ulChildren = pexpr->Arity();
 
+	// Sibling-correlated references: a relational child (e.g. the inner side
+	// of an Apply or a LATERAL-style Join) may reference columns produced by
+	// another relational child. Those references look like outer references
+	// to the inner child but are satisfied by the sibling, so they must be
+	// kept in pcrsReqd to prevent pruning the producing sibling's project
+	// list. Without this, derived-table computed columns (LATERAL inner ref
+	// to `a.val*2 AS dv`) get dropped from the outer side and leave dangling
+	// CScalarIdent in the inner predicate.
+	for (ULONG ul = 0; ul < ulChildren; ul++)
+	{
+		CExpression *pexprChild = (*pexpr)[ul];
+		if (pexprChild->Pop()->FLogical())
+		{
+			pcrsReqd->Include(pexprChild->DeriveOuterReferences());
+		}
+	}
+
 	for (ULONG ul = 0; ul < ulChildren; ul++)
 	{
 		CExpression *pexprChild =
