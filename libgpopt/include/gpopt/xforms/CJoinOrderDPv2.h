@@ -441,6 +441,14 @@ private:
 	// outer references, if any
 	CColRefSet *m_outer_refs;
 
+	// LATERAL-style sibling requirements: m_atom_sibling_required[i] is the
+	// bitset of atom indices whose output columns atom i references. An atom
+	// can only appear in a join subset that also contains all of its
+	// requirements; otherwise the subset is unexecutable (the atom's outer
+	// refs would be unbound). Populated in the constructor and consulted in
+	// GetJoinExpr.
+	CBitSetArray *m_atom_sibling_required;
+
 	CMemoryPool *m_mp;
 
 	SLevelInfo *
