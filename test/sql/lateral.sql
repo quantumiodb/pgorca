@@ -23,6 +23,22 @@
 --   N11 LEFT LATERAL with empty inner side
 --   N12 LATERAL ref to derived-table computed column + aggregate
 --       (regression for sibling-correlated outer-ref pruning bug)
+--
+-- Edge cases (E1-E12):
+--   E1  varlevelsup=2 (LATERAL inside correlated subquery)
+--   E2  LATERAL inside a CTE body (regression for the InnerApply
+--       PopCopyWithRemappedColumns nullptr crash when the CTE consumer
+--       inlines a LATERAL-derived Apply)
+--   E3  VALUES + LATERAL
+--   E4  LATERAL + GROUP BY at the outer
+--   E5  LATERAL + GROUPING SETS
+--   E6  LATERAL + window function
+--   E7  UNION ALL inside the LATERAL body
+--   E8  LATERAL with DISTINCT outside
+--   E9  LATERAL top-N per outer (ORDER BY ... LIMIT 1)
+--   E10 INSERT...SELECT with LATERAL
+--   E11 3-level LATERAL where the grandchild references the outermost
+--   E12 LATERAL unnest(array)
 
 LOAD 'pg_orca';
 SET pg_orca.enable_orca = on;
@@ -191,6 +207,96 @@ SELECT count(*) FROM (SELECT id, val*2 AS dv FROM lat_na) a,
 SELECT count(*) FROM (SELECT id, val*2 AS dv FROM lat_na) a,
   LATERAL (SELECT * FROM lat_nb WHERE lat_nb.id = a.dv) s;
 
+-- =========================================================================
+-- Edge cases.
+-- =========================================================================
+
+-- E1: varlevelsup = 2 (LATERAL nested inside a correlated scalar subquery)
+SELECT lat_na.id,
+  (SELECT count(*) FROM lat_nb,
+                        LATERAL (SELECT * FROM lat_nc
+                                 WHERE lat_nc.ref = lat_nb.id
+                                   AND lat_nc.val > lat_na.val) c
+   WHERE lat_nb.ref = lat_na.id) AS cnt
+FROM lat_na
+ORDER BY lat_na.id;
+
+-- E2: LATERAL inside a CTE body. Regression for the InnerApply
+-- PopCopyWithRemappedColumns nullptr crash: the CTE consumer inlines its
+-- producer, which deep-copies the Apply expression with remapped columns.
+-- LATERAL-derived Apply has no inner scalar colref, and the 2-arg ctor
+-- asserts on size>0, so the copy path has to detect nullptr and fall back
+-- to the 1-arg ctor.
+WITH t AS (
+  SELECT * FROM lat_na, LATERAL (SELECT * FROM lat_nb
+                                 WHERE lat_nb.ref = lat_na.id) b
+)
+SELECT count(*) FROM t;
+
+-- E3: VALUES + LATERAL
+SELECT count(*) FROM (VALUES (1),(2),(3)) v(x),
+  LATERAL (SELECT * FROM lat_nb WHERE lat_nb.ref = v.x) s;
+
+-- E4: LATERAL + GROUP BY at outer
+SELECT lat_na.id, sum(s.val)
+FROM lat_na, LATERAL (SELECT * FROM lat_nb WHERE lat_nb.ref = lat_na.id) s
+GROUP BY lat_na.id
+ORDER BY lat_na.id;
+
+-- E5: LATERAL + GROUPING SETS
+SELECT lat_na.id, sum(s.val)
+FROM lat_na, LATERAL (SELECT * FROM lat_nb WHERE lat_nb.ref = lat_na.id) s
+GROUP BY GROUPING SETS ((lat_na.id), ())
+ORDER BY lat_na.id NULLS LAST;
+
+-- E6: LATERAL + window function
+SELECT lat_na.id, s.val, sum(s.val) OVER (PARTITION BY lat_na.id)
+FROM lat_na, LATERAL (SELECT * FROM lat_nb WHERE lat_nb.ref = lat_na.id) s
+ORDER BY 1, 2;
+
+-- E7: UNION ALL inside the LATERAL body
+SELECT count(*) FROM lat_na, LATERAL (
+  SELECT id FROM lat_nb WHERE lat_nb.ref = lat_na.id
+  UNION ALL
+  SELECT id FROM lat_nc WHERE lat_nc.ref = lat_na.id
+) s;
+
+-- E8: LATERAL with DISTINCT outside
+SELECT count(DISTINCT s.id)
+FROM lat_na, LATERAL (SELECT * FROM lat_nb WHERE lat_nb.ref = lat_na.id) s;
+
+-- E9: LATERAL top-N per outer (very common idiom)
+SELECT lat_na.id, s.id, s.val FROM lat_na,
+  LATERAL (SELECT * FROM lat_nb WHERE lat_nb.ref = lat_na.id
+           ORDER BY lat_nb.val DESC LIMIT 1) s
+ORDER BY lat_na.id;
+
+-- E10: INSERT...SELECT with LATERAL
+-- start_ignore
+DROP TABLE IF EXISTS lat_ins;
+-- end_ignore
+CREATE TABLE lat_ins (aid int, bid int);
+INSERT INTO lat_ins
+  SELECT lat_na.id, s.id FROM lat_na,
+    LATERAL (SELECT * FROM lat_nb WHERE lat_nb.ref = lat_na.id) s;
+SELECT count(*) FROM lat_ins;
+
+-- E11: 3-level LATERAL where the grandchild references the outermost
+SELECT count(*) FROM lat_na,
+  LATERAL (SELECT * FROM lat_nb,
+                LATERAL (SELECT * FROM lat_nc
+                         WHERE lat_nc.ref = lat_nb.id
+                           AND lat_nc.val > lat_na.val*100) c
+           WHERE lat_nb.ref = lat_na.id) bc;
+
+-- E12: LATERAL unnest(array)
+-- start_ignore
+DROP TABLE IF EXISTS lat_arr;
+-- end_ignore
+CREATE TABLE lat_arr (id int, nums int[]);
+INSERT INTO lat_arr VALUES (1, ARRAY[1,3,5]), (2, ARRAY[2,4,6]);
+SELECT a.id, u FROM lat_arr a, LATERAL unnest(a.nums) AS u ORDER BY a.id, u;
+
 -- cleanup
 -- start_ignore
 DROP TABLE lat_t1;
@@ -198,4 +304,6 @@ DROP TABLE lat_t2;
 DROP TABLE lat_na;
 DROP TABLE lat_nb;
 DROP TABLE lat_nc;
+DROP TABLE lat_ins;
+DROP TABLE lat_arr;
 -- end_ignore
