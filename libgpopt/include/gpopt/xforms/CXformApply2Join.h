@@ -68,6 +68,17 @@ private:
 			return;
 		}
 
+		TApply *popApply = TApply::PopConvert(pexprApply->Pop());
+		CColRefArray *colref_array = popApply->PdrgPcrInner();
+		if (nullptr == colref_array)
+		{
+			// Apply created from LATERAL (or any non-scalar-subquery source)
+			// has no inner scalar colref; the correlated-apply form built
+			// here is scalar-subquery-shaped and does not apply. Skip.
+			return;
+		}
+		GPOS_ASSERT(1 == colref_array->Size());
+
 		CExpression *pexprInner = (*pexprApply)[1];
 		CExpression *pexprOuter = (*pexprApply)[0];
 		CExpression *pexprScalar = (*pexprApply)[2];
@@ -76,11 +87,6 @@ private:
 		pexprInner->AddRef();
 		pexprScalar->AddRef();
 		CExpression *pexprResult = nullptr;
-
-		TApply *popApply = TApply::PopConvert(pexprApply->Pop());
-		CColRefArray *colref_array = popApply->PdrgPcrInner();
-		GPOS_ASSERT(nullptr != colref_array);
-		GPOS_ASSERT(1 == colref_array->Size());
 
 		colref_array->AddRef();
 		COperator::EOperatorId eopidSubq = popApply->EopidOriginSubq();

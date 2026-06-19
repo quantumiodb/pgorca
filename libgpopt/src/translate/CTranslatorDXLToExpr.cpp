@@ -37,7 +37,9 @@
 #include "gpopt/operators/CLogicalForeignGet.h"
 #include "gpopt/operators/CLogicalGbAgg.h"
 #include "gpopt/operators/CLogicalGet.h"
+#include "gpopt/operators/CLogicalInnerApply.h"
 #include "gpopt/operators/CLogicalInsert.h"
+#include "gpopt/operators/CLogicalLeftOuterApply.h"
 #include "gpopt/operators/CLogicalIntersect.h"
 #include "gpopt/operators/CLogicalIntersectAll.h"
 #include "gpopt/operators/CLogicalLimit.h"
@@ -2094,6 +2096,42 @@ CTranslatorDXLToExpr::PexprLogicalJoin(const CDXLNode *dxlnode)
 	// get the scalar condition and then translate it
 	CDXLNode *pdxlnCond = (*dxlnode)[ulChildCount - 1];
 	CExpression *pexprCond = PexprScalar(pdxlnCond);
+
+	// LATERAL fast-path: when the right child's top operator is a
+	// CLogicalSelect whose predicate references the left child's output
+	// columns, rebuild the join as CLogicalApply. The standard
+	// CXformInnerApply2InnerJoin / CXformLeftOuterApply2LeftOuterJoin path
+	// then pulls the correlated equi predicate out of the Select and lowers
+	// the result to a plain CLogicalInnerJoin / CLogicalLeftOuterJoin —
+	// which downstream cost-picks HashJoin (matching PG's lateral pullup).
+	// Other LATERAL shapes (TVF args, ConstTableGet, Limit, Sort) stay on
+	// the plain-Join path and rely on the commutativity guard.
+	if ((EdxljtInner == join_type || EdxljtLeft == join_type) &&
+		2 == pdrgpexprChildren->Size())
+	{
+		CExpression *pexprLeft = (*pdrgpexprChildren)[0];
+		CExpression *pexprRight = (*pdrgpexprChildren)[1];
+		if (COperator::EopLogicalSelect == pexprRight->Pop()->Eopid())
+		{
+			CColRefSet *pcrsRightOuterRefs =
+				pexprRight->DeriveOuterReferences();
+			CColRefSet *pcrsLeftOutput = pexprLeft->DeriveOutputColumns();
+			if (!pcrsRightOuterRefs->IsDisjoint(pcrsLeftOutput))
+			{
+				pexprLeft->AddRef();
+				pexprRight->AddRef();
+				pdrgpexprChildren->Release();
+				if (EdxljtInner == join_type)
+				{
+					return CUtils::PexprLogicalApply<CLogicalInnerApply>(
+						m_mp, pexprLeft, pexprRight, pexprCond);
+				}
+				return CUtils::PexprLogicalApply<CLogicalLeftOuterApply>(
+					m_mp, pexprLeft, pexprRight, pexprCond);
+			}
+		}
+	}
+
 	pdrgpexprChildren->Append(pexprCond);
 
 	return CUtils::PexprLogicalJoin(m_mp, join_type, pdrgpexprChildren);
