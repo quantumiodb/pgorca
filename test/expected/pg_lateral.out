@@ -393,8 +393,6 @@ DETAIL:  DXL-to-PlStmt Translation: Attribute number 0 not found in project list
 -- lateral reference to a join alias variable
 select * from (select f1/2 as x from int4_tbl) ss1 join int4_tbl i4 on x = f1,
   lateral (select x) ss2(y);
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 7 not found in project list
  x | f1 | y 
 ---+----+---
  0 |  0 | 0
@@ -402,21 +400,17 @@ DETAIL:  DXL-to-PlStmt Translation: Attribute number 7 not found in project list
 
 select * from (select f1 as x from int4_tbl) ss1 join int4_tbl i4 on x = f1,
   lateral (values(x)) ss2(y);
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 0 not found in project list
       x      |     f1      |      y      
 -------------+-------------+-------------
+ -2147483647 | -2147483647 | -2147483647
+     -123456 |     -123456 |     -123456
            0 |           0 |           0
       123456 |      123456 |      123456
-     -123456 |     -123456 |     -123456
   2147483647 |  2147483647 |  2147483647
- -2147483647 | -2147483647 | -2147483647
 (5 rows)
 
 select * from ((select f1/2 as x from int4_tbl) ss1 join int4_tbl i4 on x = f1) j,
   lateral (select x) ss2(y);
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 7 not found in project list
  x | f1 | y 
 ---+----+---
  0 |  0 | 0
@@ -485,8 +479,6 @@ select * from (values(1)) x(lb),
 select * from
   int8_tbl x left join (select q1,coalesce(q2,0) q2 from int8_tbl) y on x.q2 = y.q1,
   lateral (values(x.q1,y.q1,y.q2)) v(xq1,yq1,yq2);
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 8 not found in project list
         q1        |        q2         |        q1        |        q2         |       xq1        |       yq1        |        yq2        
 ------------------+-------------------+------------------+-------------------+------------------+------------------+-------------------
               123 |               456 |                  |                   |              123 |                  |                  
@@ -504,8 +496,6 @@ DETAIL:  DXL-to-PlStmt Translation: Attribute number 8 not found in project list
 select * from
   int8_tbl x left join (select q1,coalesce(q2,0) q2 from int8_tbl) y on x.q2 = y.q1,
   lateral (select x.q1,y.q1,y.q2) v(xq1,yq1,yq2);
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 8 not found in project list
         q1        |        q2         |        q1        |        q2         |       xq1        |       yq1        |        yq2        
 ------------------+-------------------+------------------+-------------------+------------------+------------------+-------------------
               123 |               456 |                  |                   |              123 |                  |                  
@@ -541,8 +531,6 @@ select v.* from
   (int8_tbl x left join (select q1,coalesce(q2,0) q2 from int8_tbl) y on x.q2 = y.q1)
   left join int4_tbl z on z.f1 = x.q2,
   lateral (select x.q1,y.q1 union all select x.q2,y.q2) v(vx,vy);
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 8 not found in project list
         vx         |        vy         
 -------------------+-------------------
                123 |                  
@@ -571,28 +559,26 @@ select v.* from
   (int8_tbl x left join (select q1,(select coalesce(q2,0)) q2 from int8_tbl) y on x.q2 = y.q1)
   left join int4_tbl z on z.f1 = x.q2,
   lateral (select x.q1,y.q1 union all select x.q2,y.q2) v(vx,vy);
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 8 not found in project list
         vx         |        vy         
 -------------------+-------------------
-  4567890123456789 |               123
-               123 |               456
-  4567890123456789 |               123
-               123 |  4567890123456789
-  4567890123456789 |  4567890123456789
-  4567890123456789 |               123
-               123 |  4567890123456789
-  4567890123456789 |               123
-  4567890123456789 |  4567890123456789
-  4567890123456789 |  4567890123456789
-               123 |  4567890123456789
-  4567890123456789 |  4567890123456789
-  4567890123456789 |  4567890123456789
-  4567890123456789 | -4567890123456789
-               123 |  4567890123456789
-  4567890123456789 | -4567890123456789
                123 |                  
                456 |                  
+               123 |  4567890123456789
+  4567890123456789 | -4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |  4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |               123
+               123 |  4567890123456789
+  4567890123456789 |               123
+               123 |               456
+  4567890123456789 |  4567890123456789
+  4567890123456789 | -4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |               123
   4567890123456789 |                  
  -4567890123456789 |                  
 (20 rows)
@@ -601,28 +587,26 @@ select v.* from
   (int8_tbl x left join (select q1,(select coalesce(q2,0)) q2 from int8_tbl) y on x.q2 = y.q1)
   left join int4_tbl z on z.f1 = x.q2,
   lateral (select x.q1,y.q1 from onerow union all select x.q2,y.q2 from onerow) v(vx,vy);
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 8 not found in project list
         vx         |        vy         
 -------------------+-------------------
-  4567890123456789 |               123
-               123 |               456
-  4567890123456789 |               123
-               123 |  4567890123456789
-  4567890123456789 |  4567890123456789
-  4567890123456789 |               123
-               123 |  4567890123456789
-  4567890123456789 |               123
-  4567890123456789 |  4567890123456789
-  4567890123456789 |  4567890123456789
-               123 |  4567890123456789
-  4567890123456789 |  4567890123456789
-  4567890123456789 |  4567890123456789
-  4567890123456789 | -4567890123456789
-               123 |  4567890123456789
-  4567890123456789 | -4567890123456789
                123 |                  
                456 |                  
+               123 |  4567890123456789
+  4567890123456789 | -4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |  4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |               123
+               123 |  4567890123456789
+  4567890123456789 |               123
+               123 |               456
+  4567890123456789 |  4567890123456789
+  4567890123456789 | -4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |               123
   4567890123456789 |                  
  -4567890123456789 |                  
 (20 rows)
@@ -902,35 +886,44 @@ select * from
     lateral (select q1, coalesce(ss1.x,q2) as y from int8_tbl d) ss2
   ) on c.q2 = ss2.q1,
   lateral (select ss2.y offset 0) ss3;
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 24 not found in project list
                                                                                      QUERY PLAN                                                                                     
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Nested Loop
    Output: c.q1, c.q2, a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint)), d.q1, (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)), ((COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)))
+   Join Filter: true
    ->  Hash Right Join
          Output: c.q1, c.q2, a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint)), d.q1, (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
          Hash Cond: (d.q1 = c.q2)
          ->  Nested Loop
                Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint)), d.q1, (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
+               Join Filter: true
                ->  Hash Left Join
                      Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint))
                      Hash Cond: (a.q2 = b.q1)
                      ->  Seq Scan on public.int8_tbl a
                            Output: a.q1, a.q2
                      ->  Hash
-                           Output: b.q1, (COALESCE(b.q2, '42'::bigint))
+                           Output: (COALESCE(b.q2, '42'::bigint)), b.q1
                            ->  Seq Scan on public.int8_tbl b
-                                 Output: b.q1, COALESCE(b.q2, '42'::bigint)
-               ->  Seq Scan on public.int8_tbl d
-                     Output: d.q1, COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)
+                                 Output: COALESCE(b.q2, '42'::bigint), b.q1
+               ->  Materialize
+                     Output: (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)), d.q1
+                     ->  Result
+                           Output: COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2), d.q1
+                           ->  Seq Scan on public.int8_tbl d
+                                 Output: d.q1, d.q2
          ->  Hash
                Output: c.q1, c.q2
                ->  Seq Scan on public.int8_tbl c
                      Output: c.q1, c.q2
-   ->  Result
-         Output: (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
-(24 rows)
+   ->  Materialize
+         Output: ((COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)))
+         ->  Result
+               Output: (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
+               ->  Result
+                     Output: true
+ Optimizer: pg_orca
+(35 rows)
 
 -- another case requiring nested PlaceHolderVars
 explain (verbose, costs off)
@@ -979,8 +972,6 @@ select c.*,a.*,ss1.q1,ss2.q1,ss3.* from
     lateral (select q1, coalesce(ss1.x,q2) as y from int8_tbl d) ss2
   ) on c.q2 = ss2.q1,
   lateral (select * from int4_tbl i where ss2.y > f1) ss3;
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  DXL-to-PlStmt Translation: Attribute number 31 not found in project list
                                                QUERY PLAN                                                
 ---------------------------------------------------------------------------------------------------------
  Nested Loop
@@ -991,33 +982,35 @@ DETAIL:  DXL-to-PlStmt Translation: Attribute number 31 not found in project lis
          Hash Cond: (d.q1 = c.q2)
          ->  Nested Loop
                Output: a.q1, a.q2, b.q1, d.q1, (COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2))
-               ->  Hash Right Join
+               Join Filter: true
+               ->  Hash Left Join
                      Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, (b2.f1)::bigint))
-                     Hash Cond: (b.q1 = a.q2)
-                     ->  Nested Loop
-                           Output: b.q1, COALESCE(b.q2, (b2.f1)::bigint)
-                           Join Filter: (b.q1 < b2.f1)
-                           ->  Seq Scan on public.int8_tbl b
-                                 Output: b.q1, b.q2
-                           ->  Materialize
-                                 Output: b2.f1
+                     Hash Cond: (a.q2 = b.q1)
+                     ->  Seq Scan on public.int8_tbl a
+                           Output: a.q1, a.q2
+                     ->  Hash
+                           Output: (COALESCE(b.q2, (b2.f1)::bigint)), b.q1
+                           ->  Nested Loop
+                                 Output: COALESCE(b.q2, (b2.f1)::bigint), b.q1
+                                 Join Filter: (b.q1 < b2.f1)
+                                 ->  Seq Scan on public.int8_tbl b
+                                       Output: b.q1, b.q2
                                  ->  Seq Scan on public.int4_tbl b2
                                        Output: b2.f1
-                     ->  Hash
-                           Output: a.q1, a.q2
-                           ->  Seq Scan on public.int8_tbl a
-                                 Output: a.q1, a.q2
-               ->  Seq Scan on public.int8_tbl d
-                     Output: d.q1, COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2)
+               ->  Materialize
+                     Output: (COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2)), d.q1
+                     ->  Result
+                           Output: COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2), d.q1
+                           ->  Seq Scan on public.int8_tbl d
+                                 Output: d.q1, d.q2
          ->  Hash
                Output: c.q1, c.q2
                ->  Seq Scan on public.int8_tbl c
                      Output: c.q1, c.q2
-   ->  Materialize
+   ->  Seq Scan on public.int4_tbl i
          Output: i.f1
-         ->  Seq Scan on public.int4_tbl i
-               Output: i.f1
-(34 rows)
+ Optimizer: pg_orca
+(36 rows)
 
 -- check processing of postponed quals (bug #9041)
 explain (verbose, costs off)
