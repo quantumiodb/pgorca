@@ -45,6 +45,15 @@
 -- m/SubPlan (?:SubPlan |exists_|any_|in_|hashed_)\d+/
 -- s/SubPlan (?:SubPlan |exists_|any_|in_|hashed_)(\d+)/SubPlan $1/g
 --
+-- # Recent PG18 patchlevels simplify away the COALESCE wrapper on a
+-- # whole-row reference inside LATERAL output lists (e.g. EXPLAIN VERBOSE
+-- # of `lateral (select coalesce(i) from ...)` drops "COALESCE(i.*)" to
+-- # just "i.*"). Older PG18 patches keep the COALESCE. Normalize both
+-- # forms by stripping the COALESCE(...) wrapper around any whole-row ref
+-- # so a single expected file works regardless of PG patchlevel.
+-- m/COALESCE\(\w+\.\*\)/
+-- s/COALESCE\((\w+\.\*)\)/$1/g
+--
 -- end_matchsubs
 
 -- start_matchignore
