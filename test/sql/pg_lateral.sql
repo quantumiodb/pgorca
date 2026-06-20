@@ -5,8 +5,10 @@
 -- block introduced by the "-- Test LATERAL" header), ported verbatim so we
 -- exercise the same shapes the upstream regression suite does. Setup
 -- tables (int2_tbl, int4_tbl, int8_tbl, tenk1, onerow) mirror PG's
--- test_setup.sql and the top of join.sql; tenk1 is loaded from the
--- upstream tenk.data file via the PG_REGRESS_SQL search path.
+-- test_setup.sql and the top of join.sql; tenk1 is loaded from a copy
+-- of PG's upstream tenk.data shipped at test/data/tenk.data, located
+-- via pg_regress's :abs_srcdir variable so the test runs anywhere
+-- pg_regress can reach the source tree.
 --
 -- The point of running this through pg_orca is to catch any LATERAL
 -- pattern that crashes / falls back / mis-computes. We don't compare
@@ -67,7 +69,8 @@ CREATE TABLE tenk1 (
     stringu2    name,
     string4     name
 );
-\set tenkdata `echo "$PG_REGRESS_SQL/data/tenk.data"`
+\getenv abs_srcdir PG_ABS_SRCDIR
+\set tenkdata :abs_srcdir '/data/tenk.data'
 COPY tenk1 FROM :'tenkdata';
 VACUUM ANALYZE tenk1;
 
