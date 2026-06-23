@@ -3269,11 +3269,12 @@ CTranslatorQueryToDXL::TranslateFromClauseToDXL(Node *node)
 
 			/* forceDistRandom is GPDB-only */
 
-		if (rte->lateral)
-		{
-			GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
-					   GPOS_WSZ_LIT("LATERAL"));
-		}
+		// LATERAL is supported. Outer references from a LATERAL RTE's inner
+		// query resolve against the parent's CMappingVarColId (set up by the
+		// translator ctor) via varlevelsup; the optimizer side requires the
+		// commutativity guard in CXformInnerJoinCommutativity and the
+		// outer-refs-as-PARAM_EXEC plumbing in PdxlnNLJoin / PdxlnHashJoin to
+		// execute correlated joins correctly.
 
 		if (rte->funcordinality)
 		{

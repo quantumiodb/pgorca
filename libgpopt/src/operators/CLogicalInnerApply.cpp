@@ -111,6 +111,14 @@ CLogicalInnerApply::PopCopyWithRemappedColumns(CMemoryPool *mp,
 											   UlongToColRefMap *colref_mapping,
 											   BOOL must_exist)
 {
+	if (nullptr == m_pdrgpcrInner)
+	{
+		// LATERAL-derived Apply has no inner scalar colref. The 2-arg ctor
+		// asserts pdrgpcrInner is non-null+non-empty, so use the 1-arg
+		// form which preserves the nullptr.
+		return GPOS_NEW(mp) CLogicalInnerApply(mp);
+	}
+
 	CColRefArray *pdrgpcrInner =
 		CUtils::PdrgpcrRemap(mp, m_pdrgpcrInner, colref_mapping, must_exist);
 

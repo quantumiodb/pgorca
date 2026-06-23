@@ -4928,7 +4928,8 @@ CUtils::PexprMatchEqualityOrINDF(
 CExpression *
 CUtils::MakeJoinWithoutInferredPreds(CMemoryPool *mp, CExpression *join_expr)
 {
-	GPOS_ASSERT(COperator::EopLogicalInnerJoin == join_expr->Pop()->Eopid());
+	GPOS_ASSERT(COperator::EopLogicalInnerJoin == join_expr->Pop()->Eopid() ||
+				COperator::EopLogicalLeftOuterJoin == join_expr->Pop()->Eopid());
 
 	CExpressionHandle expression_handle(mp);
 	expression_handle.Attach(join_expr);
@@ -5047,11 +5048,11 @@ CUtils::Equals(const IMDId *mdid, const IMDId *other_mdid)
 }
 
 // operators from which the inferred predicates can be removed
-// NB: currently, only inner join is included, but we can add more later.
 BOOL
 CUtils::CanRemoveInferredPredicates(COperator::EOperatorId op_id)
 {
-	return op_id == COperator::EopLogicalInnerJoin;
+	return op_id == COperator::EopLogicalInnerJoin ||
+		   op_id == COperator::EopLogicalLeftOuterJoin;
 }
 
 CExpressionArrays *

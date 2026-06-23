@@ -74,7 +74,8 @@ CJoinOrderDPv2::CJoinOrderDPv2(CMemoryPool *mp,
 	  m_child_pred_indexes(childPredIndexes),
 	  m_non_inner_join_dependencies(nullptr),
 	  m_cross_prod_penalty(GPOPT_DPV2_CROSS_JOIN_DEFAULT_PENALTY),
-	  m_outer_refs(outerRefs)
+	  m_outer_refs(outerRefs),
+	  m_atom_sibling_required(nullptr)
 {
 	m_join_levels = GPOS_NEW(mp) DPv2Levels(mp, m_ulComps + 1);
 	// populate levels array with n+1 levels for an n-way join
@@ -136,6 +137,48 @@ CJoinOrderDPv2::CJoinOrderDPv2(CMemoryPool *mp,
 		}
 	}
 	PopulateExpressionToEdgeMapIfNeeded();
+
+	// Precompute per-atom sibling requirements. An atom's outer references
+	// that are not in m_outer_refs (those would propagate up to the parent of
+	// the NAryJoin) must be supplied by another atom in the NAryJoin. If
+	// atom j produces such a column, j is required whenever atom i appears in
+	// a join subset. This keeps join enumeration from forming subsets like
+	// {x, lateral_ref_to_y} that would leave the LATERAL's outer-ref unbound
+	// when the partial join expression is evaluated.
+	m_atom_sibling_required = GPOS_NEW(mp) CBitSetArray(mp, m_ulComps);
+	for (ULONG i = 0; i < m_ulComps; i++)
+	{
+		m_atom_sibling_required->Append(GPOS_NEW(mp) CBitSet(mp));
+	}
+	for (ULONG i = 0; i < m_ulComps; i++)
+	{
+		CExpression *pexpr_i = m_rgpcomp[i]->m_pexpr;
+		CColRefSet *outer_refs_i = pexpr_i->DeriveOuterReferences();
+		if (outer_refs_i->IsDisjoint(m_outer_refs) &&
+			0 == outer_refs_i->Size())
+		{
+			continue;
+		}
+		CColRefSet *sibling_refs = GPOS_NEW(mp) CColRefSet(mp, *outer_refs_i);
+		sibling_refs->Difference(m_outer_refs);
+		if (0 < sibling_refs->Size())
+		{
+			for (ULONG j = 0; j < m_ulComps; j++)
+			{
+				if (i == j)
+				{
+					continue;
+				}
+				CColRefSet *output_j =
+					m_rgpcomp[j]->m_pexpr->DeriveOutputColumns();
+				if (!sibling_refs->IsDisjoint(output_j))
+				{
+					(*m_atom_sibling_required)[i]->ExchangeSet(j);
+				}
+			}
+		}
+		sibling_refs->Release();
+	}
 }
 
 
@@ -159,6 +202,7 @@ CJoinOrderDPv2::~CJoinOrderDPv2()
 	m_top_k_expressions->Release();
 	m_top_k_part_expressions->Release();
 	m_join_levels->Release();
+	CRefCount::SafeRelease(m_atom_sibling_required);
 	m_on_pred_conjuncts->Release();
 	m_outer_refs->Release();
 }
@@ -338,6 +382,34 @@ CJoinOrderDPv2::GetJoinExpr(const SGroupAndExpression &left_child_expr,
 	SExpressionInfo *left_expr_info = left_child_expr.GetExprInfo();
 	SGroupInfo *right_group_info = right_child_expr.m_group_info;
 	SExpressionInfo *right_expr_info = right_child_expr.GetExprInfo();
+
+	// LATERAL sibling visibility: every atom in the combined subset must have
+	// all of its required-sibling atoms already present. Otherwise the
+	// combined expression has an atom whose outer references reach an atom
+	// that's not yet in the join, and the resulting partial plan would leave
+	// those refs unbound at execution time.
+	if (nullptr != m_atom_sibling_required)
+	{
+		CBitSet *combined_atoms =
+			GPOS_NEW(m_mp) CBitSet(m_mp, *left_group_info->m_atoms);
+		combined_atoms->Union(right_group_info->m_atoms);
+		CBitSetIter iter(*combined_atoms);
+		BOOL valid = true;
+		while (valid && iter.Advance())
+		{
+			ULONG atom_id = iter.Bit();
+			CBitSet *required = (*m_atom_sibling_required)[atom_id];
+			if (0 < required->Size() && !combined_atoms->ContainsAll(required))
+			{
+				valid = false;
+			}
+		}
+		combined_atoms->Release();
+		if (!valid)
+		{
+			return nullptr;
+		}
+	}
 
 	CExpression *scalar_expr = nullptr;
 	CBitSet *required_on_left = nullptr;

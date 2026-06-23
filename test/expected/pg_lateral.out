@@ -1,0 +1,1220 @@
+--
+-- pg_orca LATERAL coverage from PostgreSQL upstream
+--
+-- This is the "Test LATERAL" section of PostgreSQL's join.sql (the test
+-- block introduced by the "-- Test LATERAL" header), ported verbatim so we
+-- exercise the same shapes the upstream regression suite does. Setup
+-- tables (int2_tbl, int4_tbl, int8_tbl, tenk1, onerow) mirror PG's
+-- test_setup.sql and the top of join.sql; tenk1 is loaded from a copy
+-- of PG's upstream tenk.data shipped at test/data/tenk.data, located
+-- via pg_regress's :abs_srcdir variable so the test runs anywhere
+-- pg_regress can reach the source tree.
+--
+-- The point of running this through pg_orca is to catch any LATERAL
+-- pattern that crashes / falls back / mis-computes. We don't compare
+-- ORCA's plans against PG's (different optimizers) but we do compare
+-- result rows.
+--
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET pg_orca.trace_fallback = on;
+SET client_min_messages = warning;
+-- guard against bad plans hanging the whole test on a single query
+SET statement_timeout = '20s';
+-- =========================================================================
+-- Setup tables (subset of PG's test_setup.sql + join.sql top)
+-- =========================================================================
+-- start_ignore
+DROP TABLE IF EXISTS int2_tbl, int4_tbl, int8_tbl, tenk1, onerow CASCADE;
+-- end_ignore
+CREATE TABLE INT2_TBL(f1 int2);
+INSERT INTO INT2_TBL(f1) VALUES
+  ('0   '), ('  1234 '), ('    -1234'), ('32767'), ('-32767');
+VACUUM INT2_TBL;
+CREATE TABLE INT4_TBL(f1 int4);
+INSERT INTO INT4_TBL(f1) VALUES
+  ('   0  '), ('123456     '), ('    -123456'),
+  ('2147483647'), ('-2147483647');
+VACUUM INT4_TBL;
+CREATE TABLE INT8_TBL(q1 int8, q2 int8);
+INSERT INTO INT8_TBL VALUES
+  ('  123   ','  456'),
+  ('123   ','4567890123456789'),
+  ('4567890123456789','123'),
+  (+4567890123456789,'4567890123456789'),
+  ('+4567890123456789','-4567890123456789');
+VACUUM INT8_TBL;
+CREATE TABLE tenk1 (
+    unique1     int4,
+    unique2     int4,
+    two         int4,
+    four        int4,
+    ten         int4,
+    twenty      int4,
+    hundred     int4,
+    thousand    int4,
+    twothousand int4,
+    fivethous   int4,
+    tenthous    int4,
+    odd         int4,
+    even        int4,
+    stringu1    name,
+    stringu2    name,
+    string4     name
+);
+\getenv abs_srcdir PG_ABS_SRCDIR
+\set tenkdata :abs_srcdir '/data/tenk.data'
+COPY tenk1 FROM :'tenkdata';
+VACUUM ANALYZE tenk1;
+CREATE TABLE onerow();
+INSERT INTO onerow DEFAULT VALUES;
+ANALYZE onerow;
+-- =========================================================================
+-- Verbatim "Test LATERAL" block from PostgreSQL src/test/regress/sql/join.sql.
+-- =========================================================================
+select unique2, x.*
+from tenk1 a, lateral (select * from int4_tbl b where f1 = a.unique1) x;
+ unique2 | f1 
+---------+----
+    9998 |  0
+(1 row)
+
+explain (costs off)
+  select unique2, x.*
+  from tenk1 a, lateral (select * from int4_tbl b where f1 = a.unique1) x;
+           QUERY PLAN            
+---------------------------------
+ Hash Join
+   Hash Cond: (b.f1 = a.unique1)
+   ->  Seq Scan on int4_tbl b
+   ->  Hash
+         ->  Seq Scan on tenk1 a
+ Optimizer: pg_orca
+(6 rows)
+
+select unique2, x.*
+from int4_tbl x, lateral (select unique2 from tenk1 where f1 = unique1) ss;
+ unique2 | f1 
+---------+----
+    9998 |  0
+(1 row)
+
+explain (costs off)
+  select unique2, x.*
+  from int4_tbl x, lateral (select unique2 from tenk1 where f1 = unique1) ss;
+             QUERY PLAN              
+-------------------------------------
+ Hash Join
+   Hash Cond: (x.f1 = tenk1.unique1)
+   ->  Seq Scan on int4_tbl x
+   ->  Hash
+         ->  Seq Scan on tenk1
+ Optimizer: pg_orca
+(6 rows)
+
+explain (costs off)
+  select unique2, x.*
+  from int4_tbl x cross join lateral (select unique2 from tenk1 where f1 = unique1) ss;
+             QUERY PLAN              
+-------------------------------------
+ Hash Join
+   Hash Cond: (x.f1 = tenk1.unique1)
+   ->  Seq Scan on int4_tbl x
+   ->  Hash
+         ->  Seq Scan on tenk1
+ Optimizer: pg_orca
+(6 rows)
+
+select unique2, x.*
+from int4_tbl x left join lateral (select unique1, unique2 from tenk1 where f1 = unique1) ss on true;
+ unique2 |     f1      
+---------+-------------
+    9998 |           0
+         | -2147483647
+         |  2147483647
+         |     -123456
+         |      123456
+(5 rows)
+
+explain (costs off)
+  select unique2, x.*
+  from int4_tbl x left join lateral (select unique1, unique2 from tenk1 where f1 = unique1) ss on true;
+             QUERY PLAN              
+-------------------------------------
+ Hash Right Join
+   Hash Cond: (tenk1.unique1 = x.f1)
+   ->  Seq Scan on tenk1
+   ->  Hash
+         ->  Seq Scan on int4_tbl x
+ Optimizer: pg_orca
+(6 rows)
+
+-- check scoping of lateral versus parent references
+-- the first of these should return int8_tbl.q2, the second int8_tbl.q1
+select *, (select r from (select q1 as q2) x, (select q2 as r) y) from int8_tbl;
+        q1        |        q2         |         r         
+------------------+-------------------+-------------------
+              123 |               456 |               456
+              123 |  4567890123456789 |  4567890123456789
+ 4567890123456789 |               123 |               123
+ 4567890123456789 |  4567890123456789 |  4567890123456789
+ 4567890123456789 | -4567890123456789 | -4567890123456789
+(5 rows)
+
+select *, (select r from (select q1 as q2) x, lateral (select q2 as r) y) from int8_tbl;
+        q1        |        q2         |        r         
+------------------+-------------------+------------------
+              123 |               456 |              123
+              123 |  4567890123456789 |              123
+ 4567890123456789 |               123 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 | 4567890123456789
+(5 rows)
+
+-- lateral with function in FROM
+select count(*) from tenk1 a, lateral generate_series(1,two) g;
+ count 
+-------
+  5000
+(1 row)
+
+explain (costs off)
+  select count(*) from tenk1 a, lateral generate_series(1,two) g;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Nested Loop
+         Join Filter: true
+         ->  Seq Scan on tenk1 a
+         ->  Function Scan on generate_series g
+ Optimizer: pg_orca
+(6 rows)
+
+explain (costs off)
+  select count(*) from tenk1 a cross join lateral generate_series(1,two) g;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Nested Loop
+         Join Filter: true
+         ->  Seq Scan on tenk1 a
+         ->  Function Scan on generate_series g
+ Optimizer: pg_orca
+(6 rows)
+
+-- don't need the explicit LATERAL keyword for functions
+explain (costs off)
+  select count(*) from tenk1 a, generate_series(1,two) g;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Nested Loop
+         Join Filter: true
+         ->  Seq Scan on tenk1 a
+         ->  Function Scan on generate_series g
+ Optimizer: pg_orca
+(6 rows)
+
+-- lateral with UNION ALL subselect
+explain (costs off)
+  select * from generate_series(100,200) g,
+    lateral (select * from int8_tbl a where g = q1 union all
+             select * from int8_tbl b where g = q2) ss;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Nested Loop
+   Join Filter: true
+   ->  Function Scan on generate_series g
+   ->  Append
+         ->  Materialize
+               ->  Result
+                     Filter: (g.g = a.q1)
+                     ->  Result
+                           Filter: (g.g = a.q1)
+                           ->  Seq Scan on int8_tbl a
+                                 Filter: (g.g = q1)
+         ->  Materialize
+               ->  Seq Scan on int8_tbl b
+                     Filter: (g.g = q2)
+ Optimizer: pg_orca
+(15 rows)
+
+select * from generate_series(100,200) g,
+  lateral (select * from int8_tbl a where g = q1 union all
+           select * from int8_tbl b where g = q2) ss;
+  g  |        q1        |        q2        
+-----+------------------+------------------
+ 123 |              123 |              456
+ 123 |              123 | 4567890123456789
+ 123 | 4567890123456789 |              123
+(3 rows)
+
+-- lateral with VALUES
+explain (costs off)
+  select count(*) from tenk1 a,
+    tenk1 b join lateral (values(a.unique1)) ss(x) on b.unique2 = ss.x;
+                  QUERY PLAN                  
+----------------------------------------------
+ Aggregate
+   ->  Hash Join
+         Hash Cond: ((a.unique1) = b.unique2)
+         ->  Nested Loop
+               Join Filter: true
+               ->  Seq Scan on tenk1 a
+               ->  Materialize
+                     ->  Result
+                           ->  Result
+         ->  Hash
+               ->  Seq Scan on tenk1 b
+ Optimizer: pg_orca
+(12 rows)
+
+select count(*) from tenk1 a,
+  tenk1 b join lateral (values(a.unique1)) ss(x) on b.unique2 = ss.x;
+ count 
+-------
+ 10000
+(1 row)
+
+-- lateral with VALUES, no flattening possible
+explain (costs off)
+  select count(*) from tenk1 a,
+    tenk1 b join lateral (values(a.unique1),(-1)) ss(x) on b.unique2 = ss.x;
+                  QUERY PLAN                  
+----------------------------------------------
+ Aggregate
+   ->  Hash Join
+         Hash Cond: ((a.unique1) = b.unique2)
+         ->  Nested Loop
+               Join Filter: true
+               ->  Seq Scan on tenk1 a
+               ->  Append
+                     ->  Materialize
+                           ->  Result
+                                 ->  Result
+                     ->  Result
+         ->  Hash
+               ->  Seq Scan on tenk1 b
+ Optimizer: pg_orca
+(14 rows)
+
+select count(*) from tenk1 a,
+  tenk1 b join lateral (values(a.unique1),(-1)) ss(x) on b.unique2 = ss.x;
+ count 
+-------
+ 10000
+(1 row)
+
+-- lateral injecting a strange outer join condition
+explain (costs off)
+  select * from int8_tbl a,
+    int8_tbl x left join lateral (select a.q1 from int4_tbl y) ss(z)
+      on x.q2 = ss.z
+  order by a.q1, a.q2, x.q1, x.q2, ss.z;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  DXL-to-PlStmt Translation: Attribute number 0 not found in project list
+                   QUERY PLAN                   
+------------------------------------------------
+ Sort
+   Sort Key: a.q1, a.q2, x.q1, x.q2, (a.q1)
+   ->  Nested Loop
+         ->  Seq Scan on int8_tbl a
+         ->  Hash Left Join
+               Hash Cond: (x.q2 = (a.q1))
+               ->  Seq Scan on int8_tbl x
+               ->  Hash
+                     ->  Seq Scan on int4_tbl y
+(9 rows)
+
+select * from int8_tbl a,
+  int8_tbl x left join lateral (select a.q1 from int4_tbl y) ss(z)
+    on x.q2 = ss.z
+  order by a.q1, a.q2, x.q1, x.q2, ss.z;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  DXL-to-PlStmt Translation: Attribute number 0 not found in project list
+        q1        |        q2         |        q1        |        q2         |        z         
+------------------+-------------------+------------------+-------------------+------------------
+              123 |               456 |              123 |               456 |                 
+              123 |               456 |              123 |  4567890123456789 |                 
+              123 |               456 | 4567890123456789 | -4567890123456789 |                 
+              123 |               456 | 4567890123456789 |               123 |              123
+              123 |               456 | 4567890123456789 |               123 |              123
+              123 |               456 | 4567890123456789 |               123 |              123
+              123 |               456 | 4567890123456789 |               123 |              123
+              123 |               456 | 4567890123456789 |               123 |              123
+              123 |               456 | 4567890123456789 |  4567890123456789 |                 
+              123 |  4567890123456789 |              123 |               456 |                 
+              123 |  4567890123456789 |              123 |  4567890123456789 |                 
+              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |                 
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123
+              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |                 
+ 4567890123456789 | -4567890123456789 |              123 |               456 |                 
+ 4567890123456789 | -4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 | 4567890123456789 | -4567890123456789 |                 
+ 4567890123456789 | -4567890123456789 | 4567890123456789 |               123 |                 
+ 4567890123456789 | -4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 |              123 |               456 |                 
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 | 4567890123456789 | -4567890123456789 |                 
+ 4567890123456789 |               123 | 4567890123456789 |               123 |                 
+ 4567890123456789 |               123 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 |              123 |               456 |                 
+ 4567890123456789 |  4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 |              123 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 |                 
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |               123 |                 
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+(57 rows)
+
+-- lateral reference to a join alias variable
+select * from (select f1/2 as x from int4_tbl) ss1 join int4_tbl i4 on x = f1,
+  lateral (select x) ss2(y);
+ x | f1 | y 
+---+----+---
+ 0 |  0 | 0
+(1 row)
+
+select * from (select f1 as x from int4_tbl) ss1 join int4_tbl i4 on x = f1,
+  lateral (values(x)) ss2(y);
+      x      |     f1      |      y      
+-------------+-------------+-------------
+ -2147483647 | -2147483647 | -2147483647
+     -123456 |     -123456 |     -123456
+           0 |           0 |           0
+      123456 |      123456 |      123456
+  2147483647 |  2147483647 |  2147483647
+(5 rows)
+
+select * from ((select f1/2 as x from int4_tbl) ss1 join int4_tbl i4 on x = f1) j,
+  lateral (select x) ss2(y);
+ x | f1 | y 
+---+----+---
+ 0 |  0 | 0
+(1 row)
+
+-- lateral references requiring pullup
+select * from (values(1)) x(lb),
+  lateral generate_series(lb,4) x4;
+ lb | x4 
+----+----
+  1 |  1
+  1 |  2
+  1 |  3
+  1 |  4
+(4 rows)
+
+select * from (select f1/1000000000 from int4_tbl) x(lb),
+  lateral generate_series(lb,4) x4;
+ lb | x4 
+----+----
+  0 |  0
+  0 |  1
+  0 |  2
+  0 |  3
+  0 |  4
+  0 |  0
+  0 |  1
+  0 |  2
+  0 |  3
+  0 |  4
+  0 |  0
+  0 |  1
+  0 |  2
+  0 |  3
+  0 |  4
+  2 |  2
+  2 |  3
+  2 |  4
+ -2 | -2
+ -2 | -1
+ -2 |  0
+ -2 |  1
+ -2 |  2
+ -2 |  3
+ -2 |  4
+(25 rows)
+
+select * from (values(1)) x(lb),
+  lateral (values(lb)) y(lbcopy);
+ lb | lbcopy 
+----+--------
+  1 |      1
+(1 row)
+
+select * from (values(1)) x(lb),
+  lateral (select lb from int4_tbl) y(lbcopy);
+ lb | lbcopy 
+----+--------
+  1 |      1
+  1 |      1
+  1 |      1
+  1 |      1
+  1 |      1
+(5 rows)
+
+select * from
+  int8_tbl x left join (select q1,coalesce(q2,0) q2 from int8_tbl) y on x.q2 = y.q1,
+  lateral (values(x.q1,y.q1,y.q2)) v(xq1,yq1,yq2);
+        q1        |        q2         |        q1        |        q2         |       xq1        |       yq1        |        yq2        
+------------------+-------------------+------------------+-------------------+------------------+------------------+-------------------
+              123 |               456 |                  |                   |              123 |                  |                  
+              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
+              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
+ 4567890123456789 |               123 |              123 |               456 | 4567890123456789 |              123 |               456
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789 | 4567890123456789 |               123
+ 4567890123456789 | -4567890123456789 |                  |                   | 4567890123456789 |                  |                  
+(10 rows)
+
+select * from
+  int8_tbl x left join (select q1,coalesce(q2,0) q2 from int8_tbl) y on x.q2 = y.q1,
+  lateral (select x.q1,y.q1,y.q2) v(xq1,yq1,yq2);
+        q1        |        q2         |        q1        |        q2         |       xq1        |       yq1        |        yq2        
+------------------+-------------------+------------------+-------------------+------------------+------------------+-------------------
+              123 |               456 |                  |                   |              123 |                  |                  
+              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
+              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
+ 4567890123456789 |               123 |              123 |               456 | 4567890123456789 |              123 |               456
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789 | 4567890123456789 |               123
+ 4567890123456789 | -4567890123456789 |                  |                   | 4567890123456789 |                  |                  
+(10 rows)
+
+select x.* from
+  int8_tbl x left join (select q1,coalesce(q2,0) q2 from int8_tbl) y on x.q2 = y.q1,
+  lateral (select x.q1,y.q1,y.q2) v(xq1,yq1,yq2);
+        q1        |        q2         
+------------------+-------------------
+              123 |               456
+              123 |  4567890123456789
+              123 |  4567890123456789
+              123 |  4567890123456789
+ 4567890123456789 |               123
+ 4567890123456789 |               123
+ 4567890123456789 |  4567890123456789
+ 4567890123456789 |  4567890123456789
+ 4567890123456789 |  4567890123456789
+ 4567890123456789 | -4567890123456789
+(10 rows)
+
+select v.* from
+  (int8_tbl x left join (select q1,coalesce(q2,0) q2 from int8_tbl) y on x.q2 = y.q1)
+  left join int4_tbl z on z.f1 = x.q2,
+  lateral (select x.q1,y.q1 union all select x.q2,y.q2) v(vx,vy);
+        vx         |        vy         
+-------------------+-------------------
+               123 |                  
+               456 |                  
+               123 |  4567890123456789
+  4567890123456789 | -4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |  4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |               123
+               123 |  4567890123456789
+  4567890123456789 |               123
+               123 |               456
+  4567890123456789 |  4567890123456789
+  4567890123456789 | -4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |                  
+ -4567890123456789 |                  
+(20 rows)
+
+select v.* from
+  (int8_tbl x left join (select q1,(select coalesce(q2,0)) q2 from int8_tbl) y on x.q2 = y.q1)
+  left join int4_tbl z on z.f1 = x.q2,
+  lateral (select x.q1,y.q1 union all select x.q2,y.q2) v(vx,vy);
+        vx         |        vy         
+-------------------+-------------------
+               123 |                  
+               456 |                  
+               123 |  4567890123456789
+  4567890123456789 | -4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |  4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |               123
+               123 |  4567890123456789
+  4567890123456789 |               123
+               123 |               456
+  4567890123456789 |  4567890123456789
+  4567890123456789 | -4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |                  
+ -4567890123456789 |                  
+(20 rows)
+
+select v.* from
+  (int8_tbl x left join (select q1,(select coalesce(q2,0)) q2 from int8_tbl) y on x.q2 = y.q1)
+  left join int4_tbl z on z.f1 = x.q2,
+  lateral (select x.q1,y.q1 from onerow union all select x.q2,y.q2 from onerow) v(vx,vy);
+        vx         |        vy         
+-------------------+-------------------
+               123 |                  
+               456 |                  
+               123 |  4567890123456789
+  4567890123456789 | -4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |  4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |               123
+               123 |  4567890123456789
+  4567890123456789 |               123
+               123 |               456
+  4567890123456789 |  4567890123456789
+  4567890123456789 | -4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |                  
+ -4567890123456789 |                  
+(20 rows)
+
+explain (verbose, costs off)
+select * from
+  int8_tbl a left join
+  lateral (select *, a.q2 as x from int8_tbl b) ss on a.q2 = ss.q1;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  DXL-to-PlStmt Translation: Attribute number 1 not found in project list
+                QUERY PLAN                
+------------------------------------------
+ Nested Loop Left Join
+   Output: a.q1, a.q2, b.q1, b.q2, (a.q2)
+   ->  Seq Scan on public.int8_tbl a
+         Output: a.q1, a.q2
+   ->  Seq Scan on public.int8_tbl b
+         Output: b.q1, b.q2, a.q2
+         Filter: (a.q2 = b.q1)
+(7 rows)
+
+select * from
+  int8_tbl a left join
+  lateral (select *, a.q2 as x from int8_tbl b) ss on a.q2 = ss.q1;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  DXL-to-PlStmt Translation: Attribute number 1 not found in project list
+        q1        |        q2         |        q1        |        q2         |        x         
+------------------+-------------------+------------------+-------------------+------------------
+              123 |               456 |                  |                   |                 
+              123 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789
+              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 |              123 |               456 |              123
+ 4567890123456789 |               123 |              123 |  4567890123456789 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 |                  |                   |                 
+(10 rows)
+
+explain (verbose, costs off)
+select * from
+  int8_tbl a left join
+  lateral (select *, coalesce(a.q2, 42) as x from int8_tbl b) ss on a.q2 = ss.q1;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  DXL-to-PlStmt Translation: Attribute number 1 not found in project list
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Nested Loop Left Join
+   Output: a.q1, a.q2, b.q1, b.q2, (COALESCE(a.q2, '42'::bigint))
+   ->  Seq Scan on public.int8_tbl a
+         Output: a.q1, a.q2
+   ->  Seq Scan on public.int8_tbl b
+         Output: b.q1, b.q2, COALESCE(a.q2, '42'::bigint)
+         Filter: (a.q2 = b.q1)
+(7 rows)
+
+select * from
+  int8_tbl a left join
+  lateral (select *, coalesce(a.q2, 42) as x from int8_tbl b) ss on a.q2 = ss.q1;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  DXL-to-PlStmt Translation: Attribute number 1 not found in project list
+        q1        |        q2         |        q1        |        q2         |        x         
+------------------+-------------------+------------------+-------------------+------------------
+              123 |               456 |                  |                   |                 
+              123 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789
+              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789
+ 4567890123456789 |               123 |              123 |               456 |              123
+ 4567890123456789 |               123 |              123 |  4567890123456789 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 |                  |                   |                 
+(10 rows)
+
+-- lateral can result in join conditions appearing below their
+-- real semantic level
+explain (verbose, costs off)
+select * from int4_tbl i left join
+  lateral (select * from int2_tbl j where i.f1 = j.f1) k on true;
+                QUERY PLAN                 
+-------------------------------------------
+ Hash Left Join
+   Output: i.f1, j.f1
+   Hash Cond: (i.f1 = (j.f1)::integer)
+   ->  Seq Scan on public.int4_tbl i
+         Output: i.f1
+   ->  Hash
+         Output: j.f1
+         ->  Seq Scan on public.int2_tbl j
+               Output: j.f1
+ Optimizer: pg_orca
+(10 rows)
+
+select * from int4_tbl i left join
+  lateral (select * from int2_tbl j where i.f1 = j.f1) k on true;
+     f1      | f1 
+-------------+----
+           0 |  0
+      123456 |   
+     -123456 |   
+  2147483647 |   
+ -2147483647 |   
+(5 rows)
+
+explain (verbose, costs off)
+select * from int4_tbl i left join
+  lateral (select coalesce(i) from int2_tbl j where i.f1 = j.f1) k on true;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Whole-row variable
+             QUERY PLAN              
+-------------------------------------
+ Nested Loop Left Join
+   Output: i.f1, (COALESCE(i.*))
+   ->  Seq Scan on public.int4_tbl i
+         Output: i.f1, i.*
+   ->  Seq Scan on public.int2_tbl j
+         Output: j.f1, COALESCE(i.*)
+         Filter: (i.f1 = j.f1)
+(7 rows)
+
+select * from int4_tbl i left join
+  lateral (select coalesce(i) from int2_tbl j where i.f1 = j.f1) k on true;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Whole-row variable
+     f1      | coalesce 
+-------------+----------
+           0 | (0)
+      123456 | 
+     -123456 | 
+  2147483647 | 
+ -2147483647 | 
+(5 rows)
+
+explain (verbose, costs off)
+select * from int4_tbl a,
+  lateral (
+    select * from int4_tbl b left join int8_tbl c on (b.f1 = q1 and a.f1 = q2)
+  ) ss;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Hash Left Join
+   Output: a.f1, b.f1, c.q1, c.q2
+   Hash Cond: (((b.f1)::bigint = c.q1) AND ((a.f1)::bigint = c.q2))
+   ->  Nested Loop
+         Output: a.f1, b.f1
+         Join Filter: true
+         ->  Seq Scan on public.int4_tbl a
+               Output: a.f1
+         ->  Seq Scan on public.int4_tbl b
+               Output: b.f1
+   ->  Hash
+         Output: c.q1, c.q2
+         ->  Seq Scan on public.int8_tbl c
+               Output: c.q1, c.q2
+ Optimizer: pg_orca
+(15 rows)
+
+select * from int4_tbl a,
+  lateral (
+    select * from int4_tbl b left join int8_tbl c on (b.f1 = q1 and a.f1 = q2)
+  ) ss;
+     f1      |     f1      | q1 | q2 
+-------------+-------------+----+----
+           0 |           0 |    |   
+           0 |      123456 |    |   
+           0 |     -123456 |    |   
+           0 |  2147483647 |    |   
+           0 | -2147483647 |    |   
+      123456 |           0 |    |   
+      123456 |      123456 |    |   
+      123456 |     -123456 |    |   
+      123456 |  2147483647 |    |   
+      123456 | -2147483647 |    |   
+     -123456 |           0 |    |   
+     -123456 |      123456 |    |   
+     -123456 |     -123456 |    |   
+     -123456 |  2147483647 |    |   
+     -123456 | -2147483647 |    |   
+  2147483647 |           0 |    |   
+  2147483647 |      123456 |    |   
+  2147483647 |     -123456 |    |   
+  2147483647 |  2147483647 |    |   
+  2147483647 | -2147483647 |    |   
+ -2147483647 |           0 |    |   
+ -2147483647 |      123456 |    |   
+ -2147483647 |     -123456 |    |   
+ -2147483647 |  2147483647 |    |   
+ -2147483647 | -2147483647 |    |   
+(25 rows)
+
+-- lateral reference in a PlaceHolderVar evaluated at join level
+explain (verbose, costs off)
+select * from
+  int8_tbl a left join lateral
+  (select b.q1 as bq1, c.q1 as cq1, least(a.q1,b.q1,c.q1) from
+   int8_tbl b cross join int8_tbl c) ss
+  on a.q2 = ss.bq1;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  DXL-to-PlStmt Translation: Attribute number 0 not found in project list
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Nested Loop Left Join
+   Output: a.q1, a.q2, b.q1, c.q1, (LEAST(a.q1, b.q1, c.q1))
+   ->  Seq Scan on public.int8_tbl a
+         Output: a.q1, a.q2
+   ->  Nested Loop
+         Output: b.q1, c.q1, LEAST(a.q1, b.q1, c.q1)
+         ->  Seq Scan on public.int8_tbl b
+               Output: b.q1, b.q2
+               Filter: (a.q2 = b.q1)
+         ->  Seq Scan on public.int8_tbl c
+               Output: c.q1, c.q2
+(11 rows)
+
+select * from
+  int8_tbl a left join lateral
+  (select b.q1 as bq1, c.q1 as cq1, least(a.q1,b.q1,c.q1) from
+   int8_tbl b cross join int8_tbl c) ss
+  on a.q2 = ss.bq1;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  DXL-to-PlStmt Translation: Attribute number 0 not found in project list
+        q1        |        q2         |       bq1        |       cq1        |      least       
+------------------+-------------------+------------------+------------------+------------------
+              123 |               456 |                  |                  |                 
+              123 |  4567890123456789 | 4567890123456789 |              123 |              123
+              123 |  4567890123456789 | 4567890123456789 |              123 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+              123 |  4567890123456789 | 4567890123456789 |              123 |              123
+              123 |  4567890123456789 | 4567890123456789 |              123 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+              123 |  4567890123456789 | 4567890123456789 |              123 |              123
+              123 |  4567890123456789 | 4567890123456789 |              123 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+              123 |  4567890123456789 | 4567890123456789 | 4567890123456789 |              123
+ 4567890123456789 |               123 |              123 |              123 |              123
+ 4567890123456789 |               123 |              123 |              123 |              123
+ 4567890123456789 |               123 |              123 | 4567890123456789 |              123
+ 4567890123456789 |               123 |              123 | 4567890123456789 |              123
+ 4567890123456789 |               123 |              123 | 4567890123456789 |              123
+ 4567890123456789 |               123 |              123 |              123 |              123
+ 4567890123456789 |               123 |              123 |              123 |              123
+ 4567890123456789 |               123 |              123 | 4567890123456789 |              123
+ 4567890123456789 |               123 |              123 | 4567890123456789 |              123
+ 4567890123456789 |               123 |              123 | 4567890123456789 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |              123 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |              123 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |              123 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |              123 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |              123 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |              123 |              123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 | 4567890123456789
+ 4567890123456789 | -4567890123456789 |                  |                  |                 
+(42 rows)
+
+-- case requiring nested PlaceHolderVars
+explain (verbose, costs off)
+select * from
+  int8_tbl c left join (
+    int8_tbl a left join (select q1, coalesce(q2,42) as x from int8_tbl b) ss1
+      on a.q2 = ss1.q1
+    cross join
+    lateral (select q1, coalesce(ss1.x,q2) as y from int8_tbl d) ss2
+  ) on c.q2 = ss2.q1,
+  lateral (select ss2.y offset 0) ss3;
+                                                                                     QUERY PLAN                                                                                     
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop
+   Output: c.q1, c.q2, a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint)), d.q1, (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)), ((COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)))
+   Join Filter: true
+   ->  Hash Right Join
+         Output: c.q1, c.q2, a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint)), d.q1, (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
+         Hash Cond: (d.q1 = c.q2)
+         ->  Nested Loop
+               Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint)), d.q1, (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
+               Join Filter: true
+               ->  Hash Left Join
+                     Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint))
+                     Hash Cond: (a.q2 = b.q1)
+                     ->  Seq Scan on public.int8_tbl a
+                           Output: a.q1, a.q2
+                     ->  Hash
+                           Output: (COALESCE(b.q2, '42'::bigint)), b.q1
+                           ->  Seq Scan on public.int8_tbl b
+                                 Output: COALESCE(b.q2, '42'::bigint), b.q1
+               ->  Materialize
+                     Output: (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)), d.q1
+                     ->  Result
+                           Output: COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2), d.q1
+                           ->  Seq Scan on public.int8_tbl d
+                                 Output: d.q1, d.q2
+         ->  Hash
+               Output: c.q1, c.q2
+               ->  Seq Scan on public.int8_tbl c
+                     Output: c.q1, c.q2
+   ->  Materialize
+         Output: ((COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)))
+         ->  Result
+               Output: (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
+               ->  Result
+                     Output: true
+ Optimizer: pg_orca
+(35 rows)
+
+-- another case requiring nested PlaceHolderVars
+explain (verbose, costs off)
+select * from
+  (select 0 as val0) as ss0
+  left join (select 1 as val) as ss1 on true
+  left join lateral (select ss1.val as val_filtered where false) as ss2 on true;
+                  QUERY PLAN                  
+----------------------------------------------
+ Nested Loop Left Join
+   Output: (0), (1), (NULL::integer)
+   Join Filter: true
+   ->  Nested Loop Left Join
+         Output: (0), (1)
+         Join Filter: true
+         ->  Result
+               Output: 0
+         ->  Materialize
+               Output: (1)
+               ->  Result
+                     Output: 1
+   ->  Result
+         Output: NULL::boolean, NULL::integer
+         One-Time Filter: false
+ Optimizer: pg_orca
+(16 rows)
+
+select * from
+  (select 0 as val0) as ss0
+  left join (select 1 as val) as ss1 on true
+  left join lateral (select ss1.val as val_filtered where false) as ss2 on true;
+ val0 | val | val_filtered 
+------+-----+--------------
+    0 |   1 |             
+(1 row)
+
+-- case that breaks the old ph_may_need optimization
+explain (verbose, costs off)
+select c.*,a.*,ss1.q1,ss2.q1,ss3.* from
+  int8_tbl c left join (
+    int8_tbl a left join
+      (select q1, coalesce(q2,f1) as x from int8_tbl b, int4_tbl b2
+       where q1 < f1) ss1
+      on a.q2 = ss1.q1
+    cross join
+    lateral (select q1, coalesce(ss1.x,q2) as y from int8_tbl d) ss2
+  ) on c.q2 = ss2.q1,
+  lateral (select * from int4_tbl i where ss2.y > f1) ss3;
+                                               QUERY PLAN                                                
+---------------------------------------------------------------------------------------------------------
+ Nested Loop
+   Output: c.q1, c.q2, a.q1, a.q2, b.q1, d.q1, i.f1
+   Join Filter: ((COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2)) > i.f1)
+   ->  Hash Right Join
+         Output: c.q1, c.q2, a.q1, a.q2, b.q1, d.q1, (COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2))
+         Hash Cond: (d.q1 = c.q2)
+         ->  Nested Loop
+               Output: a.q1, a.q2, b.q1, d.q1, (COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2))
+               Join Filter: true
+               ->  Hash Left Join
+                     Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, (b2.f1)::bigint))
+                     Hash Cond: (a.q2 = b.q1)
+                     ->  Seq Scan on public.int8_tbl a
+                           Output: a.q1, a.q2
+                     ->  Hash
+                           Output: (COALESCE(b.q2, (b2.f1)::bigint)), b.q1
+                           ->  Nested Loop
+                                 Output: COALESCE(b.q2, (b2.f1)::bigint), b.q1
+                                 Join Filter: (b.q1 < b2.f1)
+                                 ->  Seq Scan on public.int8_tbl b
+                                       Output: b.q1, b.q2
+                                 ->  Seq Scan on public.int4_tbl b2
+                                       Output: b2.f1
+               ->  Materialize
+                     Output: (COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2)), d.q1
+                     ->  Result
+                           Output: COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2), d.q1
+                           ->  Seq Scan on public.int8_tbl d
+                                 Output: d.q1, d.q2
+         ->  Hash
+               Output: c.q1, c.q2
+               ->  Seq Scan on public.int8_tbl c
+                     Output: c.q1, c.q2
+   ->  Seq Scan on public.int4_tbl i
+         Output: i.f1
+ Optimizer: pg_orca
+(36 rows)
+
+-- check processing of postponed quals (bug #9041)
+explain (verbose, costs off)
+select * from
+  (select 1 as x offset 0) x cross join (select 2 as y offset 0) y
+  left join lateral (
+    select * from (select 3 as z offset 0) z where z.z = x.x
+  ) zz on zz.z = y.y;
+                 QUERY PLAN                 
+--------------------------------------------
+ Hash Left Join
+   Output: (1), (2), (3)
+   Hash Cond: (((2) = (3)) AND ((1) = (3)))
+   ->  Nested Loop
+         Output: (1), (2)
+         Join Filter: true
+         ->  Result
+               Output: 1
+         ->  Materialize
+               Output: (2)
+               ->  Result
+                     Output: 2
+   ->  Hash
+         Output: (3)
+         ->  Result
+               Output: 3
+ Optimizer: pg_orca
+(17 rows)
+
+-- check dummy rels with lateral references (bug #15694)
+explain (verbose, costs off)
+select * from int8_tbl i8 left join lateral
+  (select *, i8.q2 from int4_tbl where false) ss on true;
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Nested Loop Left Join
+   Output: q1, q2, (NULL::integer), (NULL::bigint)
+   Join Filter: true
+   ->  Seq Scan on public.int8_tbl i8
+         Output: q1, q2
+   ->  Result
+         Output: NULL::integer, NULL::tid, NULL::xid, NULL::cid, NULL::xid, NULL::cid, NULL::oid, NULL::bigint
+         One-Time Filter: false
+ Optimizer: pg_orca
+(9 rows)
+
+select * from int8_tbl i8 left join lateral
+  (select *, i8.q2 from int4_tbl where false) ss on true;
+        q1        |        q2         | f1 | q2 
+------------------+-------------------+----+----
+              123 |               456 |    |   
+              123 |  4567890123456789 |    |   
+ 4567890123456789 |               123 |    |   
+ 4567890123456789 |  4567890123456789 |    |   
+ 4567890123456789 | -4567890123456789 |    |   
+(5 rows)
+
+-- check handling of nested appendrels inside LATERAL
+select * from
+  ((select 2 as v) union all (select 3 as v)) as q1
+  cross join lateral
+  ((select * from
+      ((select 4 as v) union all (select 5 as v)) as q3)
+   union all
+   (select q1.v)
+  ) as q2;
+ v | v 
+---+---
+ 2 | 4
+ 2 | 5
+ 2 | 2
+ 3 | 4
+ 3 | 5
+ 3 | 3
+(6 rows)
+
+-- check we don't try to do a unique-ified semijoin with LATERAL
+explain (verbose, costs off)
+select * from
+  (values (0,9998), (1,1000)) v(id,x),
+  lateral (select f1 from int4_tbl
+           where f1 = any (select unique1 from tenk1
+                           where unique2 = v.x offset 0)) ss;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because no plan has been computed for required properties in GPORCA
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Nested Loop
+   Output: "*VALUES*".column1, "*VALUES*".column2, int4_tbl.f1
+   ->  Values Scan on "*VALUES*"
+         Output: "*VALUES*".column1, "*VALUES*".column2
+   ->  Nested Loop Semi Join
+         Output: int4_tbl.f1
+         Join Filter: (int4_tbl.f1 = tenk1.unique1)
+         ->  Seq Scan on public.int4_tbl
+               Output: int4_tbl.f1
+         ->  Materialize
+               Output: tenk1.unique1
+               ->  Seq Scan on public.tenk1
+                     Output: tenk1.unique1
+                     Filter: (tenk1.unique2 = "*VALUES*".column2)
+(14 rows)
+
+select * from
+  (values (0,9998), (1,1000)) v(id,x),
+  lateral (select f1 from int4_tbl
+           where f1 = any (select unique1 from tenk1
+                           where unique2 = v.x offset 0)) ss;
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because no plan has been computed for required properties in GPORCA
+ id |  x   | f1 
+----+------+----
+  0 | 9998 |  0
+(1 row)
+
+-- test some error cases where LATERAL should have been used but wasn't
+select f1,g from int4_tbl a, (select f1 as g) ss;
+ERROR:  column "f1" does not exist
+LINE 1: select f1,g from int4_tbl a, (select f1 as g) ss;
+                                             ^
+DETAIL:  There is a column named "f1" in table "a", but it cannot be referenced from this part of the query.
+HINT:  To reference that column, you must mark this subquery with LATERAL.
+select f1,g from int4_tbl a, (select a.f1 as g) ss;
+ERROR:  invalid reference to FROM-clause entry for table "a"
+LINE 1: select f1,g from int4_tbl a, (select a.f1 as g) ss;
+                                             ^
+DETAIL:  There is an entry for table "a", but it cannot be referenced from this part of the query.
+HINT:  To reference that table, you must mark this subquery with LATERAL.
+select f1,g from int4_tbl a cross join (select f1 as g) ss;
+ERROR:  column "f1" does not exist
+LINE 1: select f1,g from int4_tbl a cross join (select f1 as g) ss;
+                                                       ^
+DETAIL:  There is a column named "f1" in table "a", but it cannot be referenced from this part of the query.
+HINT:  To reference that column, you must mark this subquery with LATERAL.
+select f1,g from int4_tbl a cross join (select a.f1 as g) ss;
+ERROR:  invalid reference to FROM-clause entry for table "a"
+LINE 1: select f1,g from int4_tbl a cross join (select a.f1 as g) ss...
+                                                       ^
+DETAIL:  There is an entry for table "a", but it cannot be referenced from this part of the query.
+HINT:  To reference that table, you must mark this subquery with LATERAL.
+-- SQL:2008 says the left table is in scope but illegal to access here
+select f1,g from int4_tbl a right join lateral generate_series(0, a.f1) g on true;
+ERROR:  invalid reference to FROM-clause entry for table "a"
+LINE 1: ... int4_tbl a right join lateral generate_series(0, a.f1) g on...
+                                                             ^
+DETAIL:  The combining JOIN type must be INNER or LEFT for a LATERAL reference.
+select f1,g from int4_tbl a full join lateral generate_series(0, a.f1) g on true;
+ERROR:  invalid reference to FROM-clause entry for table "a"
+LINE 1: ...m int4_tbl a full join lateral generate_series(0, a.f1) g on...
+                                                             ^
+DETAIL:  The combining JOIN type must be INNER or LEFT for a LATERAL reference.
+-- check we complain about ambiguous table references
+select * from
+  int8_tbl x cross join (int4_tbl x cross join lateral (select x.f1) ss);
+ERROR:  table reference "x" is ambiguous
+LINE 2: ...cross join (int4_tbl x cross join lateral (select x.f1) ss);
+                                                             ^
+-- LATERAL can be used to put an aggregate into the FROM clause of its query
+select 1 from tenk1 a, lateral (select max(a.unique1) from int4_tbl b) ss;
+ERROR:  aggregate functions are not allowed in FROM clause of their own query level
+LINE 1: select 1 from tenk1 a, lateral (select max(a.unique1) from i...
+                                               ^
+-- check behavior of LATERAL in UPDATE/DELETE
+create temp table xx1 as select f1 as x1, -f1 as x2 from int4_tbl;
+-- error, can't do this:
+update xx1 set x2 = f1 from (select * from int4_tbl where f1 = x1) ss;
+ERROR:  column "x1" does not exist
+LINE 1: ... set x2 = f1 from (select * from int4_tbl where f1 = x1) ss;
+                                                                ^
+DETAIL:  There is a column named "x1" in table "xx1", but it cannot be referenced from this part of the query.
+update xx1 set x2 = f1 from (select * from int4_tbl where f1 = xx1.x1) ss;
+ERROR:  invalid reference to FROM-clause entry for table "xx1"
+LINE 1: ...t x2 = f1 from (select * from int4_tbl where f1 = xx1.x1) ss...
+                                                             ^
+DETAIL:  There is an entry for table "xx1", but it cannot be referenced from this part of the query.
+-- can't do it even with LATERAL:
+update xx1 set x2 = f1 from lateral (select * from int4_tbl where f1 = x1) ss;
+ERROR:  invalid reference to FROM-clause entry for table "xx1"
+LINE 1: ...= f1 from lateral (select * from int4_tbl where f1 = x1) ss;
+                                                                ^
+HINT:  There is an entry for table "xx1", but it cannot be referenced from this part of the query.
+-- we might in future allow something like this, but for now it's an error:
+update xx1 set x2 = f1 from xx1, lateral (select * from int4_tbl where f1 = x1) ss;
+ERROR:  table name "xx1" specified more than once
+-- also errors:
+delete from xx1 using (select * from int4_tbl where f1 = x1) ss;
+ERROR:  column "x1" does not exist
+LINE 1: ...te from xx1 using (select * from int4_tbl where f1 = x1) ss;
+                                                                ^
+DETAIL:  There is a column named "x1" in table "xx1", but it cannot be referenced from this part of the query.
+delete from xx1 using (select * from int4_tbl where f1 = xx1.x1) ss;
+ERROR:  invalid reference to FROM-clause entry for table "xx1"
+LINE 1: ...from xx1 using (select * from int4_tbl where f1 = xx1.x1) ss...
+                                                             ^
+DETAIL:  There is an entry for table "xx1", but it cannot be referenced from this part of the query.
+delete from xx1 using lateral (select * from int4_tbl where f1 = x1) ss;
+ERROR:  invalid reference to FROM-clause entry for table "xx1"
+LINE 1: ...xx1 using lateral (select * from int4_tbl where f1 = x1) ss;
+                                                                ^
+HINT:  There is an entry for table "xx1", but it cannot be referenced from this part of the query.
+-- cleanup
+-- start_ignore
+DROP TABLE int2_tbl, int4_tbl, int8_tbl, tenk1, onerow CASCADE;
+-- end_ignore
