@@ -3488,6 +3488,18 @@ CTranslatorQueryToDXL::TranslateValueScanRTEToDXL(const RangeTblEntry *rte,
 	const ULONG num_of_tuples = gpdb::ListLength(tuples_list);
 	GPOS_ASSERT(0 < num_of_tuples);
 
+	// Reject zero-column VALUES (e.g. VALUES(n.*) where n has no columns).
+	// PG represents such a row as an empty List (NIL == NULL). The loop below
+	// would dereference the NIL tuple via IsA(tuple_list, List) and SIGSEGV.
+	// ORCA cannot represent a zero-column relation in DXL either; fall back
+	// to the PG planner.
+	if (nullptr == rte->eref || nullptr == rte->eref->colnames ||
+		nullptr == (List *) gpdb::ListNth(tuples_list, 0))
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+				   GPOS_WSZ_LIT("Zero-column VALUES clause"));
+	}
+
 	// children of the UNION ALL
 	CDXLNodeArray *dxlnodes = GPOS_NEW(m_mp) CDXLNodeArray(m_mp);
 
