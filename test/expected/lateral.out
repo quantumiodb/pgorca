@@ -576,6 +576,35 @@ SELECT a.id, u FROM lat_arr a, LATERAL unnest(a.nums) AS u ORDER BY a.id, u;
   2 | 6
 (6 rows)
 
+-- E13: zero-column VALUES in LATERAL (PG select.sql corner case).
+-- Each row is a NIL list; translated as a dummy-column const table, must not
+-- fall back or crash and must preserve the VALUES row count.
+-- start_ignore
+DROP TABLE IF EXISTS lat_nocols;
+-- end_ignore
+CREATE TABLE lat_nocols ();
+INSERT INTO lat_nocols DEFAULT VALUES;
+INSERT INTO lat_nocols DEFAULT VALUES;
+EXPLAIN (COSTS OFF) SELECT * FROM lat_nocols n, LATERAL (VALUES (n.*)) v;
+           QUERY PLAN           
+--------------------------------
+ Nested Loop
+   Join Filter: true
+   ->  Result
+   ->  Seq Scan on lat_nocols n
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT * FROM lat_nocols n, LATERAL (VALUES (n.*)) v;
+--
+(2 rows)
+
+SELECT count(*) FROM lat_nocols n, LATERAL (VALUES (n.*), (n.*), (n.*)) v;
+ count 
+-------
+     6
+(1 row)
+
 -- cleanup
 -- start_ignore
 DROP TABLE lat_t1;
@@ -585,4 +614,5 @@ DROP TABLE lat_nb;
 DROP TABLE lat_nc;
 DROP TABLE lat_ins;
 DROP TABLE lat_arr;
+DROP TABLE lat_nocols;
 -- end_ignore

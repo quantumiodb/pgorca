@@ -3488,16 +3488,43 @@ CTranslatorQueryToDXL::TranslateValueScanRTEToDXL(const RangeTblEntry *rte,
 	const ULONG num_of_tuples = gpdb::ListLength(tuples_list);
 	GPOS_ASSERT(0 < num_of_tuples);
 
-	// Reject zero-column VALUES (e.g. VALUES(n.*) where n has no columns).
-	// PG represents such a row as an empty List (NIL == NULL). The loop below
-	// would dereference the NIL tuple via IsA(tuple_list, List) and SIGSEGV.
-	// ORCA cannot represent a zero-column relation in DXL either; fall back
-	// to the PG planner.
-	if (nullptr == rte->eref || nullptr == rte->eref->colnames ||
-		nullptr == (List *) gpdb::ListNth(tuples_list, 0))
+	// Zero-column VALUES (e.g. VALUES(n.*) where n has no columns): PG
+	// represents each row as an empty List (NIL == NULL); the loop below
+	// would dereference that NIL via IsA(tuple_list, List). DXL cannot
+	// represent a zero-column relation, so synthesize a const table with a
+	// single dummy bool column per row. The RTE has no columns, so no Var can
+	// ever reference the dummy; only the row count is semantically relevant.
+	if (nullptr == (List *) gpdb::ListNth(tuples_list, 0))
 	{
-		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
-				   GPOS_WSZ_LIT("Zero-column VALUES clause"));
+		Const *dummy_const = (Const *) gpdb::MakeBoolConst(true /* value */,
+														   false /* isnull */);
+
+		CWStringDynamic *dummy_name_str =
+			CDXLUtils::CreateDynamicStringFromCharArray(m_mp, "dummy");
+		CMDName *mdname = GPOS_NEW(m_mp) CMDName(m_mp, dummy_name_str);
+		GPOS_DELETE(dummy_name_str);
+
+		CDXLColDescrArray *dummy_col_descrs =
+			GPOS_NEW(m_mp) CDXLColDescrArray(m_mp);
+		dummy_col_descrs->Append(GPOS_NEW(m_mp) CDXLColDescr(
+			mdname, m_context->m_colid_counter->next_id(), 1 /* attno */,
+			GPOS_NEW(m_mp)
+				CMDIdGPDB(IMDId::EmdidGeneral, dummy_const->consttype),
+			dummy_const->consttypmod, false /* is_dropped */));
+
+		CDXLDatum2dArray *dummy_rows = GPOS_NEW(m_mp) CDXLDatum2dArray(m_mp);
+		for (ULONG ul = 0; ul < num_of_tuples; ul++)
+		{
+			GPOS_ASSERT(nullptr == gpdb::ListNth(tuples_list, ul));
+			CDXLDatumArray *row = GPOS_NEW(m_mp) CDXLDatumArray(m_mp);
+			row->Append(m_scalar_translator->TranslateConstToDXL(dummy_const));
+			dummy_rows->Append(row);
+		}
+
+		// nothing to register in the var mapping: the RTE has no columns
+		return GPOS_NEW(m_mp) CDXLNode(
+			m_mp, GPOS_NEW(m_mp) CDXLLogicalConstTable(m_mp, dummy_col_descrs,
+													   dummy_rows));
 	}
 
 	// children of the UNION ALL

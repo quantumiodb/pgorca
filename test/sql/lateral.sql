@@ -297,6 +297,19 @@ CREATE TABLE lat_arr (id int, nums int[]);
 INSERT INTO lat_arr VALUES (1, ARRAY[1,3,5]), (2, ARRAY[2,4,6]);
 SELECT a.id, u FROM lat_arr a, LATERAL unnest(a.nums) AS u ORDER BY a.id, u;
 
+-- E13: zero-column VALUES in LATERAL (PG select.sql corner case).
+-- Each row is a NIL list; translated as a dummy-column const table, must not
+-- fall back or crash and must preserve the VALUES row count.
+-- start_ignore
+DROP TABLE IF EXISTS lat_nocols;
+-- end_ignore
+CREATE TABLE lat_nocols ();
+INSERT INTO lat_nocols DEFAULT VALUES;
+INSERT INTO lat_nocols DEFAULT VALUES;
+EXPLAIN (COSTS OFF) SELECT * FROM lat_nocols n, LATERAL (VALUES (n.*)) v;
+SELECT * FROM lat_nocols n, LATERAL (VALUES (n.*)) v;
+SELECT count(*) FROM lat_nocols n, LATERAL (VALUES (n.*), (n.*), (n.*)) v;
+
 -- cleanup
 -- start_ignore
 DROP TABLE lat_t1;
@@ -306,4 +319,5 @@ DROP TABLE lat_nb;
 DROP TABLE lat_nc;
 DROP TABLE lat_ins;
 DROP TABLE lat_arr;
+DROP TABLE lat_nocols;
 -- end_ignore
