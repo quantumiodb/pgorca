@@ -16,6 +16,8 @@ ORCA is a cost-based, rule-driven query optimizer that operates on an intermedia
 
 This project extracts ORCA's four core libraries and the PostgreSQL integration layer from Apache Cloudberry, adapts them for PG18, and packages the result as a `CREATE EXTENSION`-installable plugin.
 
+The ORCA optimizer is the work of many people from the Greenplum, Pivotal/VMware, and Apache Cloudberry projects. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for acknowledgments.
+
 ### Components
 
 | Directory | Description |
