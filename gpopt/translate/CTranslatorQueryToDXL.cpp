@@ -1986,7 +1986,7 @@ CTranslatorQueryToDXL::TranslateSortColumsToDXL(
 
 		CDXLScalarSortCol *sc_sort_col_dxlop = GPOS_NEW(m_mp)
 			CDXLScalarSortCol(m_mp, colid, op_mdid,
-							  GPOS_NEW(m_mp) CWStringConst(str->GetBuffer()),
+							  GPOS_NEW(m_mp) CWStringConst(m_mp, str->GetBuffer()),
 							  sort_group_clause->nulls_first);
 
 		// create the DXL node holding the sorting col
