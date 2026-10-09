@@ -89,6 +89,13 @@ jobs:
           dnf -qy module disable postgresql
           dnf -y install \
             https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          # pgdg-redhat-repo >= 42.0-70 (2026-09-27) builds its baseurls from
+          # rhel-$releasever_major.$releasever_minor-$basearch.  CentOS Stream and
+          # Rocky report releasever=9 with an empty minor, so that expands to
+          # "rhel-9.-x86_64" and every PGDG repo 404s.  Point it back at the
+          # generic rhel-$releasever tree, which PGDG still publishes.
+          sed -i 's/\$releasever_major\.\$releasever_minor/$releasever/g' \
+            /etc/yum.repos.d/pgdg-redhat-all.repo
           dnf -y install \
             postgresql18 postgresql18-server postgresql18-devel \
             xerces-c-devel \
@@ -158,6 +165,13 @@ jobs:
           dnf -qy module disable postgresql
           dnf -y install \
             https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          # pgdg-redhat-repo >= 42.0-70 (2026-09-27) builds its baseurls from
+          # rhel-$releasever_major.$releasever_minor-$basearch.  CentOS Stream and
+          # Rocky report releasever=9 with an empty minor, so that expands to
+          # "rhel-9.-x86_64" and every PGDG repo 404s.  Point it back at the
+          # generic rhel-$releasever tree, which PGDG still publishes.
+          sed -i 's/\$releasever_major\.\$releasever_minor/$releasever/g' \
+            /etc/yum.repos.d/pgdg-redhat-all.repo
           dnf -y install \
             postgresql18-devel \
             xerces-c-devel \
@@ -205,6 +219,13 @@ jobs:
           dnf -qy module disable postgresql
           dnf -y install \
             https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          # pgdg-redhat-repo >= 42.0-70 (2026-09-27) builds its baseurls from
+          # rhel-$releasever_major.$releasever_minor-$basearch.  CentOS Stream and
+          # Rocky report releasever=9 with an empty minor, so that expands to
+          # "rhel-9.-x86_64" and every PGDG repo 404s.  Point it back at the
+          # generic rhel-$releasever tree, which PGDG still publishes.
+          sed -i 's/\$releasever_major\.\$releasever_minor/$releasever/g' \
+            /etc/yum.repos.d/pgdg-redhat-all.repo
           dnf -y config-manager --set-enabled pgdg19-updates-testing
           dnf -y install \
             postgresql19 postgresql19-server postgresql19-contrib postgresql19-devel \
