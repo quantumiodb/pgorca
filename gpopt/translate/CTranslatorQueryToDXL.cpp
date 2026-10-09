@@ -376,30 +376,6 @@ CTranslatorQueryToDXL::CheckUnsupportedNodeTypes(Query *query)
 				   GPOS_WSZ_LIT(
 					   "ORDER BY with ordering operator (amcanorderbyop)"));
 	}
-
-#if PG_VERSION_NUM >= 190000
-	// PG19 SQL/PGQ: defense-in-depth.  The rewriter is supposed to convert
-	// every RTE_GRAPH_TABLE into RTE_SUBQUERY (with a LATERAL-joined
-	// expansion) before the planner_hook runs, so under normal operation
-	// this branch is unreachable.  But if a future PG bug or partial-rewrite
-	// path ever leaves an RTE_GRAPH_TABLE in the rtable, we want a clean
-	// fallback to the PG planner instead of CTranslatorQueryToDXL's
-	// "unsupported RTE kind" exception (which would still work but is less
-	// specific).  This check runs at every query level — when the outer
-	// constructor calls CheckUnsupportedNodeTypes on a sub-Query it sees
-	// only that sub-Query's rtable.
-	ListCell *lc;
-	foreach (lc, query->rtable)
-	{
-		RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
-		if (RTE_GRAPH_TABLE == rte->rtekind)
-		{
-			GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
-					   GPOS_WSZ_LIT("GRAPH_TABLE (SQL/PGQ)"));
-		}
-	}
-#endif
-
 }
 
 //---------------------------------------------------------------------------

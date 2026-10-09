@@ -35,6 +35,8 @@ extern "C" {
 #include "rewrite/rewriteManip.h"
 }
 
+#include <climits>	/* INT_MAX for GUC bounds; no longer reachable via PG19 headers */
+
 /* ORCA entry points (C linkage, defined in gpopt/CGPOptimizer.cpp) */
 extern "C" {
 extern void        InitGPOPT(void);
