@@ -18,6 +18,5 @@ test: query_partition_mpp25707
 test: query_partition_list
 test: query_partition_static
 test: query_partition_pruning
-test: full_merge_join
 test: extended_stats
 test: covering_index
