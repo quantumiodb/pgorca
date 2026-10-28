@@ -746,9 +746,6 @@ bool ContainVolatileFunctions(Node *node);
 RTEPermissionInfo *
 GetRTEPermissionInfo(List *rteperminfos, const RangeTblEntry *rte);
 
-gpos::BOOL WalkQueryTree(Query *query, bool (*walker)(), void *context,
-						 int flags);
-
 // returns true if relid has any parent in pg_inherits (i.e. is a partition)
 bool HasSuperclass(Oid relid);
 

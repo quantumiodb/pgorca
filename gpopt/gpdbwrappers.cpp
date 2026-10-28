@@ -453,17 +453,6 @@ gpdb::WalkExpressionTree(Node *node, bool (*walker)(Node *, void *), void *conte
 	return false;
 }
 
-gpos::BOOL
-gpdb::WalkQueryTree(Query *query, bool (*walker)(), void *context, int flags)
-{
-	GP_WRAP_START;
-	{
-		return query_tree_walker(query, walker, context, flags);
-	}
-	GP_WRAP_END;
-	return false;
-}
-
 Oid
 gpdb::ExprType(Node *expr)
 {
