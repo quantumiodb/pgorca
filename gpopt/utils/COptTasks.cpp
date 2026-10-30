@@ -836,6 +836,19 @@ COptTasks::GPOPTOptimizedPlan(Query *query, SOptContext *gpopt_context)
 bool
 COptTasks::SetXform(char *xform_str, bool should_disable)
 {
+	/*
+	 * The xform factory singleton is created lazily by InitGPOPT(). The
+	 * enable_xform()/disable_xform() UDFs run pg_orca_ensure_initialized()
+	 * before calling here, but Pxff() is a bare accessor without a NULL check,
+	 * so a caller that skips the lazy init would dereference a NULL pointer.
+	 * There is nothing to enable or disable without a factory, so treat this
+	 * like an unknown xform.
+	 */
+	if (nullptr == CXformFactory::Pxff())
+	{
+		return false;
+	}
+
 	CXform *xform = CXformFactory::Pxff()->Pxf(xform_str);
 	if (nullptr != xform)
 	{

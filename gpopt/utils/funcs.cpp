@@ -45,6 +45,12 @@ PG_FUNCTION_INFO_V1(DisableXform);
 
 Datum DisableXform(PG_FUNCTION_ARGS)
 {
+	/* the SQL declaration may not be STRICT, so check for NULL input here */
+	if (PG_ARGISNULL(0))
+	{
+		PG_RETURN_NULL();
+	}
+
 	char *szXform = text_to_cstring(PG_GETARG_TEXT_P(0));
 	pg_orca_ensure_initialized();
 	bool is_result = COptTasks::SetXform(szXform, true /*fDisable*/);
@@ -80,6 +86,12 @@ PG_FUNCTION_INFO_V1(EnableXform);
 
 Datum EnableXform(PG_FUNCTION_ARGS)
 {
+	/* the SQL declaration may not be STRICT, so check for NULL input here */
+	if (PG_ARGISNULL(0))
+	{
+		PG_RETURN_NULL();
+	}
+
 	char *szXform = text_to_cstring(PG_GETARG_TEXT_P(0));
 	pg_orca_ensure_initialized();
 	bool is_result = COptTasks::SetXform(szXform, false /*fDisable*/);
