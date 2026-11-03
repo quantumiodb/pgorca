@@ -4,6 +4,7 @@ test: olap_mdqa
 test: query_window
 test: query_uniontypes
 test: query_aggfunc
+test: orca_agg_order_by
 test: nullable_unique_key
 test: percentile
 test: query_regexp

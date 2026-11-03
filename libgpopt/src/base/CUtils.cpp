@@ -4670,6 +4670,17 @@ CUtils::FHasAggWindowFunc(CExpression *pexpr)
 	return fHasAggWindowFunc;
 }
 
+// returns true if the given aggregate function has an ORDER BY clause
+BOOL
+CUtils::FAggHasOrderBy(CExpression *pexprAggFunc)
+{
+	GPOS_ASSERT(nullptr != pexprAggFunc);
+	GPOS_ASSERT(COperator::EopScalarAggFunc == pexprAggFunc->Pop()->Eopid());
+
+	return pexprAggFunc->Arity() > EaggfuncIndexOrder &&
+		   (*pexprAggFunc)[EaggfuncIndexOrder]->Arity() > 0;
+}
+
 
 // returns true if expression contains an ordered aggregate function that
 // should be split to an internal gp_percentile aggregate
