@@ -79,6 +79,20 @@ public:
 	// create all xforms
 	void Instantiate();
 
+	// Append extension-owned xforms after the built-in factory has been
+	// initialized.  Extension IDs must immediately follow the built-ins.
+	void
+	AddExtensionXform(CXform *xform)
+	{
+		Add(xform);
+	}
+
+	CMemoryPool *
+	Pmp() const
+	{
+		return m_mp;
+	}
+
 	// accessor by xform id
 	CXform *Pxf(CXform::EXformId exfid) const;
 

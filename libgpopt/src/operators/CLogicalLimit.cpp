@@ -18,6 +18,7 @@
 #include "gpopt/metadata/CName.h"
 #include "gpopt/metadata/CTableDescriptor.h"
 #include "gpopt/operators/CExpressionHandle.h"
+#include "gpopt/xforms/CXformFactory.h"
 #include "naucrates/base/IDatumInt8.h"
 #include "naucrates/md/IMDTypeInt8.h"
 #include "naucrates/statistics/CLimitStatsProcessor.h"
@@ -231,6 +232,14 @@ CLogicalLimit::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfSplitLimit);
 	(void) xform_set->ExchangeSet(CXform::ExfLimit2IndexGet);
 	(void) xform_set->ExchangeSet(CXform::ExfLimit2IndexOnlyGet);
+	if (CXformFactory::Pxff()->IsXformIdUsed(CXform::ExfDaftImplementLimit))
+	{
+		(void) xform_set->ExchangeSet(CXform::ExfDaftImplementLimit);
+	}
+	if (CXformFactory::Pxff()->IsXformIdUsed(CXform::ExfDaftImplementTopN))
+	{
+		(void) xform_set->ExchangeSet(CXform::ExfDaftImplementTopN);
+	}
 
 	return xform_set;
 }

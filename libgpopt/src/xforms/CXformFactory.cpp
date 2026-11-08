@@ -308,9 +308,9 @@ CXformFactory::Instantiate()
 			CXformSemiJoin2IndexApplyGeneric(m_mp, false /*generateBitmapPlans*/));
 	Add(GPOS_NEW(m_mp) CXformReduceAggInputViaCTE(m_mp));
 	Add(GPOS_NEW(m_mp) CXformLeftAntiSemiJoin2HashJoinBuildOuter(m_mp));
-
-	GPOS_ASSERT(nullptr != m_rgpxf[CXform::ExfSentinel - 1] &&
-				"Not all xforms have been instantiated");
+	GPOS_ASSERT(nullptr !=
+				m_rgpxf[CXform::ExfDaftImplementProject - 1] &&
+				"Not all built-in xforms have been instantiated");
 }
 
 
@@ -351,9 +351,8 @@ CXformFactory::Pxf(const CHAR *szXformName) const
 BOOL
 CXformFactory::IsXformIdUsed(CXform::EXformId exfid)
 {
-	GPOS_ASSERT(exfid <= m_lastAddedOrSkippedXformId);
-
-	return (nullptr != m_rgpxf[exfid]);
+	return exfid <= m_lastAddedOrSkippedXformId &&
+		   nullptr != m_rgpxf[exfid];
 }
 
 

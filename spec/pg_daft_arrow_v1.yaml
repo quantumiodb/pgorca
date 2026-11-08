@@ -1,0 +1,59 @@
+schema_version: 1
+contract_id: PGDAFT_ARROW_V1
+
+epoch:
+  postgres_epoch: "2000-01-01T00:00:00"
+  arrow_date_epoch: "1970-01-01"
+  arrow_timestamp_epoch: "1970-01-01T00:00:00"
+  pg_to_arrow_date_days: 10957
+  pg_to_arrow_timestamp_microseconds: 946684800000000
+
+# This is a transport whitelist, not permission to use every semantic
+# operation.  String compare/group/sort still requires UTF8 and C/POSIX
+# collation checks in the optimizer registry.
+types:
+  - {pg_oid: 16,   pg_type: bool,        arrow_format: b,         daft_dtype: Boolean}
+  - {pg_oid: 17,   pg_type: bytea,       arrow_format: z,         daft_dtype: Binary}
+  - {pg_oid: 20,   pg_type: int8,        arrow_format: l,         daft_dtype: Int64}
+  - {pg_oid: 21,   pg_type: int2,        arrow_format: s,         daft_dtype: Int16}
+  - {pg_oid: 23,   pg_type: int4,        arrow_format: i,         daft_dtype: Int32}
+  - {pg_oid: 25,   pg_type: text,        arrow_format: u,         daft_dtype: Utf8}
+  - {pg_oid: 1043, pg_type: varchar,     arrow_format: u,         daft_dtype: Utf8}
+  - {pg_oid: 1082, pg_type: date,        arrow_format: tdD,       daft_dtype: Date}
+  - {pg_oid: 1114, pg_type: timestamp,   arrow_format: "tsu:",    daft_dtype: TimestampMicroseconds}
+  - {pg_oid: 1184, pg_type: timestamptz, arrow_format: "tsu:UTC", daft_dtype: TimestampMicrosecondsUTC}
+
+explicitly_disabled_p0:
+  - {pg_oid: 700,  pg_type: float4, reason: PG_NAN_AND_ORDER_SEMANTICS_NOT_ADMITTED}
+  - {pg_oid: 701,  pg_type: float8, reason: PG_NAN_AND_ORDER_SEMANTICS_NOT_ADMITTED}
+  - {pg_oid: 1700, pg_type: numeric, reason: PRECISION_ROUNDING_OVERFLOW_NOT_ADMITTED}
+
+schema_fingerprint:
+  algorithm: sha256
+  domain_ascii: PGDAFT_ARROW_SCHEMA_V1
+  integer_encoding: unsigned_big_endian
+  signed_typmod_encoding: int32_twos_complement_as_uint32_big_endian
+  column_order_significant: true
+  field_encoding:
+    - {name: zero_based_ordinal, width_bytes: 4}
+    - {name: pg_oid, width_bytes: 4}
+    - {name: typmod, width_bytes: 4}
+    - {name: collation_oid, width_bytes: 4}
+    - {name: nullable, width_bytes: 1, values: {false: 0, true: 1}}
+    - {name: arrow_format_length, width_bytes: 1}
+    - {name: arrow_format, width_bytes: arrow_format_length, encoding: ascii}
+  stream:
+    - domain_ascii_without_nul
+    - schema_version_u32
+    - field_count_u32
+    - each_field_in_column_order
+  deliberately_excluded:
+    - column_name
+    - physical_buffer_addresses
+    - relation_oid
+  unknown_oid_or_format: reject
+  test_vector:
+    fields:
+      - {pg_oid: 23, typmod: -1, collation_oid: 0, nullable: false}
+      - {pg_oid: 1043, typmod: 24, collation_oid: 950, nullable: true}
+    sha256_hex: e5bac7135f18851716d3a7f8f74cfa08fb3bc780e7f617de220bb49f9ab7be96

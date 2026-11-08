@@ -1,0 +1,28 @@
+-- =====================================================================
+-- daft_memo.sql  (P0-008-F)
+-- Off mode is the SQL correctness baseline while the query-frozen capability
+-- snapshot is published around GPOPTOptimizedPlan.  Legal PG/Daft alternatives
+-- and the calibrated small/large winner flip are checked by the production-
+-- formula memo/cost selftest; this SQL file does not pretend an off-mode plan
+-- contains a Daft candidate.
+-- =====================================================================
+SET pg_orca.enable_orca = on;
+SET pg_orca.daft_enable = 'off';
+CREATE TABLE daft_memo_t(id int, v text);
+INSERT INTO daft_memo_t VALUES (1,'a'),(2,'b'),(3,'a'),(4,'b'),(5,'a');
+-- aggregate + projection + limit over the table, deterministic order
+SELECT v, count(*) AS n FROM daft_memo_t GROUP BY v ORDER BY v;
+ v | n 
+---+---
+ a | 3
+ b | 2
+(2 rows)
+
+SELECT id, v FROM daft_memo_t ORDER BY id LIMIT 2;
+ id | v 
+----+---
+  1 | a
+  2 | b
+(2 rows)
+
+-- end of daft_memo

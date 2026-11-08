@@ -10,7 +10,8 @@ PG_REGRESS=${PG_REGRESS:-$_PGXS_REGRESS/pg_regress}
 # e.g.: export PG_REGRESS_SQL=/path/to/postgresql/src/test/regress
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/../build"
+export PGD_WORKSPACE="${PGD_WORKSPACE:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+BUILD_DIR="${PG_ORCA_TEST_BUILD_DIR:-$SCRIPT_DIR/../build}"
 TEMP_INSTANCE="$BUILD_DIR/tmp_check_parallel"
 OUTPUT_DIR="$BUILD_DIR/test_parallel"
 
@@ -102,15 +103,22 @@ if [[ $USE_EXISTING -eq 0 ]]; then
 fi
 
 if [[ ${#TEST_NAMES[@]} -gt 0 ]]; then
-    # Run only the named tests against the PG regress SQL dir
-    if [[ -z "${PG_REGRESS_SQL:-}" ]]; then
-        echo "ERROR: PG_REGRESS_SQL is not set. Point it to the PostgreSQL source tree:" >&2
-        echo "  export PG_REGRESS_SQL=/path/to/postgresql/src/test/regress" >&2
-        exit 1
+    # Run only the named tests from the suite selected above.  In particular,
+    # `--orca-tests daft_loader` must read pg_orca/test/sql/daft_loader.sql,
+    # not look for an integration-only test in the PostgreSQL core tree.
+    if [[ $RUN_PG_TESTS -eq 1 ]]; then
+        if [[ -z "${PG_REGRESS_SQL:-}" ]]; then
+            echo "ERROR: PG_REGRESS_SQL is not set. Point it to the PostgreSQL source tree:" >&2
+            echo "  export PG_REGRESS_SQL=/path/to/postgresql/src/test/regress" >&2
+            exit 1
+        fi
+        NAMED_INPUT_DIR="$PG_REGRESS_SQL"
+    else
+        NAMED_INPUT_DIR="$SCRIPT_DIR"
     fi
     exec "$PG_REGRESS" \
         "${COMMON_OPTS[@]}" \
-        --inputdir="$PG_REGRESS_SQL" \
+        --inputdir="$NAMED_INPUT_DIR" \
         "${PG_REGRESS_OPTS[@]+"${PG_REGRESS_OPTS[@]}"}" \
         "${TEST_NAMES[@]}"
 elif [[ $RUN_PG_TESTS -eq 1 ]]; then

@@ -23,6 +23,7 @@
 #include "gpopt/base/CCostContext.h"
 #include "gpopt/base/CDrvdPropCtxtPlan.h"
 #include "gpopt/base/CEnfdPartitionPropagation.h"
+#include "gpopt/base/CEnfdExecutionFormat.h"
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/base/COptimizationContext.h"
 #include "gpopt/base/CQueryContext.h"
@@ -545,6 +546,33 @@ CEngine::FOptimizeChild(
 	}
 
 	COperator *popChild = pgexprChild->Pop();
+
+	/*
+	 * Execution-format conversion is symmetric.  An enforcer is inserted into
+	 * the same Memo group and may later choose any equivalent group expression
+	 * as its child, not only the expression that originally requested it.
+	 * Reject the two immediately opposite pairs here or optimization alternates
+	 * forever between the PG_ROW and DAFT_ARROW contexts:
+	 *
+	 *   ArrowToPg -> PgToArrow -> same group
+	 *   PgToArrow -> ArrowToPg -> same group
+	 *
+	 * A useful fragment has a real Daft operator between the two boundaries,
+	 * so this check does not reject it.
+	 */
+	if (nullptr != pgexprParent)
+	{
+		const COperator::EOperatorId parent_id =
+			pgexprParent->Pop()->Eopid();
+		const COperator::EOperatorId child_id = popChild->Eopid();
+		if ((parent_id == COperator::EopPhysicalArrowToPg &&
+			 child_id == COperator::EopPhysicalPgToArrow) ||
+			(parent_id == COperator::EopPhysicalPgToArrow &&
+			 child_id == COperator::EopPhysicalArrowToPg))
+		{
+			return false;
+		}
+	}
 
 	if (nullptr != pgexprParent &&
 		COperator::EopPhysicalSort == pgexprParent->Pop()->Eopid() &&
@@ -2135,6 +2163,11 @@ CEngine::FCheckEnfdProps(CMemoryPool *mp, CGroupExpression *pgexpr,
 	CEnfdProp::EPropEnforcingType epetPartitionPropagation =
 		prpp->Pepp()->Epet(exprhdl, popPhysical, fPartPropagationReqd);
 
+	// Execution format is always exact: PG_ROW and DAFT_ARROW are not directly
+	// connectable, so a boundary converter is required on every mismatch.
+	CEnfdProp::EPropEnforcingType epetExecutionFormat =
+		prpp->Peef()->Epet(exprhdl, popPhysical);
+
 	// Skip adding enforcers entirely if any property determines it to be
 	// 'prohibited'. In this way, a property may veto out the creation of an
 	// enforcer for the current group expression and optimization context.
@@ -2144,7 +2177,7 @@ CEngine::FCheckEnfdProps(CMemoryPool *mp, CGroupExpression *pgexpr,
 	// decide to add it. And if E is added, it is possible for E to consider both
 	// G and H as its child.
 	if (FProhibited(epetOrder, epetDistribution, epetRewindability,
-					epetPartitionPropagation))
+					epetPartitionPropagation, epetExecutionFormat))
 	{
 		pcc->Release();
 		return false;
@@ -2168,6 +2201,8 @@ CEngine::FCheckEnfdProps(CMemoryPool *mp, CGroupExpression *pgexpr,
 								 epetRewindability, exprhdl);
 	prpp->Pepp()->AppendEnforcers(mp, prpp, pdrgpexprEnforcers, pexpr,
 								  epetPartitionPropagation, exprhdl);
+	prpp->Peef()->AppendEnforcers(mp, prpp, pdrgpexprEnforcers, pexpr,
+								  epetExecutionFormat, exprhdl);
 
 	if (0 < pdrgpexprEnforcers->Size())
 	{
@@ -2178,7 +2213,7 @@ CEngine::FCheckEnfdProps(CMemoryPool *mp, CGroupExpression *pgexpr,
 	pcc->Release();
 
 	return FOptimize(epetOrder, epetDistribution, epetRewindability,
-					 epetPartitionPropagation);
+					 epetPartitionPropagation, epetExecutionFormat);
 }
 
 //---------------------------------------------------------------------------
@@ -2219,12 +2254,14 @@ BOOL
 CEngine::FOptimize(CEnfdProp::EPropEnforcingType epetOrder,
 				   CEnfdProp::EPropEnforcingType epetDistribution,
 				   CEnfdProp::EPropEnforcingType epetRewindability,
-				   CEnfdProp::EPropEnforcingType epetPropagation)
+				   CEnfdProp::EPropEnforcingType epetPropagation,
+				   CEnfdProp::EPropEnforcingType epetExecutionFormat)
 {
 	return CEnfdProp::FOptimize(epetOrder) &&
 		   CEnfdProp::FOptimize(epetDistribution) &&
 		   CEnfdProp::FOptimize(epetRewindability) &&
-		   CEnfdProp::FOptimize(epetPropagation);
+		   CEnfdProp::FOptimize(epetPropagation) &&
+		   CEnfdProp::FOptimize(epetExecutionFormat);
 }
 
 //---------------------------------------------------------------------------
@@ -2239,12 +2276,14 @@ BOOL
 CEngine::FProhibited(CEnfdProp::EPropEnforcingType epetOrder,
 					 CEnfdProp::EPropEnforcingType epetDistribution,
 					 CEnfdProp::EPropEnforcingType epetRewindability,
-					 CEnfdProp::EPropEnforcingType epetPropagation)
+					 CEnfdProp::EPropEnforcingType epetPropagation,
+					 CEnfdProp::EPropEnforcingType epetExecutionFormat)
 {
 	return (CEnfdProp::EpetProhibited == epetOrder ||
 			CEnfdProp::EpetProhibited == epetDistribution ||
 			CEnfdProp::EpetProhibited == epetRewindability ||
-			CEnfdProp::EpetProhibited == epetPropagation);
+			CEnfdProp::EpetProhibited == epetPropagation ||
+			CEnfdProp::EpetProhibited == epetExecutionFormat);
 }
 
 
@@ -2290,11 +2329,13 @@ CEngine::FCheckReqdProps(CExpressionHandle &exprhdl, CReqdPropPlan *prpp,
 	CPhysical *popPhysical = CPhysical::PopConvert(exprhdl.Pop());
 	COperator::EOperatorId op_id = popPhysical->Eopid();
 
-	// check if sort operator is passed an empty order spec;
+	// check if a sort enforcer is passed an empty order spec;
 	// this check is required to avoid self-deadlocks, i.e.
 	// sort optimizing same group with the same optimization context;
 	BOOL fOrderReqd = !prpp->Peo()->PosRequired()->IsEmpty();
-	if (!fOrderReqd && COperator::EopPhysicalSort == op_id)
+	if (!fOrderReqd &&
+		(COperator::EopPhysicalSort == op_id ||
+		 COperator::EopPhysicalDaftSort == op_id))
 	{
 		return false;
 	}

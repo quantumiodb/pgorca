@@ -38,11 +38,18 @@ enum EdxlLimit
 class CDXLPhysicalLimit : public CDXLPhysical
 {
 private:
+	BOOL m_is_daft;
 public:
 	CDXLPhysicalLimit(CDXLPhysicalLimit &) = delete;
 
 	// ctor/dtor
-	explicit CDXLPhysicalLimit(CMemoryPool *mp);
+	explicit CDXLPhysicalLimit(CMemoryPool *mp, BOOL is_daft = false);
+
+	BOOL
+	IsDaft() const
+	{
+		return m_is_daft;
+	}
 
 	Edxlopid GetDXLOperator() const override;
 

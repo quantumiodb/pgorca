@@ -1,0 +1,316 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/pg-daft/pg_daft_plan_v1.schema.json",
+  "title": "PgDaftPlanV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "capability_registry_sha256",
+    "required_runtime_capability_bits",
+    "fragment_id",
+    "root_node_id",
+    "pg_source_drive_order",
+    "sources",
+    "nodes",
+    "output_schema",
+    "payload_sha256"
+  ],
+  "properties": {
+    "capability_registry_sha256": {"$ref": "#/$defs/Sha256"},
+    "required_runtime_capability_bits": {"$ref": "#/$defs/U64"},
+    "fragment_id": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+    "root_node_id": {"$ref": "#/$defs/U32"},
+    "pg_source_drive_order": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/U32"},
+      "uniqueItems": true,
+      "maxItems": 64
+    },
+    "sources": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/SourceDescriptor"},
+      "maxItems": 64
+    },
+    "nodes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/Node"},
+      "minItems": 1,
+      "maxItems": 10000
+    },
+    "output_schema": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/Field"},
+      "maxItems": 4096
+    },
+    "payload_sha256": {"$ref": "#/$defs/Sha256"}
+  },
+  "$defs": {
+    "U32": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "U64": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "Sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "PgType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pg_oid", "typmod", "collation_oid", "nullable", "arrow_format", "daft_dtype"],
+      "properties": {
+        "pg_oid": {"$ref": "#/$defs/U32"},
+        "typmod": {"type": "integer", "minimum": -1, "maximum": 2147483647},
+        "collation_oid": {"$ref": "#/$defs/U32"},
+        "nullable": {"type": "boolean"},
+        "arrow_format": {"type": "string", "minLength": 1, "maxLength": 128},
+        "daft_dtype": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "Field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column_id", "name", "type"],
+      "properties": {
+        "column_id": {"$ref": "#/$defs/U32"},
+        "name": {"type": "string", "pattern": "^_pgd_f[0-9]+_s[0-9]+_c[0-9]+$"},
+        "type": {"$ref": "#/$defs/PgType"}
+      }
+    },
+    "SourceDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "fields"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/U32"},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/Field"}, "maxItems": 4096}
+      }
+    },
+    "NamedExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output", "expr"],
+      "properties": {
+        "output": {"$ref": "#/$defs/Field"},
+        "expr": {"$ref": "#/$defs/Expr"}
+      }
+    },
+    "Expr": {
+      "oneOf": [
+        {"$ref": "#/$defs/InputRef"},
+        {"$ref": "#/$defs/Literal"},
+        {"$ref": "#/$defs/BoolExpr"},
+        {"$ref": "#/$defs/CallExpr"},
+        {"$ref": "#/$defs/NullTest"},
+        {"$ref": "#/$defs/CastExpr"}
+      ]
+    },
+    "InputRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "column_id", "type"],
+      "properties": {
+        "kind": {"const": "input_ref"},
+        "column_id": {"$ref": "#/$defs/U32"},
+        "type": {"$ref": "#/$defs/PgType"}
+      }
+    },
+    "Literal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "encoding", "value", "type"],
+      "properties": {
+        "kind": {"const": "literal"},
+        "encoding": {"enum": ["null", "bool", "i64", "base64_be"]},
+        "value": {"type": ["null", "boolean", "integer", "string"]},
+        "type": {"$ref": "#/$defs/PgType"}
+      }
+    },
+    "BoolExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "op", "args", "type"],
+      "properties": {
+        "kind": {"const": "bool"},
+        "op": {"enum": ["and", "or", "not"]},
+        "args": {"type": "array", "items": {"$ref": "#/$defs/Expr"}, "minItems": 1},
+        "type": {"$ref": "#/$defs/PgType"}
+      }
+    },
+    "CallExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "semantic_id", "pg_oid", "args", "type"],
+      "properties": {
+        "kind": {"enum": ["compare", "arithmetic"]},
+        "semantic_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "pg_oid": {"$ref": "#/$defs/U32"},
+        "args": {"type": "array", "items": {"$ref": "#/$defs/Expr"}, "minItems": 1},
+        "type": {"$ref": "#/$defs/PgType"}
+      }
+    },
+    "NullTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "is_not", "input", "type"],
+      "properties": {
+        "kind": {"const": "null_test"},
+        "is_not": {"type": "boolean"},
+        "input": {"$ref": "#/$defs/Expr"},
+        "type": {"$ref": "#/$defs/PgType"}
+      }
+    },
+    "CastExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "semantic_id", "input", "type"],
+      "properties": {
+        "kind": {"const": "cast"},
+        "semantic_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "input": {"$ref": "#/$defs/Expr"},
+        "type": {"$ref": "#/$defs/PgType"}
+      }
+    },
+    "Node": {
+      "oneOf": [
+        {"$ref": "#/$defs/SourceNode"},
+        {"$ref": "#/$defs/ProjectNode"},
+        {"$ref": "#/$defs/FilterNode"},
+        {"$ref": "#/$defs/HashJoinNode"},
+        {"$ref": "#/$defs/HashAggregateNode"},
+        {"$ref": "#/$defs/SortNode"},
+        {"$ref": "#/$defs/TopNNode"},
+        {"$ref": "#/$defs/LimitNode"}
+      ]
+    },
+    "SourceNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "source_id", "output"],
+      "properties": {
+        "id": {"$ref": "#/$defs/U32"},
+        "kind": {"const": "source"},
+        "source_id": {"$ref": "#/$defs/U32"},
+        "output": {"type": "array", "items": {"$ref": "#/$defs/Field"}}
+      }
+    },
+    "ProjectNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "input", "exprs"],
+      "properties": {
+        "id": {"$ref": "#/$defs/U32"},
+        "kind": {"const": "project"},
+        "input": {"$ref": "#/$defs/U32"},
+        "exprs": {"type": "array", "items": {"$ref": "#/$defs/NamedExpr"}}
+      }
+    },
+    "FilterNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "input", "predicate"],
+      "properties": {
+        "id": {"$ref": "#/$defs/U32"},
+        "kind": {"const": "filter"},
+        "input": {"$ref": "#/$defs/U32"},
+        "predicate": {"$ref": "#/$defs/Expr"}
+      }
+    },
+    "HashJoinNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "left", "right", "join_type", "build_side", "keys", "join_filter", "post_filter"],
+      "properties": {
+        "id": {"$ref": "#/$defs/U32"},
+        "kind": {"const": "hash_join"},
+        "left": {"$ref": "#/$defs/U32"},
+        "right": {"$ref": "#/$defs/U32"},
+        "join_type": {"enum": ["inner", "left"]},
+        "build_side": {"enum": ["left", "right"]},
+        "keys": {"type": "array", "items": {"$ref": "#/$defs/HashKey"}, "minItems": 1},
+        "join_filter": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/Expr"}]},
+        "post_filter": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/Expr"}]}
+      }
+    },
+    "HashKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "right", "null_equals_null"],
+      "properties": {
+        "left": {"$ref": "#/$defs/Expr"},
+        "right": {"$ref": "#/$defs/Expr"},
+        "null_equals_null": {"const": false}
+      }
+    },
+    "HashAggregateNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "input", "stage", "grouping_mode", "group_keys", "aggregates"],
+      "properties": {
+        "id": {"$ref": "#/$defs/U32"},
+        "kind": {"const": "hash_aggregate"},
+        "input": {"$ref": "#/$defs/U32"},
+        "stage": {"const": "complete"},
+        "grouping_mode": {"const": "simple"},
+        "group_keys": {"type": "array", "items": {"$ref": "#/$defs/NamedExpr"}},
+        "aggregates": {"type": "array", "items": {"$ref": "#/$defs/AggregateExpr"}, "minItems": 1}
+      }
+    },
+    "AggregateExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic_id", "pg_aggregate_oid", "args", "distinct", "order_by", "filter", "output"],
+      "properties": {
+        "semantic_id": {"type": "string", "minLength": 1},
+        "pg_aggregate_oid": {"$ref": "#/$defs/U32"},
+        "args": {"type": "array", "items": {"$ref": "#/$defs/Expr"}},
+        "distinct": {"const": false},
+        "order_by": {"type": "array", "maxItems": 0},
+        "filter": {"type": "null"},
+        "output": {"$ref": "#/$defs/Field"}
+      }
+    },
+    "SortKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expr", "pg_sort_operator_oid", "direction", "nulls_first", "collation_semantics"],
+      "properties": {
+        "expr": {"$ref": "#/$defs/Expr"},
+        "pg_sort_operator_oid": {"$ref": "#/$defs/U32"},
+        "direction": {"enum": ["asc", "desc"]},
+        "nulls_first": {"type": "boolean"},
+        "collation_semantics": {"enum": ["none", "c", "posix"]}
+      }
+    },
+    "SortNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "input", "keys"],
+      "properties": {
+        "id": {"$ref": "#/$defs/U32"},
+        "kind": {"const": "sort"},
+        "input": {"$ref": "#/$defs/U32"},
+        "keys": {"type": "array", "items": {"$ref": "#/$defs/SortKey"}, "minItems": 1}
+      }
+    },
+    "TopNNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "input", "keys", "limit", "offset"],
+      "properties": {
+        "id": {"$ref": "#/$defs/U32"},
+        "kind": {"const": "top_n"},
+        "input": {"$ref": "#/$defs/U32"},
+        "keys": {"type": "array", "items": {"$ref": "#/$defs/SortKey"}, "minItems": 1},
+        "limit": {"type": "integer", "minimum": 0},
+        "offset": {"type": "integer", "minimum": 0}
+      }
+    },
+    "LimitNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "input", "offset", "count"],
+      "properties": {
+        "id": {"$ref": "#/$defs/U32"},
+        "kind": {"const": "limit"},
+        "input": {"$ref": "#/$defs/U32"},
+        "offset": {"type": "integer", "minimum": 0},
+        "count": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]}
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+-- =====================================================================
+-- daft_basic.sql  (P0-009-E)
+-- Basic correctness under pg_orca with daft_enable 'off' and 'auto'.
+-- In P0 every Daft capability is BLOCKED, so 'auto' generates no DaftExec
+-- candidate: both modes must return identical, correct PG/ORCA results.
+-- Covers acceptance #1 (results match PG baseline).
+-- =====================================================================
+
+SET pg_orca.enable_orca = on;
+
+-- Debug-build-only integration harness: constructs a real DaftExec PlanState
+-- tree and runs Project -> Limit through the dynamically loaded Rust Bridge.
+CREATE OR REPLACE FUNCTION pg_daft_exec_selftest_v1(bigint, bigint, bigint, integer)
+RETURNS text
+AS '$libdir/pg_orca', 'pg_daft_exec_selftest_v1'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+SET pg_orca.daft_enable = 'force';
+SET pg_orca.daft_batch_rows = 2;
+\pset tuples_only on
+SELECT pg_daft_exec_selftest_v1(5, 5, -1, 0);
+\pset tuples_only off
+
+CREATE TABLE daft_basic_t(a int, b text);
+INSERT INTO daft_basic_t VALUES
+    (1, 'x'), (2, 'y'), (3, 'x'), (NULL, 'z'), (5, NULL);
+
+-- off: baseline correct results.
+SET pg_orca.daft_enable = 'off';
+SELECT count(*) AS cnt, sum(a) AS sm, min(a) AS mn, max(a) AS mx
+  FROM daft_basic_t;
+SELECT a, b FROM daft_basic_t WHERE a >= 2 ORDER BY a;
+
+-- auto: P0 capabilities BLOCKED -> same results, no DaftExec candidate.
+SET pg_orca.daft_enable = 'auto';
+SELECT count(*) AS cnt, sum(a) AS sm, min(a) AS mn, max(a) AS mx
+  FROM daft_basic_t;
+SELECT a, b FROM daft_basic_t WHERE a >= 2 ORDER BY a;
+
+-- LIMIT edge cases (0 / within-range / exact).
+SELECT a FROM daft_basic_t ORDER BY a LIMIT 0;
+SELECT a FROM daft_basic_t ORDER BY a LIMIT 2;
+-- end of daft_basic

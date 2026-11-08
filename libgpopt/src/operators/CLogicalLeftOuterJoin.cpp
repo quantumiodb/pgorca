@@ -16,6 +16,7 @@
 #include "gpopt/base/CColRefSet.h"
 #include "gpopt/operators/CExpression.h"
 #include "gpopt/operators/CExpressionHandle.h"
+#include "gpopt/xforms/CXformFactory.h"
 
 using namespace gpopt;
 
@@ -78,6 +79,12 @@ CLogicalLeftOuterJoin::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfSimplifyLeftOuterJoin);
 	(void) xform_set->ExchangeSet(CXform::ExfLeftOuterJoin2NLJoin);
 	(void) xform_set->ExchangeSet(CXform::ExfLeftOuterJoin2HashJoin);
+	if (CXformFactory::Pxff()->IsXformIdUsed(
+			CXform::ExfDaftImplementLeftHashJoin))
+	{
+		(void) xform_set->ExchangeSet(
+			CXform::ExfDaftImplementLeftHashJoin);
+	}
 	(void) xform_set->ExchangeSet(
 		CXform::ExfLeftOuter2InnerUnionAllLeftAntiSemiJoin);
 	(void) xform_set->ExchangeSet(CXform::ExfJoin2BitmapIndexGetApply);

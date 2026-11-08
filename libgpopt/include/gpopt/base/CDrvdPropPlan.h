@@ -29,6 +29,7 @@ class CRewindabilitySpec;
 class CPartitionPropagationSpec;
 class CReqdPropPlan;
 class CCTEMap;
+class CExecutionFormatSpec;
 
 //---------------------------------------------------------------------------
 //	@class:
@@ -59,6 +60,9 @@ private:
 
 	// derived cte map
 	CCTEMap *m_pcm{nullptr};
+
+	// derived in-memory execution format
+	CExecutionFormatSpec *m_pefs{nullptr};
 
 	// copy CTE producer plan properties from given context to current object
 	void CopyCTEProducerPlanProps(CMemoryPool *mp, CDrvdPropCtxt *pdpctxt,
@@ -112,6 +116,12 @@ public:
 	Ppps() const
 	{
 		return m_ppps;
+	}
+
+	CExecutionFormatSpec *
+	Pefs() const
+	{
+		return m_pefs;
 	}
 
 	// cte map

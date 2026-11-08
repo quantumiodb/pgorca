@@ -1234,8 +1234,11 @@ CUtils::FEnforcer(COperator *pop)
 
 	COperator::EOperatorId op_id = pop->Eopid();
 	return COperator::EopPhysicalSort == op_id ||
+		   COperator::EopPhysicalDaftSort == op_id ||
 		   COperator::EopPhysicalSpool == op_id ||
 		   COperator::EopPhysicalPartitionSelector == op_id ||
+		   COperator::EopPhysicalPgToArrow == op_id ||
+		   COperator::EopPhysicalArrowToPg == op_id ||
 		   FPhysicalMotion(pop);
 }
 

@@ -18,6 +18,7 @@
 #include "gpopt/operators/CExpression.h"
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CPredicateUtils.h"
+#include "gpopt/xforms/CXformFactory.h"
 
 using namespace gpopt;
 
@@ -69,6 +70,12 @@ CLogicalInnerJoin::PxfsCandidates(CMemoryPool *mp) const
 	CXformSet *xform_set = GPOS_NEW(mp) CXformSet(mp);
 
 	(void) xform_set->ExchangeSet(CXform::ExfImplementInnerJoin);
+	if (CXformFactory::Pxff()->IsXformIdUsed(
+			CXform::ExfDaftImplementInnerHashJoin))
+	{
+		(void) xform_set->ExchangeSet(
+			CXform::ExfDaftImplementInnerHashJoin);
+	}
 	(void) xform_set->ExchangeSet(CXform::ExfSubqJoin2Apply);
 	(void) xform_set->ExchangeSet(CXform::ExfJoin2BitmapIndexGetApply);
 	(void) xform_set->ExchangeSet(CXform::ExfJoin2IndexGetApply);

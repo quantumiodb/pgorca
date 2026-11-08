@@ -1,0 +1,125 @@
+# Normative P1 Sort/TopN admission contract. SORT and TOP_N remain BLOCKED in
+# pg_daft_capabilities.yaml until P1-003-B implements the physical alternatives
+# and P1-003-C closes SQL differential and memory gates. This file freezes the
+# only semantics those later tasks may enable; it does not enable runtime bits.
+schema_version: 1
+contract_id: pg_daft_sort_topn_v1
+status: FROZEN_NOT_ENABLED
+
+postgres_catalog_baseline:
+  server_version_num: 190000
+  collations:
+    - {semantics: c, pg_collation_oid: 950, collname: C, collprovider: c, collencoding: -1}
+    - {semantics: posix, pg_collation_oid: 951, collname: POSIX, collprovider: c, collencoding: -1}
+  # Only the default same-type btree ordering identities below are admitted.
+  # Pattern opclasses, cross-type operators, user-defined operators and a
+  # same-named operator with another OID are not semantic substitutes.
+  sort_operators:
+    - {type: bool,        pg_oid: 16,   asc_operator_oid: 58,   desc_operator_oid: 59}
+    - {type: int8,        pg_oid: 20,   asc_operator_oid: 412,  desc_operator_oid: 413}
+    - {type: int2,        pg_oid: 21,   asc_operator_oid: 95,   desc_operator_oid: 520}
+    - {type: int4,        pg_oid: 23,   asc_operator_oid: 97,   desc_operator_oid: 521}
+    - {type: text,        pg_oid: 25,   asc_operator_oid: 664,  desc_operator_oid: 666}
+    # varchar_ops uses the binary-compatible text ordering operators.
+    - {type: varchar,     pg_oid: 1043, asc_operator_oid: 664,  desc_operator_oid: 666}
+    - {type: date,        pg_oid: 1082, asc_operator_oid: 1095, desc_operator_oid: 1097}
+    - {type: timestamp,   pg_oid: 1114, asc_operator_oid: 2062, desc_operator_oid: 2064}
+    - {type: timestamptz, pg_oid: 1184, asc_operator_oid: 1322, desc_operator_oid: 1324}
+
+sort_key_wire_contract:
+  required_fields:
+    - expr
+    - pg_sort_operator_oid
+    - direction
+    - nulls_first
+    - collation_semantics
+  expression_family: input_ref_only
+  direction_values: [asc, desc]
+  null_placement:
+    explicit_per_key: true
+    values: [true, false]
+    independent_of_direction: true
+    combinations_required:
+      - {direction: asc,  nulls_first: true}
+      - {direction: asc,  nulls_first: false}
+      - {direction: desc, nulls_first: true}
+      - {direction: desc, nulls_first: false}
+  operator_direction_match:
+    asc: asc_operator_oid
+    desc: desc_operator_oid
+  collation_contract:
+    field: collation_semantics
+    values: [none, c, posix]
+    none_requires_expr_collation_oid: 0
+    c_requires_expr_collation_oid: 950
+    posix_requires_expr_collation_oid: 951
+    collatable_pg_oids: [25, 1043]
+    noncollatable_pg_oids: [16, 20, 21, 23, 1082, 1114, 1184]
+    database_encoding: UTF8
+  multi_key_contract:
+    lexicographic_in_wire_order: true
+    every_key_validated_independently: true
+    mixed_direction_and_null_placement: allowed
+    duplicate_or_redundant_keys: ORCA_must_normalize_or_prove_required_order
+
+sort_node_contract:
+  minimum_key_count: 1
+  output_schema: exactly_input_schema
+  output_cardinality: exactly_input_cardinality
+  derived_order: exact_validated_key_list
+  candidate_rule: only_when_input_does_not_already_satisfy_required_order
+  forbidden_lowering_behavior:
+    - add_or_remove_sort_keys
+    - choose_default_null_placement
+    - replace_the_pg_sort_operator
+    - run_a_second_optimizer
+
+top_n_equivalence_contract:
+  pg_shape: constant_LIMIT_count_and_OFFSET_directly_over_the_same_required_ORDER_BY
+  limit_field_meaning: maximum_rows_returned_after_offset
+  offset_field_meaning: rows_skipped_from_the_ordered_input
+  required_conditions:
+    - at_least_one_validated_sort_key
+    - exact_same_key_order_operator_direction_null_placement_and_collation_as_Sort
+    - constant_nonnegative_limit_and_offset_representable_as_u64_and_usize
+    - checked_limit_plus_offset_does_not_overflow
+    - ordinary_LIMIT_or_FETCH_ONLY_without_WITH_TIES_or_PERCENT
+    - output_schema_exactly_matches_input_schema
+    - TopN_derives_the_same_order_property_as_the_equivalent_Sort
+    - TopN_is_a_costed_ORCA_physical_alternative_before_winner_selection
+  tie_contract:
+    ordinary_limit_boundary_ties: any_rows_equal_on_all_order_keys_are_SQL_legal
+    with_ties: unsupported
+    exact_differential_tests: append_a_unique_final_tie_break_key
+  not_equivalent:
+    - unordered_LIMIT
+    - LIMIT_ALL_or_missing_count
+    - runtime_parameter_or_nonconstant_limit_or_offset
+    - FETCH_WITH_TIES
+    - FETCH_PERCENT
+    - key_list_or_property_rewritten_after_CBO
+
+explicit_rejections:
+  - float4_and_float8_including_NaN_infinity_and_signed_zero
+  - numeric
+  - bytea
+  - locale_collation_other_than_builtin_C_or_POSIX
+  - default_collation_unless_its_resolved_oid_is_exactly_950_or_951
+  - ICU_collation
+  - libc_locale_collation_other_than_builtin_C_or_POSIX
+  - pattern_sort_operators_2314_and_2318
+  - user_defined_or_cross_type_sort_operator
+  - non_input_ref_sort_expression
+  - missing_or_implicit_direction
+  - missing_or_implicit_null_placement
+  - collation_semantics_and_expr_collation_oid_mismatch
+  - operator_oid_type_or_direction_mismatch
+
+golden_ir:
+  sort: pg_daft_sort_v1.golden.json
+  top_n: pg_daft_topn_v1.golden.json
+
+enablement_gates:
+  - P1-003-B implements required_and_derived_order_cost_and_direct_Rust_lowering
+  - P1-003-C proves_full_PG_differential_and_bounded_memory_behavior
+  - pg_daft_capabilities.yaml_changes_SORT_and_TOP_N_from_BLOCKED_only_after_their_own_gates_pass

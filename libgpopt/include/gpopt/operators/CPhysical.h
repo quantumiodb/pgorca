@@ -17,17 +17,19 @@
 #include "gpopt/base/CDistributionSpecSingleton.h"
 #include "gpopt/base/CDrvdPropPlan.h"
 #include "gpopt/base/CEnfdDistribution.h"
+#include "gpopt/base/CEnfdExecutionFormat.h"
 #include "gpopt/base/CEnfdOrder.h"
 #include "gpopt/base/CEnfdPartitionPropagation.h"
 #include "gpopt/base/CEnfdRewindability.h"
 #include "gpopt/base/COrderSpec.h"
 #include "gpopt/base/CPartitionPropagationSpec.h"
 #include "gpopt/base/CRewindabilitySpec.h"
+#include "gpopt/base/CExecutionFormatSpec.h"
 #include "gpopt/operators/COperator.h"
 
-// number of plan properties requested during optimization, currently, there are 4 properties:
-// order, distribution, rewindability and partition propagation
-#define GPOPT_PLAN_PROPS 4
+// number of plan properties requested during optimization: order, distribution,
+// rewindability, partition propagation and execution format
+#define GPOPT_PLAN_PROPS 5
 
 namespace gpopt
 {
@@ -195,6 +197,12 @@ protected:
 		UpdateOptRequests(3 /*ulPropIndex*/, ulPartPropagationReqs);
 	}
 
+	void
+	SetExecutionFormatRequests(ULONG ulExecutionFormatReqs)
+	{
+		UpdateOptRequests(4 /*ulPropIndex*/, ulExecutionFormatReqs);
+	}
+
 	// pass cte requirement to the n-th child
 	CCTEReq *PcterNAry(CMemoryPool *mp, CExpressionHandle &exprhdl,
 					   CCTEReq *pcter, ULONG child_index,
@@ -354,6 +362,12 @@ public:
 		CPartitionPropagationSpec *pppsRequired, ULONG child_index,
 		CDrvdPropArray *pdrgpdpCtxt, ULONG ulOptReq) const;
 
+	// compute required execution format of the n-th child
+	virtual CExecutionFormatSpec *PefsRequired(
+		CMemoryPool *mp, CExpressionHandle &exprhdl,
+		CExecutionFormatSpec *pefsRequired, ULONG child_index,
+		CDrvdPropArray *pdrgpdpCtxt, ULONG ulOptReq) const;
+
 
 	// required properties: check if required columns are included in output columns
 	virtual BOOL FProvidesReqdCols(CExpressionHandle &exprhdl,
@@ -384,6 +398,10 @@ public:
 	virtual CPartitionPropagationSpec *PppsDerive(
 		CMemoryPool *mp, CExpressionHandle &exprhdl) const;
 
+	// derive in-memory execution format
+	virtual CExecutionFormatSpec *PefsDerive(
+		CMemoryPool *mp, CExpressionHandle &exprhdl) const;
+
 	// derive cte map
 	virtual CCTEMap *PcmDerive(CMemoryPool *mp,
 							   CExpressionHandle &exprhdl) const;
@@ -408,6 +426,10 @@ public:
 	// return partition propagation property enforcing type for this operator
 	virtual CEnfdProp::EPropEnforcingType EpetPartitionPropagation(
 		CExpressionHandle &exprhdl, const CEnfdPartitionPropagation *per) const;
+
+	// return execution format property enforcing type for this operator
+	virtual CEnfdProp::EPropEnforcingType EpetExecutionFormat(
+		CExpressionHandle &exprhdl, const CEnfdExecutionFormat *peef) const;
 
 	// order matching type
 	virtual CEnfdOrder::EOrderMatching Eom(CReqdPropPlan *prppInput,
@@ -470,6 +492,12 @@ public:
 		return m_rgulOptReqs[3];
 	}
 
+	ULONG
+	UlExecutionFormatRequests() const
+	{
+		return m_rgulOptReqs[4];
+	}
+
 	// return total number of optimization requests
 	ULONG
 	UlOptRequests() const
@@ -477,14 +505,15 @@ public:
 		return m_ulTotalOptRequests;
 	}
 
-	// map request number to order, distribution, rewindability and partition propagation requests
+	// map request number to the individual plan-property request numbers
 	void LookupRequest(
 		ULONG ulReqNo,		  // input: request number
 		ULONG *pulOrderReq,	  // output: order request number
 		ULONG *pulDistrReq,	  // output: distribution request number
 		ULONG *pulRewindReq,  // output: rewindability request number
 		ULONG *
-			pulPartPropagateReq	 // output: partition propagation request number
+			pulPartPropagateReq,	 // output: partition propagation request number
+		ULONG *pulExecutionFormatReq  // output: execution format request number
 	);
 
 	// return true if operator passes through stats obtained from children,

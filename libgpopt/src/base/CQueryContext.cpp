@@ -17,6 +17,8 @@
 #include "gpopt/base/CColRefSetIter.h"
 #include "gpopt/base/CColumnFactory.h"
 #include "gpopt/base/CDistributionSpecAny.h"
+#include "gpopt/base/CEnfdExecutionFormat.h"
+#include "gpopt/base/CExecutionFormatSpec.h"
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/operators/CLogicalLimit.h"
 
@@ -241,6 +243,12 @@ CQueryContext::PqcGenerate(CMemoryPool *mp, CExpression *pexpr,
 	CEnfdPartitionPropagation *pepp = GPOS_NEW(mp)
 		CEnfdPartitionPropagation(ppps, CEnfdPartitionPropagation::EppmSatisfy);
 
+	// PostgreSQL's executor consumes TupleTableSlot rows at the root. A winning
+	// Daft fragment therefore needs an Arrow-to-row boundary before plan export.
+	CExecutionFormatSpec *pefs = GPOS_NEW(mp)
+		CExecutionFormatSpec(CExecutionFormatSpec::EefPgRow);
+	CEnfdExecutionFormat *peef = GPOS_NEW(mp) CEnfdExecutionFormat(pefs);
+
 	// Required CTEs are obtained from the CTEInfo global information in the optimizer context
 	CCTEReq *pcter = poptctxt->Pcteinfo()->PcterProducers(mp);
 
@@ -249,7 +257,7 @@ CQueryContext::PqcGenerate(CMemoryPool *mp, CExpression *pexpr,
 	// CReqdPropPlan::InitReqdPartitionPropagation().
 
 	CReqdPropPlan *prpp =
-		GPOS_NEW(mp) CReqdPropPlan(pcrs, peo, ped, per, pepp, pcter);
+		GPOS_NEW(mp) CReqdPropPlan(pcrs, peo, ped, per, pepp, peef, pcter);
 
 	// Finally, create the CQueryContext
 	pdrgpmdname->AddRef();

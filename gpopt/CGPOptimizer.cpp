@@ -18,6 +18,10 @@
 #include "gpopt/utils/CMemoryPoolPalloc.h"
 #include "gpopt/utils/CMemoryPoolPallocManager.h"
 #include "gpopt/utils/COptTasks.h"
+#include "gpopt/xforms/CXformFactory.h"
+#include "pg_orca/daft/implementation_xforms.h"
+#include "pg_orca/daft/cost_model.h"
+#include "pg_orca/daft/daft_config.h"
 
 // the following headers are needed to reference optimizer library initializers
 #include "gpos/_api.h"
@@ -32,7 +36,94 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 
+#include <cmath>
+#include <cstring>
+
 extern MemoryContext MessageContext;
+extern int pg_orca_cost_model;
+extern "C" {
+extern double seq_page_cost;
+extern double random_page_cost;
+extern double cpu_tuple_cost;
+extern double cpu_index_tuple_cost;
+extern double cpu_operator_cost;
+extern int effective_cache_size;
+extern int work_mem;
+extern double hash_mem_multiplier;
+}
+
+namespace
+{
+bool
+DaftForceModeEnabled()
+{
+	return pg_orca_daft_enable && 2 == pg_orca_daft_mode_value;
+}
+
+double
+DaftPlanCostMultiplierFromGuc()
+{
+	return pg_orca_daft_prefer_plan
+			   ? pg_orca::daft::kDaftPreferredPlanCostMultiplier
+			   : 1.0;
+}
+
+bool
+AlmostEqual(double left, double right)
+{
+	return std::fabs(left - right) <= 1.0e-12;
+}
+
+/*
+ * P0 deliberately ships no guessed production calibration. The one built-in
+ * profile is a versioned, synthetic integration-test profile. It is accepted
+ * only in force+trace mode and only under its frozen PG and Daft GUC
+ * fingerprint. A changed cost GUC, memory/batch setting, cost model, or
+ * profile name therefore suppresses the dependent xform before Memo
+ * generation. Production profiles remain unavailable until benchmarked on a
+ * named hardware fingerprint and installed through a future provider.
+ */
+bool
+LoadDaftCostProfile(pg_orca::daft::DaftCostParams *out_params)
+{
+#if !defined(__x86_64__) || PG_VERSION_NUM < 190000 || PG_VERSION_NUM >= 200000
+	(void) out_params;
+	return false;
+#else
+	if (out_params == nullptr || !pg_orca_daft_enable ||
+		pg_orca_daft_mode_value != PG_ORCA_DAFT_FORCE ||
+		!pg_orca_daft_trace || pg_orca_cost_model != 1 ||
+		pg_orca_daft_cost_calibration_profile == nullptr ||
+		std::strcmp(pg_orca_daft_cost_calibration_profile,
+					pg_orca::daft::kDaftTestProfileName) != 0)
+	{
+		return false;
+	}
+
+	const bool pg_fingerprint_matches =
+		AlmostEqual(seq_page_cost, 1.0) &&
+		AlmostEqual(random_page_cost, 4.0) &&
+		AlmostEqual(cpu_tuple_cost, 0.01) &&
+		AlmostEqual(cpu_index_tuple_cost, 0.005) &&
+		AlmostEqual(cpu_operator_cost, 0.0025) &&
+		effective_cache_size == 524288 && work_mem == 4096 &&
+		AlmostEqual(hash_mem_multiplier, 2.0);
+	const bool daft_fingerprint_matches =
+		pg_orca_daft_batch_rows == 8192 &&
+		pg_orca_daft_batch_bytes == 8 * 1024 * 1024 &&
+		pg_orca_daft_memory_limit_mb == 512 &&
+		pg_orca_daft_worker_threads == 2 &&
+		pg_orca_daft_max_inflight_batches == 2;
+	if (!pg_fingerprint_matches || !daft_fingerprint_matches)
+	{
+		return false;
+	}
+
+	*out_params = pg_orca::daft::DaftCostParams::TestOnlyProfile();
+	return out_params->IsUsable();
+#endif
+}
+}  // namespace
 
 //---------------------------------------------------------------------------
 //	@function:
@@ -167,6 +258,40 @@ CGPOptimizer::InitGPOPT()
 	gpos_init(&params);
 	gpdxl_init();
 	gpopt_init();
+
+	// ORCA's built-in factory belongs to the core library, while these xforms
+	// belong to the PostgreSQL extension.  Append them once using the factory's
+	// long-lived pool; per-query enablement is evaluated by Exfp().
+	CXformFactory *xform_factory = CXformFactory::Pxff();
+	CMemoryPool *factory_mp = xform_factory->Pmp();
+	xform_factory->AddExtensionXform(
+		GPOS_NEW(factory_mp)
+			pg_orca::daft::CXformDaftImplementProject(factory_mp));
+	xform_factory->AddExtensionXform(
+		GPOS_NEW(factory_mp)
+			pg_orca::daft::CXformDaftImplementLimit(factory_mp));
+	xform_factory->AddExtensionXform(
+		GPOS_NEW(factory_mp)
+			pg_orca::daft::CXformDaftImplementFilter(factory_mp));
+	xform_factory->AddExtensionXform(
+		GPOS_NEW(factory_mp)
+			pg_orca::daft::CXformDaftImplementInnerHashJoin(factory_mp));
+	xform_factory->AddExtensionXform(
+		GPOS_NEW(factory_mp)
+			pg_orca::daft::CXformDaftImplementLeftHashJoin(factory_mp));
+	xform_factory->AddExtensionXform(
+		GPOS_NEW(factory_mp)
+			pg_orca::daft::CXformDaftImplementHashAggregate(factory_mp));
+	xform_factory->AddExtensionXform(
+		GPOS_NEW(factory_mp)
+			pg_orca::daft::CXformDaftImplementPlainAggregate(factory_mp));
+	xform_factory->AddExtensionXform(
+		GPOS_NEW(factory_mp)
+			pg_orca::daft::CXformDaftImplementTopN(factory_mp));
+	pg_orca::daft::SetDaftForceModeCallback(&DaftForceModeEnabled);
+	pg_orca::daft::SetDaftCostConfigCallback(&LoadDaftCostProfile);
+	pg_orca::daft::SetDaftPlanCostMultiplierCallback(
+		&DaftPlanCostMultiplierFromGuc);
 
 	// Wire the encoding-aware LIKE matcher (PG's textlike) into the ORCA
 	// statistics layer so histogram_selectivity-style estimation walks

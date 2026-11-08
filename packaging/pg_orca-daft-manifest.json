@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "profile": "pg_orca_daft_optional_v1",
+  "core_package": {
+    "name_template": "postgresql-${pg_major}-pg-orca",
+    "cmake_definitions": {
+      "PG_ORCA_ENABLE_DAFT": "ON"
+    },
+    "files": [
+      "${pkglibdir}/pg_orca.so",
+      "${sharedir}/extension/pg_orca.control",
+      "${sharedir}/extension/pg_orca--1.0.0.sql",
+      "${sharedir}/extension/pg_orca-daft-manifest.json"
+    ],
+    "runtime_defaults": {
+      "pg_orca.daft_enable": "off"
+    }
+  },
+  "bridge_package": {
+    "required": false,
+    "owned_by_core_package": false,
+    "file_name": "libdaft_pg_bridge.so",
+    "versioned_path_template": "${pkglibdir}/pg_orca/bridge-${release_id}/libdaft_pg_bridge.so",
+    "file_mode": "0755",
+    "abi": {
+      "major": 1,
+      "minimum_minor": 1,
+      "required_symbols": [
+        "dpg_abi_major",
+        "dpg_abi_minor",
+        "dpg_cancel_v1",
+        "dpg_capabilities",
+        "dpg_capability_digest_v1",
+        "dpg_close_v1",
+        "dpg_error_free_v1",
+        "dpg_error_message_v1",
+        "dpg_finish_source_v1",
+        "dpg_metrics_snapshot_v1",
+        "dpg_open_v1",
+        "dpg_try_next_batch_v1",
+        "dpg_try_push_batch_v1",
+        "dpg_wait_v1"
+      ],
+      "legacy_public_symbols": [
+        "dpg_error_code",
+        "dpg_error_free",
+        "dpg_error_message",
+        "dpg_import_arrow_batch"
+      ]
+    }
+  },
+  "compatibility": {
+    "negotiation_order": [
+      "complete_required_symbol_set",
+      "abi_major_equal",
+      "abi_minor_at_least_minimum",
+      "runtime_capability_bits_known",
+      "capability_registry_digest_equal"
+    ],
+    "missing_bridge_auto": "safe_pg_fallback",
+    "missing_bridge_force": "stable_error",
+    "backend_bridge_lifetime": "until_backend_exit"
+  },
+  "upgrade_policy": {
+    "requires_postgresql_restart": true,
+    "replace_mapped_file_in_place": false,
+    "reinitialize_data_directory": false,
+    "rollback_uses_previous_versioned_bridge_path": true
+  }
+}

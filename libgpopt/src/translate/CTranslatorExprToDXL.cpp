@@ -53,6 +53,7 @@
 #include "gpopt/operators/CPhysicalLeftOuterIndexNLJoin.h"
 #include "gpopt/operators/CPhysicalLeftSemiIndexNLJoin.h"
 #include "gpopt/operators/CPhysicalLimit.h"
+#include "pg_orca/daft/physical_operators.h"
 #include "gpopt/operators/CPhysicalMotionGather.h"
 #include "gpopt/operators/CPhysicalMotionHashDistribute.h"
 #include "gpopt/operators/CPhysicalMotionRandom.h"
@@ -190,6 +191,7 @@
 #include "naucrates/md/IMDTypeInt4.h"
 #include "naucrates/statistics/CStatistics.h"
 #include "naucrates/traceflags/traceflags.h"
+#include "pg_orca/daft/plan_ir.h"
 
 // PG cost-tuning GUCs.  Defined as globals in src/backend/optimizer/path/costsize.c.
 // PdxlnAppendTableScan computes per-partition CDXLPhysicalProperties using
@@ -206,6 +208,34 @@ using namespace gpopt;
 using namespace gpnaucrates;
 
 #define GPOPT_MASTER_SEGMENT_ID (-1)
+
+static void
+CollectDaftPgInputBoundaries(CExpression *pexpr,
+							 std::vector<CExpression *> &boundaries)
+{
+	if (pexpr == nullptr)
+		return;
+	if (pexpr->Pop()->Eopid() == COperator::EopPhysicalPgToArrow)
+	{
+		boundaries.push_back(pexpr);
+		return;
+	}
+	if (pexpr->Pop()->Eopid() == COperator::EopPhysicalDaftSort &&
+		pexpr->Arity() == 1 &&
+		(*pexpr)[0]->Pop()->Eopid() != COperator::EopPhysicalPgToArrow)
+	{
+		// Sort is a same-group order enforcer and therefore owns its PG input
+		// boundary atomically; see DEC-20260815-048.
+		boundaries.push_back(pexpr);
+		return;
+	}
+	for (ULONG i = 0; i < pexpr->Arity(); ++i)
+	{
+		CExpression *child = (*pexpr)[i];
+		if (child != nullptr && child->Pop()->FPhysical())
+			CollectDaftPgInputBoundaries(child, boundaries);
+	}
+}
 
 //---------------------------------------------------------------------------
 //	@function:
@@ -374,7 +404,152 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 	CDXLNode *dxlnode = nullptr;
 	switch (pexpr->Pop()->Eopid())
 	{
+		case COperator::EopPhysicalDaftSort:
+		case COperator::EopPhysicalDaftTopN:
+			// Sort/TopN are already present in the selected PgDaftPlan payload.
+			// The temporary DXL carrier exists only to retain PG-owned source
+			// leaves for CustomScan.custom_plans, so bypass the Daft operator
+			// instead of materializing a second PG Sort/Limit after CBO.
+			GPOS_ASSERT(pexpr->Arity() >= 1);
+			dxlnode = CreateDXLNode(
+				(*pexpr)[0], colref_array, pdrgpdsBaseTables,
+				pulNonGatherMotions, pfDML, fRemap, false /*fRoot*/);
+			break;
+		case COperator::EopPhysicalPgToArrow:
+			// Inside a selected multi-source Daft fragment this node is a
+			// format boundary, not an executable DXL node.  Translate only its
+			// PostgreSQL child; the enclosing DaftExec owns the conversion.
+			GPOS_ASSERT(pexpr->Arity() == 1);
+			dxlnode = CreateDXLNode(
+				(*pexpr)[0], colref_array, pdrgpdsBaseTables,
+				pulNonGatherMotions, pfDML, fRemap, false /*fRoot*/);
+			break;
+		case COperator::EopPhysicalArrowToPg:
+		{
+			GPOS_ASSERT(pexpr->Arity() == 1);
+			CExpression *daft_root = (*pexpr)[0];
+			std::vector<CExpression *> boundaries;
+			CollectDaftPgInputBoundaries(daft_root, boundaries);
+			if (boundaries.empty())
+			{
+				GPOS_RAISE(gpopt::ExmaGPOPT, gpopt::ExmiUnsupportedOp,
+						   pexpr->Pop()->SzId());
+			}
+
+			/*
+			 * The caller's colref_array can describe the whole SQL result (for
+			 * example an Aggregate above this boundary).  A fragment must expose
+			 * only the columns required at ArrowToPg; PgToArrow separately drives
+			 * every source column needed internally by its predicate.
+			 */
+			CColRefSet *fragment_output = pexpr->Prpp()->PcrsRequired();
+			CColRefArray *fragment_output_cols =
+				fragment_output->Pdrgpcr(m_mp);
+			std::vector<const CColRef *> output_cols;
+			for (ULONG i = 0; i < fragment_output_cols->Size(); ++i)
+				output_cols.push_back((*fragment_output_cols)[i]);
+
+			pg_orca::daft::DaftPlanSerializer serializer(m_mp);
+			std::string error;
+			pg_orca::daft::PgDaftPlan *ir = serializer.Serialize(
+				daft_root, output_cols, std::vector<bool>{}, error);
+			if (ir == nullptr)
+			{
+				pg_orca::daft::RecordSelectedPlanFailure(
+					pg_orca::daft::SelectedPlanFailureReason::INVALID_FINAL_PLAN,
+					error);
+				GPOS_RAISE(gpopt::ExmaGPOPT, gpopt::ExmiUnsupportedOp,
+						   error.c_str());
+			}
+			std::vector<uint8_t> payload;
+			if (!pg_orca::daft::DaftPlanSerializer::SerializeToBytes(*ir, payload, error))
+			{
+				delete ir;
+				const bool oversized =
+					error.find("exceeds limit 1048576") != std::string::npos;
+				pg_orca::daft::RecordSelectedPlanFailure(
+					oversized
+						? pg_orca::daft::SelectedPlanFailureReason::PAYLOAD_TOO_LARGE
+						: pg_orca::daft::SelectedPlanFailureReason::INVALID_FINAL_PLAN,
+					error);
+				GPOS_RAISE(gpopt::ExmaGPOPT, gpopt::ExmiUnsupportedOp,
+						   error.c_str());
+			}
+			// ExecTypeFromTL() does not infer attnotnull for expression output.
+			// Carry the already-validated IR output nullability separately so the
+			// CustomScan boundary TupleDesc can reproduce the exact Arrow schema.
+			// output_mappings are appended in PG target order by Serialize().
+			std::string output_nullability;
+			output_nullability.reserve(ir->output_mappings.size());
+			for (const pg_orca::daft::DaftOutputMapping &mapping :
+				 ir->output_mappings)
+			{
+				auto column = ir->columns.find(mapping.daft_column_id);
+				GPOS_ASSERT(column != ir->columns.end());
+				output_nullability.push_back(
+					column->second.is_nullable ? '1' : '0');
+			}
+			// ExecTypeFromTL() also drops attnotnull on each PG-owned source
+			// target list.  Append one mask per source in drive order so the
+			// executor can restore the exact input Arrow schema before building
+			// the first batch.  The first segment remains the fragment output
+			// mask for backward-compatible carrier handling.
+			for (pg_orca::daft::SourceId source_id :
+				 ir->pg_source_drive_order)
+			{
+				output_nullability.push_back('|');
+				auto source = ir->sources.find(source_id);
+				GPOS_ASSERT(source != ir->sources.end());
+				for (pg_orca::daft::ColumnId column_id :
+					 source->second.column_ids)
+				{
+					auto column = ir->columns.find(column_id);
+					GPOS_ASSERT(column != ir->columns.end());
+					output_nullability.push_back(
+						column->second.is_nullable ? '1' : '0');
+				}
+			}
+			delete ir;
+
+			CDXLNode *child = nullptr;
+			if (boundaries.size() == 1)
+			{
+				CExpression *boundary = boundaries.front();
+				GPOS_ASSERT(boundary->Arity() == 1);
+				CExpression *pg_child = (*boundary)[0];
+				CColRefSet *source_required =
+					boundary->Pop()->Eopid() == COperator::EopPhysicalDaftSort
+						? pg_child->Prpp()->PcrsRequired()
+						: boundary->Prpp()->PcrsRequired();
+				CColRefArray *source_cols =
+					source_required->Pdrgpcr(m_mp);
+				child = CreateDXLNode(
+					pg_child, source_cols, pdrgpdsBaseTables,
+					pulNonGatherMotions, pfDML, false /*fRemap*/,
+					false /*fRoot*/);
+				source_cols->Release();
+			}
+			else
+			{
+				// Translate the already-selected Daft subtree only as a temporary
+				// DXL carrier.  DXLToPlStmt removes its Daft operators and keeps
+				// the PG leaves as CustomScan.custom_plans.
+				child = CreateDXLNode(
+					daft_root, nullptr /*colref_array*/, pdrgpdsBaseTables,
+					pulNonGatherMotions, pfDML, false /*fRemap*/,
+					false /*fRoot*/);
+			}
+			CDXLNode *project =
+				PdxlnProjList(fragment_output, fragment_output_cols);
+			fragment_output_cols->Release();
+			dxlnode = PdxlnResult(GetProperties(pexpr), project, child);
+			CDXLPhysicalResult::Cast(dxlnode->GetOperator())->SetDaftPayload(
+				std::string(payload.begin(), payload.end()),
+				static_cast<ULONG>(boundaries.size()), output_nullability);
+			break;
+		}
 		case COperator::EopPhysicalFilter:
+		case COperator::EopPhysicalDaftFilter:
 			dxlnode = CTranslatorExprToDXL::PdxlnResult(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
@@ -395,12 +570,14 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pfDML);
 			break;
 		case COperator::EopPhysicalComputeScalar:
+		case COperator::EopPhysicalDaftProject:
 			dxlnode = CTranslatorExprToDXL::PdxlnComputeScalar(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
 			break;
 		case COperator::EopPhysicalScalarAgg:
 		case COperator::EopPhysicalHashAgg:
+		case COperator::EopPhysicalDaftHashAggregate:
 		case COperator::EopPhysicalStreamAgg:
 			dxlnode = CTranslatorExprToDXL::PdxlnAggregate(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
@@ -418,6 +595,7 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pfDML);
 			break;
 		case COperator::EopPhysicalLimit:
+		case COperator::EopPhysicalDaftLimit:
 			dxlnode = CTranslatorExprToDXL::PdxlnLimit(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
@@ -451,6 +629,7 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pfDML);
 			break;
 		case COperator::EopPhysicalInnerHashJoin:
+		case COperator::EopPhysicalDaftHashJoin:
 		case COperator::EopPhysicalLeftOuterHashJoin:
 		case COperator::EopPhysicalLeftSemiHashJoin:
 		case COperator::EopPhysicalLeftAntiSemiHashJoin:
@@ -3045,6 +3224,11 @@ CTranslatorExprToDXL::PdxlnComputeScalar(
 	// construct a result node
 	CDXLNode *pdxlnResult =
 		PdxlnResult(GetProperties(pexprComputeScalar), pdxlnPrL, child_dxlnode);
+	if (COperator::EopPhysicalDaftProject ==
+		pexprComputeScalar->Pop()->Eopid())
+	{
+		CDXLPhysicalResult::Cast(pdxlnResult->GetOperator())->SetDaft(true);
+	}
 
 #ifdef GPOS_DEBUG
 	(void) CDXLPhysicalResult::Cast(pdxlnResult->GetOperator())
@@ -3075,6 +3259,7 @@ CTranslatorExprToDXL::PdxlnAggregate(CExpression *pexprAgg,
 
 	GPOS_ASSERT(COperator::EopPhysicalStreamAgg == op_id ||
 				COperator::EopPhysicalHashAgg == op_id ||
+				COperator::EopPhysicalDaftHashAggregate == op_id ||
 				COperator::EopPhysicalScalarAgg == op_id);
 
 	EdxlAggStrategy dxl_agg_strategy = EdxlaggstrategySentinel;
@@ -3091,6 +3276,17 @@ CTranslatorExprToDXL::PdxlnAggregate(CExpression *pexprAgg,
 		{
 			popAgg = CPhysicalHashAgg::PopConvert(pexprAgg->Pop());
 			dxl_agg_strategy = EdxlaggstrategyHashed;
+			break;
+		}
+		case COperator::EopPhysicalDaftHashAggregate:
+		{
+			popAgg =
+				pg_orca::daft::CPhysicalDaftHashAggregate::PopConvert(
+					pexprAgg->Pop());
+			dxl_agg_strategy =
+				popAgg->PdrgpcrGroupingCols()->Size() == 0
+					? EdxlaggstrategyPlain
+					: EdxlaggstrategyHashed;
 			break;
 		}
 		case COperator::EopPhysicalScalarAgg:
@@ -3186,6 +3382,7 @@ CTranslatorExprToDXL::PdxlnAggregate(CExpression *pexprAgg,
 	GPOS_ASSERT_IMP(nullptr == pcrsKeys,
 					COperator::EopPhysicalStreamAgg == op_id ||
 						COperator::EopPhysicalHashAgg == op_id ||
+						COperator::EopPhysicalDaftHashAggregate == op_id ||
 						COperator::EopPhysicalScalarAgg == op_id);
 #endif	//GPOS_DEBUG
 
@@ -3380,8 +3577,14 @@ CTranslatorExprToDXL::PdxlnLimit(CExpression *pexprLimit,
 	CExpression *pexprCount = (*pexprLimit)[2];
 
 	// bypass translation of limit if it does not have row count and offset
-	CPhysicalLimit *popLimit = CPhysicalLimit::PopConvert(pexprLimit->Pop());
-	if (!popLimit->FHasCount() && CUtils::FHasZeroOffset(pexprLimit))
+	BOOL is_daft = COperator::EopPhysicalDaftLimit ==
+		pexprLimit->Pop()->Eopid();
+	// Daft limit candidates are admitted only when a concrete count exists.
+	// Avoid making this core translator depend on the extension-owned physical
+	// class; the marker carried below is sufficient for DXL translation.
+	BOOL has_count =
+		is_daft || CPhysicalLimit::PopConvert(pexprLimit->Pop())->FHasCount();
+	if (!has_count && CUtils::FHasZeroOffset(pexprLimit))
 	{
 		return CreateDXLNode(pexprChild, colref_array, pdrgpdsBaseTables,
 							 pulNonGatherMotions, pfDML, true /*fRemap*/,
@@ -3410,7 +3613,8 @@ CTranslatorExprToDXL::PdxlnLimit(CExpression *pexprLimit,
 			m_mp, m_pcf, m_phmcrdxln, pdxlnProjListChild);
 
 	// construct a limit node
-	CDXLPhysicalLimit *pdxlopLimit = GPOS_NEW(m_mp) CDXLPhysicalLimit(m_mp);
+	CDXLPhysicalLimit *pdxlopLimit =
+		GPOS_NEW(m_mp) CDXLPhysicalLimit(m_mp, is_daft);
 
 	// construct limit node from its components
 	CDXLNode *pdxlnLimit = GPOS_NEW(m_mp) CDXLNode(m_mp, pdxlopLimit);
@@ -4883,6 +5087,15 @@ CTranslatorExprToDXL::EdxljtHashJoin(CPhysicalHashJoin *popHJ)
 
 	switch (popHJ->Eopid())
 	{
+		case COperator::EopPhysicalDaftHashJoin:
+		{
+			pg_orca::daft::CPhysicalDaftHashJoin *daft_join =
+				pg_orca::daft::CPhysicalDaftHashJoin::PopConvert(popHJ);
+			return daft_join->JoinKind() ==
+					   pg_orca::daft::DaftJoinKind::Inner
+					   ? EdxljtInner
+					   : EdxljtLeft;
+		}
 		case COperator::EopPhysicalInnerHashJoin:
 			return EdxljtInner;
 

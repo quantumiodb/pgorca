@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 
+option(PG_ORCA_ENABLE_DAFT
+    "Build the optional ORCA/Daft integration (the Rust bridge remains runtime-loaded)"
+    OFF)
+message(STATUS "PG_ORCA_ENABLE_DAFT: ${PG_ORCA_ENABLE_DAFT}")
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug")
 endif()
@@ -51,6 +56,23 @@ endif()
 message(STATUS "PostgreSQL: ${PG_VERSION}")
 message(STATUS "  server headers: ${PG_SERVER_INCLUDEDIR}")
 message(STATUS "  pkglibdir:      ${PG_PKGLIBDIR}")
+
+set(PG_ORCA_DAFT_BRIDGE_LIBRARY
+    "${PG_PKGLIBDIR}/pg_orca/libdaft_pg_bridge.so"
+    CACHE FILEPATH "Default absolute path of the optional Daft bridge")
+set(PG_ORCA_DAFT_COST_MODEL_VERSION
+    "p0-unavailable"
+    CACHE STRING "Build identifier exposed by pg_orca.daft_cost_model_version")
+set(PG_ORCA_DAFT_BRIDGE_INCLUDE_DIR
+    "${CMAKE_SOURCE_DIR}/../daft/src/daft-pg-bridge/include"
+    CACHE PATH "Directory containing the canonical daft_pg_bridge.h")
+
+if(PG_ORCA_ENABLE_DAFT AND
+   NOT EXISTS "${PG_ORCA_DAFT_BRIDGE_INCLUDE_DIR}/daft_pg_bridge.h")
+    message(FATAL_ERROR
+        "PG_ORCA_ENABLE_DAFT=ON requires the canonical bridge header at "
+        "${PG_ORCA_DAFT_BRIDGE_INCLUDE_DIR}/daft_pg_bridge.h")
+endif()
 
 # -------------------------------------------------------------------
 # xerces-c (needed by ORCA for DXL XML parsing).
@@ -103,10 +125,10 @@ if(PG_ORCA_BUNDLED_XERCES)
         CXX_VISIBILITY_PRESET     hidden
         VISIBILITY_INLINES_HIDDEN ON)
 
-    # The xerces-c target propagates its include dirs as PUBLIC, so consumers
-    # only need to link to it. Keep XERCES_INCLUDE empty for the static path.
+    # The xerces-c target should propagate its include dirs as PUBLIC, but it doesn't.
+    # Explicitly set XERCES_INCLUDE to both source and build directories for bundled builds.
     set(XERCES_LIB     xerces-c)
-    set(XERCES_INCLUDE "")
+    set(XERCES_INCLUDE "${CMAKE_SOURCE_DIR}/third_party/xerces-c/src" "${CMAKE_BINARY_DIR}/third_party/xerces-c/src")
     message(STATUS "xerces-c: bundled static build (third_party/xerces-c)")
 else()
     # Legacy path: find a system-installed xerces-c.
@@ -184,6 +206,20 @@ file(GLOB_RECURSE ORCA_CORE_SRC CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/libgpdbcost/src/*.cpp
 )
 
+# The stock cost-model dispatchers live in orca_core and recognize the
+# extension-owned Daft physical operator ids.  Keep the small, PostgreSQL-free
+# Daft cost implementation in the same object library so core test binaries do
+# not acquire unresolved references to the pg_orca module.
+list(APPEND ORCA_CORE_SRC
+    ${CMAKE_SOURCE_DIR}/gpopt/daft/capability_snapshot.cpp
+    ${CMAKE_SOURCE_DIR}/gpopt/daft/cost_model.cpp
+    ${CMAKE_SOURCE_DIR}/gpopt/daft/fragment_fusion.cpp
+    ${CMAKE_SOURCE_DIR}/gpopt/daft/physical_operators.cpp
+    ${CMAKE_SOURCE_DIR}/gpopt/daft/plan_ir.cpp
+    ${CMAKE_SOURCE_DIR}/gpopt/daft/plan_validator.cpp
+    ${CMAKE_SOURCE_DIR}/gpopt/daft/rule_registry.cpp
+)
+
 add_library(orca_core OBJECT ${ORCA_CORE_SRC})
 
 # Pull in xerces-c headers via the target's PUBLIC interface. For the
@@ -229,13 +265,28 @@ file(GLOB_RECURSE GPOPT_SRC CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/gpopt/relcache/*.cpp
     ${CMAKE_SOURCE_DIR}/gpopt/translate/*.cpp
     ${CMAKE_SOURCE_DIR}/gpopt/utils/*.cpp
+    ${CMAKE_SOURCE_DIR}/gpopt/daft/*.cpp
     ${CMAKE_SOURCE_DIR}/gpopt/CGPOptimizer.cpp
     ${CMAKE_SOURCE_DIR}/gpopt/gpdbwrappers.cpp
 )
 
+# cost_model.cpp is linked through orca_core above.
+list(REMOVE_ITEM GPOPT_SRC ${CMAKE_SOURCE_DIR}/gpopt/daft/cost_model.cpp)
+list(REMOVE_ITEM GPOPT_SRC ${CMAKE_SOURCE_DIR}/gpopt/daft/capability_snapshot.cpp)
+list(REMOVE_ITEM GPOPT_SRC ${CMAKE_SOURCE_DIR}/gpopt/daft/fragment_fusion.cpp)
+list(REMOVE_ITEM GPOPT_SRC ${CMAKE_SOURCE_DIR}/gpopt/daft/physical_operators.cpp)
+list(REMOVE_ITEM GPOPT_SRC ${CMAKE_SOURCE_DIR}/gpopt/daft/plan_ir.cpp)
+list(REMOVE_ITEM GPOPT_SRC ${CMAKE_SOURCE_DIR}/gpopt/daft/plan_validator.cpp)
+list(REMOVE_ITEM GPOPT_SRC ${CMAKE_SOURCE_DIR}/gpopt/daft/rule_registry.cpp)
 # -------------------------------------------------------------------
 # pg_orca shared library (the actual PostgreSQL extension)
 # -------------------------------------------------------------------
+set(PG_ORCA_DAFT_LOADER_SRC "")
+if(PG_ORCA_ENABLE_DAFT)
+    list(APPEND PG_ORCA_DAFT_LOADER_SRC
+        compat/executor/daft_bridge_loader.cpp)
+endif()
+
 add_library(pg_orca MODULE
     pg_orca.cpp
     ${GPOPT_SRC}
@@ -245,6 +296,9 @@ add_library(pg_orca MODULE
     compat/utils/flatten_join_alias_var.c
     compat/utils/remove_redundant_results.cpp
     compat/executor/dyn_scan.c
+    compat/executor/daft_exec.cpp
+    compat/executor/daft_arrow.cpp
+    ${PG_ORCA_DAFT_LOADER_SRC}
 )
 
 set_target_properties(pg_orca PROPERTIES
@@ -262,6 +316,9 @@ endif()
 target_compile_definitions(pg_orca PRIVATE
     $<$<CONFIG:Debug>:GPOS_DEBUG>
     USE_CMAKE
+    PG_ORCA_ENABLE_DAFT=$<BOOL:${PG_ORCA_ENABLE_DAFT}>
+    PG_ORCA_DAFT_BRIDGE_DEFAULT="${PG_ORCA_DAFT_BRIDGE_LIBRARY}"
+    PG_ORCA_DAFT_COST_MODEL_VERSION="${PG_ORCA_DAFT_COST_MODEL_VERSION}"
 )
 
 target_compile_options(pg_orca PRIVATE
@@ -280,6 +337,7 @@ target_include_directories(pg_orca PRIVATE
     ${CMAKE_SOURCE_DIR}/libgpdbcost/include
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/compat
+    ${PG_ORCA_DAFT_BRIDGE_INCLUDE_DIR}
     SYSTEM
     ${PG_SERVER_INCLUDEDIR}
     ${PG_INCLUDEDIR}
@@ -312,6 +370,15 @@ install(FILES
     pg_orca.control
     pg_orca--1.0.0.sql
     DESTINATION "${PG_SHAREDIR}/extension")
+
+# A Daft-capable core package intentionally does not own the optional Rust
+# Bridge.  Install only the machine-readable split-package/ABI contract; the
+# Bridge itself is deployed to an immutable versioned path by operations.
+if(PG_ORCA_ENABLE_DAFT)
+    install(FILES
+        packaging/pg_orca-daft-manifest.json
+        DESTINATION "${PG_SHAREDIR}/extension")
+endif()
 
 # -------------------------------------------------------------------
 # gporca_test — standalone ORCA optimizer test binary
@@ -357,6 +424,23 @@ target_link_libraries(gporca_test PRIVATE ${XERCES_LIB})
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(gporca_test PRIVATE dl)
 endif()
+
+# Pure selected-fragment fusion/final-validator contract test.  It deliberately
+# links only the two implementation units under test, so it can run without a
+# PostgreSQL backend or a live Daft runtime.
+add_executable(daft_final_validator_selftest
+    test/daft_final_validator_selftest.cpp
+    gpopt/daft/fragment_fusion.cpp
+    gpopt/daft/plan_validator.cpp
+)
+target_include_directories(daft_final_validator_selftest PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/libgpos/include
+    ${CMAKE_SOURCE_DIR}/libgpopt/include
+    ${PG_SERVER_INCLUDEDIR}
+    ${PG_INCLUDEDIR}
+)
+target_compile_options(daft_final_validator_selftest PRIVATE -Wall)
 
 # -------------------------------------------------------------------
 # Packaging (DEB/RPM via CPack). Linux only.

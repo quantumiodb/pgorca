@@ -1,0 +1,124 @@
+-- =====================================================================
+-- daft_explain.sql  (P0-009-D)
+-- P0 EXPLAIN observability.  Auto mode has no production-calibrated cost
+-- profile yet, so it must yield a normal PG/ORCA plan and a stable, redacted
+-- daft_trace reason.  A synthetic force+trace profile makes the P0 candidate
+-- eligible.  The explicit, default-off daft_prefer_plan policy then discounts
+-- one complete Daft fragment once, making the real CBO-selected DaftExec path
+-- deterministic for integration testing without claiming a naturally faster
+-- calibrated plan.
+-- =====================================================================
+SET pg_orca.enable_orca = on;
+SET client_min_messages = info;
+SET pg_orca.daft_trace = on;
+CREATE TABLE daft_ex_t(a int);
+INSERT INTO daft_ex_t VALUES (1),(2),(3),(4),(5);
+-- off: plain plan, must not contain a DaftExec Custom Scan.
+SET pg_orca.daft_enable = 'off';
+EXPLAIN (COSTS OFF) SELECT count(*) FROM daft_ex_t;
+INFO:  pg_orca daft_trace candidate=not_generated reason=PGDAFT_MODE_OFF
+         QUERY PLAN          
+-----------------------------
+ Aggregate
+   ->  Seq Scan on daft_ex_t
+ Optimizer: pg_orca
+(3 rows)
+
+-- auto: no production-calibrated profile -> no DaftExec candidate.
+SET pg_orca.daft_enable = 'auto';
+EXPLAIN (COSTS OFF) SELECT count(*) FROM daft_ex_t;
+INFO:  pg_orca daft_trace candidate=not_generated reason=PGDAFT_COST_PROFILE_UNAVAILABLE
+         QUERY PLAN          
+-----------------------------
+ Aggregate
+   ->  Seq Scan on daft_ex_t
+ Optimizer: pg_orca
+(3 rows)
+
+-- The synthetic profile is test-only.  It makes Daft alternatives eligible
+-- so daft_trace can expose actual canonical cost calls and the CBO winner;
+-- it does not force a semantically/cost-wise inferior Daft plan to win.
+SET pg_orca.daft_enable = 'force';
+SET pg_orca.daft_cost_calibration_profile = 'test_prefer_daft_v1';
+SET work_mem = '4MB';
+SET hash_mem_multiplier = 2.0;
+SET effective_cache_size = '4GB';
+SET pg_orca.cost_model = 'pg';
+SET pg_orca.daft_prefer_plan = off;
+EXPLAIN (COSTS OFF) SELECT a FROM daft_ex_t LIMIT 2;
+INFO:  pg_orca daft_trace selected=pg reason=PGDAFT_CBO_PG_WINNER daft_prefer_plan=off daft_plan_cost_multiplier=1.000000 selected_plan_total_cost=0.027843 pg_to_arrow_calls=0 pg_to_arrow_min=0.000000 arrow_to_pg_calls=0 arrow_to_pg_min=0.000000 project_calls=0 project_min=0.000000 limit_calls=4 limit_min=0.000120
+         QUERY PLAN          
+-----------------------------
+ Limit
+   ->  Seq Scan on daft_ex_t
+ Optimizer: pg_orca
+(3 rows)
+
+-- Regression for the execution-format enforcer lower-bound cycle found by
+-- P0-010-B.  At this scale Daft boundary/Limit alternatives are costed, but
+-- the truthful P0 winner remains PG.  Planning must terminate without a
+-- CostLowerBound self-recursion or backend crash.
+CREATE TABLE daft_ex_big(a bigint);
+INSERT INTO daft_ex_big SELECT i FROM generate_series(1, 100000) i;
+ANALYZE daft_ex_big;
+EXPLAIN (COSTS OFF) SELECT a FROM daft_ex_big LIMIT 3000;
+INFO:  pg_orca daft_trace selected=pg reason=PGDAFT_CBO_PG_WINNER daft_prefer_plan=off daft_plan_cost_multiplier=1.000000 selected_plan_total_cost=43.290000 pg_to_arrow_calls=3 pg_to_arrow_min=0.300000 arrow_to_pg_calls=1 arrow_to_pg_min=50.300000 project_calls=0 project_min=0.000000 limit_calls=7 limit_min=0.180000
+          QUERY PLAN           
+-------------------------------
+ Limit
+   ->  Seq Scan on daft_ex_big
+ Optimizer: pg_orca
+(3 rows)
+
+-- Explicit preference changes only ranking of already-legal alternatives.
+-- The selected plan must be a real DaftExec, and CTAS must consume all rows
+-- through the dynamically loaded Rust ABI.  Validate its persisted result
+-- with ordinary PostgreSQL after returning the policy to its safe default.
+SET pg_orca.daft_prefer_plan = on;
+EXPLAIN (COSTS OFF) SELECT a FROM daft_ex_big LIMIT 3000;
+INFO:  pg_orca daft_trace selected=daft reason=PGDAFT_CBO_DAFT_WINNER daft_prefer_plan=on daft_plan_cost_multiplier=0.100000 selected_plan_total_cost=9.407000 pg_to_arrow_calls=5 pg_to_arrow_min=0.300000 arrow_to_pg_calls=2 arrow_to_pg_min=50.300000 project_calls=0 project_min=0.000000 limit_calls=10 limit_min=0.180000
+              QUERY PLAN               
+---------------------------------------
+ Custom Scan (DaftExec)
+   Daft Fragment: 1
+   Daft Operators: Limit
+   PG Sources: 1
+   Daft IR Version: 1.0
+   Estimated Input Rows: 3000
+   Offload Decision: accepted
+   ->  Limit
+         ->  Seq Scan on daft_ex_big
+ Optimizer: pg_orca
+(10 rows)
+
+CREATE TEMP TABLE daft_ex_result AS
+SELECT a FROM daft_ex_big LIMIT 3000;
+INFO:  pg_orca daft_trace selected=daft reason=PGDAFT_CBO_DAFT_WINNER daft_prefer_plan=on daft_plan_cost_multiplier=0.100000 selected_plan_total_cost=9.407000 pg_to_arrow_calls=5 pg_to_arrow_min=0.300000 arrow_to_pg_calls=2 arrow_to_pg_min=50.300000 project_calls=0 project_min=0.000000 limit_calls=10 limit_min=0.180000
+SET pg_orca.daft_prefer_plan = off;
+SET pg_orca.daft_trace = off;
+SELECT count(*) AS cnt, sum(a) AS total FROM daft_ex_result;
+ cnt  |  total  
+------+---------
+ 3000 | 4501500
+(1 row)
+
+SELECT count(*) AS cnt FROM daft_ex_t;
+ cnt 
+-----
+   5
+(1 row)
+
+-- The debug harness executes the unchanged P0 Project/Limit path, asserts
+-- ABI 1.1 boundary reconciliation, and internally walks EXPLAIN ANALYZE to
+-- require every P0/P1 field while rejecting payload/value/address classes.
+-- Its stable return text deliberately remains the P0 contract.
+CREATE OR REPLACE FUNCTION pg_daft_exec_selftest_v1(bigint, bigint, bigint, integer)
+RETURNS text
+AS '$libdir/pg_orca', 'pg_daft_exec_selftest_v1'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+\pset tuples_only on
+SELECT pg_daft_exec_selftest_v1(5, 5, -1, 0);
+ rows=5 sum=15 input_rows=5 input_batches=1 output_rows=5 output_batches=1 input_bytes=41 output_bytes=40 ended=yes custom_ps=1 walker_children=1 explain_root=1 explain_children=1 child_end=1
+
+\pset tuples_only off
+-- end of daft_explain

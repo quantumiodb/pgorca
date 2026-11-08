@@ -28,6 +28,7 @@ class CEnfdOrder;
 class CEnfdDistribution;
 class CEnfdRewindability;
 class CEnfdPartitionPropagation;
+class CEnfdExecutionFormat;
 class CExpressionHandle;
 class CCTEReq;
 class CPartInfo;
@@ -60,6 +61,9 @@ private:
 	// required partition propagation
 	CEnfdPartitionPropagation *m_pepp{nullptr};
 
+	// required in-memory execution format
+	CEnfdExecutionFormat *m_peef{nullptr};
+
 	// required ctes
 	CCTEReq *m_pcter{nullptr};
 
@@ -72,7 +76,7 @@ public:
 	// ctor
 	CReqdPropPlan(CColRefSet *pcrs, CEnfdOrder *peo, CEnfdDistribution *ped,
 				  CEnfdRewindability *per, CEnfdPartitionPropagation *pepp,
-				  CCTEReq *pcter);
+				  CEnfdExecutionFormat *peef, CCTEReq *pcter);
 
 	// dtor
 	~CReqdPropPlan() override;
@@ -140,6 +144,12 @@ public:
 	Pcter() const
 	{
 		return m_pcter;
+	}
+
+	CEnfdExecutionFormat *
+	Peef() const
+	{
+		return m_peef;
 	}
 
 	// given a property spec type, return the corresponding property spec member

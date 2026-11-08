@@ -1,0 +1,52 @@
+-- =====================================================================
+-- daft_parallel.sql  (P0-009-E)
+-- Parallel process gate and plan shape.  A real PG parallel worker calls a
+-- debug-only probe which executes the same pre-loader gate as BeginDaftExec.
+-- It must report rejection without touching the Bridge or Tokio runtime.
+-- =====================================================================
+
+SET pg_orca.enable_orca = on;
+SET pg_orca.daft_enable = 'auto';
+CREATE OR REPLACE FUNCTION pg_daft_process_gate_probe_v1()
+RETURNS integer
+AS '$libdir/pg_orca', 'pg_daft_process_gate_probe_v1'
+LANGUAGE C STABLE PARALLEL SAFE;
+
+CREATE TABLE daft_par_t(a int);
+INSERT INTO daft_par_t SELECT i FROM generate_series(1, 10000) i;
+ANALYZE daft_par_t;
+
+-- Force the planner toward parallelism.
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_leader_participation = off;
+
+-- Use the native PG planner and its debug parallel wrapper to guarantee that
+-- the probe itself runs in a worker.  The plan must contain Gather but no
+-- DaftExec; every input row must report worker-rejected (= 1).
+SET pg_orca.enable_orca = off;
+SET debug_parallel_query = on;
+EXPLAIN (COSTS OFF)
+SELECT min(pg_daft_process_gate_probe_v1()) AS gate_min,
+       max(pg_daft_process_gate_probe_v1()) AS gate_max,
+       count(*) AS worker_rows
+FROM daft_par_t;
+SELECT min(pg_daft_process_gate_probe_v1()) AS gate_min,
+       max(pg_daft_process_gate_probe_v1()) AS gate_max,
+       count(*) AS worker_rows
+FROM daft_par_t;
+
+RESET debug_parallel_query;
+RESET parallel_leader_participation;
+RESET max_parallel_workers_per_gather;
+RESET parallel_tuple_cost;
+RESET parallel_setup_cost;
+RESET min_parallel_index_scan_size;
+RESET min_parallel_table_scan_size;
+
+-- Result is correct regardless of plan shape.
+SELECT count(*) AS cnt FROM daft_par_t;
+-- end of daft_parallel

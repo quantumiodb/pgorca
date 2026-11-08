@@ -10,6 +10,8 @@
 //---------------------------------------------------------------------------
 
 #include "gpdbcost/CCostModelGPDB.h"
+#include "pg_orca/daft/cost_model.h"
+#include "pg_orca/daft/physical_operators.h"
 
 #include <cmath>
 #include <limits>
@@ -2812,6 +2814,67 @@ CCostModelGPDB::Cost(
 	GPOS_ASSERT(nullptr != pci);
 
 	COperator::EOperatorId op_id = exprhdl.Pop()->Eopid();
+	if (op_id == COperator::EopPhysicalDaftProject ||
+		op_id == COperator::EopPhysicalDaftLimit ||
+		op_id == COperator::EopPhysicalDaftFilter ||
+		op_id == COperator::EopPhysicalDaftHashJoin ||
+		op_id == COperator::EopPhysicalDaftHashAggregate ||
+		op_id == COperator::EopPhysicalDaftSort ||
+		op_id == COperator::EopPhysicalDaftTopN ||
+		op_id == COperator::EopPhysicalPgToArrow ||
+		op_id == COperator::EopPhysicalArrowToPg)
+	{
+		pg_orca::daft::DaftCostModel daft_cost(
+			pg_orca::daft::DaftCostParams::LoadFromConfig());
+		CCost local(0.0);
+		if (op_id == COperator::EopPhysicalDaftProject)
+			local = daft_cost.CostDaftProject(exprhdl, pci);
+		else if (op_id == COperator::EopPhysicalDaftLimit)
+			local = daft_cost.CostDaftLimit(exprhdl, pci);
+		else if (op_id == COperator::EopPhysicalDaftFilter)
+			local = daft_cost.CostDaftFilter(exprhdl, pci);
+		else if (op_id == COperator::EopPhysicalDaftHashJoin)
+		{
+			pg_orca::daft::CPhysicalDaftHashJoin *join =
+				pg_orca::daft::CPhysicalDaftHashJoin::PopConvert(exprhdl.Pop());
+			local = daft_cost.CostDaftHashJoin(
+				exprhdl, pci, join->BuildOnLeft(),
+				join->PdrgpexprOuterKeys()->Size());
+		}
+		else if (op_id == COperator::EopPhysicalDaftHashAggregate)
+		{
+			pg_orca::daft::CPhysicalDaftHashAggregate *aggregate =
+				pg_orca::daft::CPhysicalDaftHashAggregate::PopConvert(
+					exprhdl.Pop());
+			local = daft_cost.CostDaftHashAggregate(
+				exprhdl, pci,
+				aggregate->PdrgpcrGroupingCols()->Size());
+		}
+		else if (op_id == COperator::EopPhysicalDaftSort)
+		{
+			pg_orca::daft::CPhysicalDaftSort *sort =
+				pg_orca::daft::CPhysicalDaftSort::PopConvert(exprhdl.Pop());
+			local = daft_cost.CostDaftSort(
+				exprhdl, pci, sort->Pos()->UlSortColumns());
+		}
+		else if (op_id == COperator::EopPhysicalDaftTopN)
+		{
+			pg_orca::daft::CPhysicalDaftTopN *topn =
+				pg_orca::daft::CPhysicalDaftTopN::PopConvert(exprhdl.Pop());
+			local = daft_cost.CostDaftTopN(
+				exprhdl, pci, topn->Pos()->UlSortColumns());
+		}
+		else if (op_id == COperator::EopPhysicalPgToArrow)
+			local = daft_cost.CostPgToArrowBoundary(exprhdl, pci);
+		else
+			local = daft_cost.CostArrowToPgBoundary(exprhdl, pci);
+		CCost total =
+			CostChildren(m_mp, exprhdl, pci, m_cost_model_params) + local;
+		if (op_id == COperator::EopPhysicalArrowToPg)
+			return CCost(total.Get() *
+						 pg_orca::daft::DaftPlanCostMultiplier());
+		return total;
+	}
 	if (op_id == COperator::EopPhysicalComputeScalar)
 	{
 		return CostComputeScalar(m_mp, exprhdl, pci, m_cost_model_params, this);

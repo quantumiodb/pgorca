@@ -1,4 +1,5 @@
 test: base
+test: daft_arrow
 test: dpe
 test: olap_mdqa
 test: query_window
@@ -16,3 +17,18 @@ test: query_partition_mpp25707
 test: query_partition_list
 test: query_partition_static
 test: query_partition_pruning
+test: daft_loader
+test: daft_memo
+test: daft_filter
+test: daft_join
+test: daft_aggregate
+test: daft_rules
+test: daft_plancache
+test: daft_fallback
+test: daft_parallel
+test: daft_basic
+test: daft_cancel
+test: daft_errors
+test: daft_explain
+test: daft_sort_topn
+test: daft_planstate

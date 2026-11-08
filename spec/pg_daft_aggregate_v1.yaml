@@ -1,0 +1,131 @@
+# Normative P1 Aggregate admission contract. HASH_AGGREGATE remains BLOCKED in
+# pg_daft_capabilities.yaml until P1-002-B and P1-002-C close implementation and
+# differential-test gates. This file freezes what those tasks are allowed to
+# enable; it does not enable runtime capability bit 8 by itself.
+schema_version: 1
+contract_id: pg_daft_aggregate_v1
+status: FROZEN_NOT_ENABLED
+
+postgres_catalog_baseline:
+  server_version_num: 190000
+  query_source: pg_proc joined to pg_aggregate
+  rows:
+    - {semantic_id: count_star,  pg_aggregate_oid: 2803, arguments: [],         transition: int8inc,     combine: int8pl,      output_pg_oid: 20}
+    - {semantic_id: count_value, pg_aggregate_oid: 2147, arguments: [any],      transition: int8inc_any, combine: int8pl,      output_pg_oid: 20}
+    - {semantic_id: sum_int4,    pg_aggregate_oid: 2108, arguments: [int4],     transition: int4_sum,    combine: int8pl,      output_pg_oid: 20}
+    - {semantic_id: sum_int2,    pg_aggregate_oid: 2109, arguments: [int2],     transition: int2_sum,    combine: int8pl,      output_pg_oid: 20}
+    - {semantic_id: max_int4,    pg_aggregate_oid: 2116, arguments: [int4],     transition: int4larger, combine: int4larger,  output_pg_oid: 23}
+    - {semantic_id: max_int2,    pg_aggregate_oid: 2117, arguments: [int2],     transition: int2larger, combine: int2larger,  output_pg_oid: 21}
+    - {semantic_id: min_int4,    pg_aggregate_oid: 2132, arguments: [int4],     transition: int4smaller, combine: int4smaller, output_pg_oid: 23}
+    - {semantic_id: min_int2,    pg_aggregate_oid: 2133, arguments: [int2],     transition: int2smaller, combine: int2smaller, output_pg_oid: 21}
+
+admitted_matrix:
+  - semantic_id: count_star
+    pg_aggregate_oid: 2803
+    arg_pg_oids: []
+    output: {pg_oid: 20, arrow_format: l, daft_dtype: Int64, nullable: false}
+    null_and_empty_semantics: counts_every_input_row_and_returns_zero_for_empty_input
+    lowering: bridge_checked_count_all_i64
+  - semantic_id: count_value
+    pg_aggregate_oid: 2147
+    arg_pg_oids: [21, 23]
+    output: {pg_oid: 20, arrow_format: l, daft_dtype: Int64, nullable: false}
+    null_and_empty_semantics: ignores_null_arguments_and_returns_zero_when_no_non_null_input
+    lowering: bridge_checked_count_valid_i64
+  - semantic_id: sum_int2
+    pg_aggregate_oid: 2109
+    arg_pg_oids: [21]
+    output: {pg_oid: 20, arrow_format: l, daft_dtype: Int64, nullable: true}
+    null_and_empty_semantics: ignores_nulls_and_returns_null_when_no_non_null_input
+    lowering: bridge_checked_sum_i64
+  - semantic_id: sum_int4
+    pg_aggregate_oid: 2108
+    arg_pg_oids: [23]
+    output: {pg_oid: 20, arrow_format: l, daft_dtype: Int64, nullable: true}
+    null_and_empty_semantics: ignores_nulls_and_returns_null_when_no_non_null_input
+    lowering: bridge_checked_sum_i64
+  - semantic_id: min_int2
+    pg_aggregate_oid: 2133
+    arg_pg_oids: [21]
+    output: {pg_oid: 21, arrow_format: s, daft_dtype: Int16, nullable: true}
+    null_and_empty_semantics: ignores_nulls_and_returns_null_when_no_non_null_input
+    lowering: daft_min
+  - semantic_id: min_int4
+    pg_aggregate_oid: 2132
+    arg_pg_oids: [23]
+    output: {pg_oid: 23, arrow_format: i, daft_dtype: Int32, nullable: true}
+    null_and_empty_semantics: ignores_nulls_and_returns_null_when_no_non_null_input
+    lowering: daft_min
+  - semantic_id: max_int2
+    pg_aggregate_oid: 2117
+    arg_pg_oids: [21]
+    output: {pg_oid: 21, arrow_format: s, daft_dtype: Int16, nullable: true}
+    null_and_empty_semantics: ignores_nulls_and_returns_null_when_no_non_null_input
+    lowering: daft_max
+  - semantic_id: max_int4
+    pg_aggregate_oid: 2116
+    arg_pg_oids: [23]
+    output: {pg_oid: 23, arrow_format: i, daft_dtype: Int32, nullable: true}
+    null_and_empty_semantics: ignores_nulls_and_returns_null_when_no_non_null_input
+    lowering: daft_max
+
+node_contract:
+  stage: complete
+  grouping_mode: simple
+  group_keys:
+    expression_family: input_ref_only
+    admitted_pg_oids: [21, 23]
+    null_semantics: all_null_keys_form_one_group
+  global_empty_input: exactly_one_output_row
+  grouped_empty_input: zero_output_rows
+  internal_partial_aggregation:
+    allowed: true
+    meaning: Daft may split one complete SQL aggregate into internal block and combine states
+    not_the_same_as: PostgreSQL partial or finalize Aggregate plan stages
+
+overflow_contract:
+  count_and_sum_state_type: Int64
+  implementation: bridge_native_checked_aggregate
+  transition: checked_add_every_non_null_input
+  combine: checked_add_every_partial_state
+  on_overflow:
+    behavior: error
+    stable_reason_code: PGDAFT_AGG_INT8_OVERFLOW
+  forbidden_implementations:
+    - daft_native_integer_sum_because_release_build_can_wrap
+    - arrow_safe_narrowing_because_overflow_becomes_null
+    - decimal128_accumulate_then_final_narrow_because_it_misses_intermediate_int8_overflow
+  numeric_or_float_required: false
+
+aggregate_expression_contract:
+  distinct: false
+  order_by: []
+  filter: null
+  exact_oid_semantic_id_arg_type_and_output_type_match_required: true
+
+explicit_rejections:
+  - aggregate_distinct
+  - aggregate_order_by
+  - aggregate_filter
+  - grouping_sets
+  - rollup
+  - cube
+  - postgres_partial_aggregate
+  - postgres_finalize_aggregate
+  - mixed_or_distinct_aggregate_stage
+  - sum_int8
+  - sum_numeric
+  - sum_float4
+  - sum_float8
+  - min_or_max_outside_int2_int4
+  - non_input_ref_group_key
+  - collation_sensitive_group_key
+  - unknown_aggregate_oid
+  - semantic_id_oid_mismatch
+  - output_oid_or_nullability_mismatch
+
+golden_ir: pg_daft_aggregate_v1.golden.json
+enablement_gates:
+  - P1-002-B implements and unit-tests every lowering above
+  - P1-002-C proves PG differential results including empty all-null duplicates and overflow
+  - pg_daft_capabilities.yaml changes HASH_AGGREGATE from BLOCKED only after both gates pass

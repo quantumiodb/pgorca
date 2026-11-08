@@ -27,6 +27,7 @@ extern "C" {
 #include "optimizer/planmain.h"
 #include "compat/utils/misc.h"
 #include "compat/executor/dyn_scan.h"
+#include "pg_orca/daft/daft_config.h"
 #include "compat/utils/remove_redundant_results.h"
 #include "utils/rel.h"
 #include "access/table.h"
@@ -34,6 +35,20 @@ extern "C" {
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 }
+
+#if PG_ORCA_ENABLE_DAFT
+/* This is a C++ namespace API around the canonical C ABI and must not be
+ * included inside the broad extern "C" block above. */
+#include "pg_orca/daft/daft_exec.h"
+#include "pg_orca/daft/pg_daft_bridge.h"
+#endif
+
+/* Pure-C++ query-frozen capability snapshot + RAII scope. Included
+ * unconditionally: in non-Daft builds the planner still publishes an
+ * inactive (off) snapshot so any reader observes a well-defined state. */
+#include "pg_orca/daft/capability_snapshot.h"
+#include "pg_orca/daft/cost_model.h"
+#include "pg_orca/daft/plan_ir.h"
 
 /* ORCA entry points (C linkage, defined in gpopt/CGPOptimizer.cpp) */
 extern "C" {
@@ -46,6 +61,8 @@ extern PlannedStmt *GPOPTOptimizedPlan(Query *query, bool *had_unexpected_failur
 extern "C" {
 PG_MODULE_MAGIC;
 }
+
+#include <cfloat>
 
 /* pg_orca built-in GUC variables */
 static bool pg_orca_enabled       = false;
@@ -67,6 +84,28 @@ bool  optimizer_enable_motions                  = false;
 bool  optimizer_enable_motions_masteronly_queries = true;
 bool  optimizer_metadata_caching                = true;
 bool  optimizer_use_streaming_hashagg           = false;
+
+/* Daft execution engine GUCs.  The bool is a derived compatibility
+ * predicate; pg_orca.daft_enable itself is the enum mode below. */
+extern "C" {
+bool   pg_orca_daft_enable                      = false;
+int    pg_orca_daft_mode_value                  = PG_ORCA_DAFT_OFF;
+char  *pg_orca_daft_bridge_library              = NULL;
+int    pg_orca_daft_min_rows                    = 10000;
+double pg_orca_daft_min_cost                    = 10000.0;
+char  *pg_orca_daft_cost_model_version          = NULL;
+char  *pg_orca_daft_cost_calibration_profile    = NULL;
+bool   pg_orca_daft_prefer_plan                 = false;
+int    pg_orca_daft_batch_rows                  = 8192;
+int    pg_orca_daft_batch_bytes                 = 8 * 1024 * 1024;
+int    pg_orca_daft_memory_limit_mb             = 512;
+char  *pg_orca_daft_spill_dir                   = NULL;
+int    pg_orca_daft_max_sources_per_fragment    = 16;
+int    pg_orca_daft_max_inflight_batches        = 2;
+int    pg_orca_daft_worker_threads              = 2;
+int    pg_orca_daft_wait_timeout_ms             = 10;
+bool   pg_orca_daft_trace                       = false;
+}
 
 int   optimizer_mdcache_size                    = 16384;  /* KB */
 int   optimizer_segments                        = 1;
@@ -149,6 +188,53 @@ static const struct config_enum_entry pg_orca_cost_model_options[] = {
     {"pg",   PG_ORCA_COST_MODEL_PG,   false},
     {NULL, 0, false}
 };
+
+static const struct config_enum_entry pg_orca_daft_enable_options[] = {
+    {"off", PG_ORCA_DAFT_OFF, false},
+    {"auto", PG_ORCA_DAFT_AUTO, false},
+    {"force", PG_ORCA_DAFT_FORCE, false},
+    {NULL, 0, false}
+};
+
+static bool
+pg_orca_check_daft_enable(int *newval, void **extra, GucSource source)
+{
+    (void) extra;
+    (void) source;
+#if !PG_ORCA_ENABLE_DAFT
+    if (*newval != PG_ORCA_DAFT_OFF)
+    {
+        GUC_check_errdetail("pg_orca was built with PG_ORCA_ENABLE_DAFT=OFF");
+        return false;
+    }
+#endif
+    return true;
+}
+
+static void
+pg_orca_assign_daft_enable(int newval, void *extra)
+{
+    (void) extra;
+    /* auto/force express policy, not proven runtime availability.  The
+     * planner publishes candidates only after the lazy loader validates the
+     * complete ABI and capability digest in this backend. */
+    pg_orca_daft_enable = false;
+}
+
+static bool
+pg_orca_check_daft_memory_limit(int *newval, void **extra, GucSource source)
+{
+    (void) extra;
+    /* USERSET callers may lower the administrator default, while values over
+     * 512 MiB require a superuser. File/database/role defaults are installed
+     * by administrators and are therefore accepted during GUC startup. */
+    if (*newval > 512 && source == PGC_S_SESSION && !superuser())
+    {
+        GUC_check_errdetail("values over 512 MB require a superuser");
+        return false;
+    }
+    return true;
+}
 
 /* xforms array: indexed by xform id, true means disabled */
 bool  optimizer_xforms[512] = {false};
@@ -566,6 +652,52 @@ pg_orca_planner(Query *parse, const char *query_string,
 #endif
                 )
 {
+#if PG_ORCA_ENABLE_DAFT
+    /* Capability discovery is planning-time and backend-local.  It may
+     * dlopen the bridge, but the queried ABI functions are pure and do not
+     * create the Rust runtime; dpg_open_v1 remains an executor operation.
+     * Resolve the full vtable once here so the frozen capability snapshot
+     * can capture the validated ABI, runtime bits and digest. */
+    const pg_orca::daft::DpgBridgeVtable *daft_vtable = nullptr;
+    pg_orca::daft::DpgBridgeLoadReason daft_load_reason =
+        pg_orca::daft::DpgBridgeLoadReason::Disabled;
+    if (pg_orca_enabled && pg_orca_daft_mode_value != PG_ORCA_DAFT_OFF &&
+        parse->commandType == CMD_SELECT && parse->rtable != NIL &&
+        parse->rowMarks == NIL)
+    {
+        daft_vtable = pg_orca::daft::GetBridgeVtable(&daft_load_reason);
+        pg_orca_daft_enable = (daft_vtable != nullptr);
+        if (!pg_orca_daft_enable &&
+            pg_orca_daft_mode_value == PG_ORCA_DAFT_FORCE)
+            ereport(ERROR,
+                    (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                     errmsg("Daft execution is unavailable"),
+                     errdetail_internal("reason=%s",
+                         pg_orca::daft::DpgBridgeLoadReasonCode(
+                             daft_load_reason))));
+    }
+    else
+        pg_orca_daft_enable = false;
+#else
+    pg_orca_daft_enable = false;
+#endif
+
+    const bool daft_trace_query =
+        pg_orca_daft_trace && pg_orca_enabled &&
+        parse->commandType == CMD_SELECT && parse->rtable != NIL &&
+        parse->rowMarks == NIL;
+    if (daft_trace_query)
+    {
+        if (pg_orca_daft_mode_value == PG_ORCA_DAFT_OFF)
+            elog(INFO, "pg_orca daft_trace candidate=not_generated "
+                       "reason=PGDAFT_MODE_OFF");
+#if PG_ORCA_ENABLE_DAFT
+        else if (daft_vtable == nullptr)
+            elog(INFO, "pg_orca daft_trace candidate=not_generated reason=%s",
+                 pg_orca::daft::DpgBridgeLoadReasonCode(daft_load_reason));
+#endif
+    }
+
     /* Pure-expression queries (no rtable): ORCA would produce a plan that
      * breaks plpgsql's exec_simple_check_plan assertion — fall back.
      * Queries with row-locking clauses (FOR UPDATE/SHARE/etc.): ORCA does not
@@ -640,13 +772,160 @@ pg_orca_planner(Query *parse, const char *query_string,
         }
 
         bool had_unexpected_failure = false;
-        PlannedStmt *result = GPOPTOptimizedPlan(pqueryCopy, &had_unexpected_failure,
-                                                  pg_orca_trace_fallback);
+        PlannedStmt *result;
+        pg_orca::daft::ResetSelectedPlanFailure();
+        pg_orca::daft::ResetDaftCostTrace();
+
+        const bool daft_cost_profile_valid =
+            pg_orca::daft::DaftCalibrationProfileValid();
+        if (daft_trace_query && pg_orca_daft_enable &&
+            !daft_cost_profile_valid)
+            elog(INFO, "pg_orca daft_trace candidate=not_generated "
+                       "reason=PGDAFT_COST_PROFILE_UNAVAILABLE");
+        {
+            /*
+             * Freeze the Daft capability snapshot once for this planner call
+             * from the validated bridge vtable + the GUC mode, and publish it
+             * on a query-local scope for the duration of GPOPTOptimizedPlan().
+             * ORCA xforms read it through CapabilitySnapshot::Current() and
+             * observe one immutable address / runtime-bits / digest for the
+             * whole optimization. The scope RAII-restores the previous
+             * pointer, so this never leaks mutable global capability state.
+             */
+#if PG_ORCA_ENABLE_DAFT
+            pg_orca::daft::CapabilitySnapshot daft_snapshot(
+                    pg_orca_daft_mode_value,
+                    daft_vtable != nullptr,
+                    daft_vtable ? daft_vtable->reported_abi_major : 0,
+                    daft_vtable ? daft_vtable->reported_abi_minor : 0,
+                    daft_vtable ? daft_vtable->runtime_capabilities : 0,
+                    daft_vtable ? daft_vtable->capability_digest : nullptr);
+#else
+            pg_orca::daft::CapabilitySnapshot daft_snapshot(
+                    PG_ORCA_DAFT_OFF, false, 0, 0, 0, nullptr);
+#endif
+            pg_orca::daft::DaftQueryContextScope daft_scope(daft_snapshot);
+
+            result = GPOPTOptimizedPlan(pqueryCopy, &had_unexpected_failure,
+                                        pg_orca_trace_fallback);
+        }
+
+        pg_orca::daft::SelectedPlanFailureReason daft_failure_reason =
+            pg_orca::daft::SelectedPlanFailureReason::NONE;
+        char *daft_failure_detail = NULL;
+        {
+            pg_orca::daft::SelectedPlanFailure failure =
+                pg_orca::daft::GetSelectedPlanFailure();
+            daft_failure_reason = failure.reason;
+            if (!failure.detail.empty())
+                daft_failure_detail = pstrdup(failure.detail.c_str());
+        }
+
+        if (result == nullptr &&
+            pg_orca::daft::ShouldRetryOrcaWithoutDaft(
+                daft_failure_reason,
+                pg_orca_daft_mode_value == PG_ORCA_DAFT_AUTO,
+                false /* already_retried */))
+        {
+            /*
+             * The only selected-plan failure allowed to trigger a second
+             * ORCA search is an exact canonical payload that exceeded the
+             * frozen 1 MiB cap after its conservative candidate estimate.
+             * The second search publishes an OFF snapshot, so no Daft Xform
+             * can generate an alternative.  This is a whole-plan retry, once;
+             * no node in the rejected winner is patched or reused.
+             */
+            if (pg_orca_trace_fallback)
+                elog(INFO, "pg_orca: retrying ORCA once with Daft alternatives "
+                           "disabled after PGDAFT_PAYLOAD_TOO_LARGE");
+            pg_orca::daft::ResetSelectedPlanFailure();
+            pg_orca::daft::ResetDaftCostTrace();
+            pg_orca::daft::CapabilitySnapshot retry_snapshot(
+                PG_ORCA_DAFT_OFF, false, 0, 0, 0, nullptr);
+            {
+                pg_orca::daft::DaftQueryContextScope retry_scope(retry_snapshot);
+                result = GPOPTOptimizedPlan(
+                    (Query *) copyObject(pqueryCopy), &had_unexpected_failure,
+                    pg_orca_trace_fallback);
+            }
+
+            if (daft_failure_detail != NULL)
+            {
+                pfree(daft_failure_detail);
+                daft_failure_detail = NULL;
+            }
+            {
+                pg_orca::daft::SelectedPlanFailure retry_failure =
+                    pg_orca::daft::GetSelectedPlanFailure();
+                daft_failure_reason = retry_failure.reason;
+                if (!retry_failure.detail.empty())
+                    daft_failure_detail = pstrdup(retry_failure.detail.c_str());
+            }
+        }
 
         optimizer_join_order = saved_join_order;
 
+        if (result == nullptr &&
+            daft_failure_reason !=
+                pg_orca::daft::SelectedPlanFailureReason::NONE)
+        {
+            const char *reason_code =
+                daft_failure_reason ==
+                        pg_orca::daft::SelectedPlanFailureReason::PAYLOAD_TOO_LARGE
+                    ? "PGDAFT_PAYLOAD_TOO_LARGE"
+                    : "PGDAFT_FINAL_PLAN_INVALID";
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                     errmsg("pg_orca Daft selected-plan validation failed"),
+                     errdetail_internal("reason=%s detail=%s", reason_code,
+                                        daft_failure_detail != NULL
+                                            ? daft_failure_detail
+                                            : "unavailable")));
+        }
+        if (daft_failure_detail != NULL)
+            pfree(daft_failure_detail);
+
         if (result != nullptr)
         {
+            if (daft_trace_query && daft_cost_profile_valid)
+            {
+                const pg_orca::daft::DaftCostTraceSummary trace =
+                    pg_orca::daft::GetDaftCostTrace();
+                const bool selected_daft =
+                    pg_orca::daft::WasDaftPlanSelected();
+                elog(INFO,
+                     "pg_orca daft_trace selected=%s reason=%s "
+                     "daft_prefer_plan=%s daft_plan_cost_multiplier=%.6f "
+                     "selected_plan_total_cost=%.6f "
+                     "pg_to_arrow_calls=%u pg_to_arrow_min=%.6f "
+                     "arrow_to_pg_calls=%u arrow_to_pg_min=%.6f "
+                     "project_calls=%u project_min=%.6f "
+                     "limit_calls=%u limit_min=%.6f",
+                     selected_daft ? "daft" : "pg",
+                     selected_daft ? "PGDAFT_CBO_DAFT_WINNER"
+                                   : "PGDAFT_CBO_PG_WINNER",
+                     pg_orca_daft_prefer_plan ? "on" : "off",
+                     pg_orca::daft::DaftPlanCostMultiplier(),
+                     result->planTree != NULL
+                         ? result->planTree->total_cost
+                         : 0.0,
+                     trace.calls[static_cast<unsigned>(
+                         pg_orca::daft::DaftCostComponent::PgToArrow)],
+                     trace.minimum[static_cast<unsigned>(
+                         pg_orca::daft::DaftCostComponent::PgToArrow)],
+                     trace.calls[static_cast<unsigned>(
+                         pg_orca::daft::DaftCostComponent::ArrowToPg)],
+                     trace.minimum[static_cast<unsigned>(
+                         pg_orca::daft::DaftCostComponent::ArrowToPg)],
+                     trace.calls[static_cast<unsigned>(
+                         pg_orca::daft::DaftCostComponent::Project)],
+                     trace.minimum[static_cast<unsigned>(
+                         pg_orca::daft::DaftCostComponent::Project)],
+                     trace.calls[static_cast<unsigned>(
+                         pg_orca::daft::DaftCostComponent::Limit)],
+                     trace.minimum[static_cast<unsigned>(
+                         pg_orca::daft::DaftCostComponent::Limit)]);
+            }
             result->planId = ORCA_PLAN_ID;
 
             /*
@@ -782,6 +1061,111 @@ void _PG_init(void)
         true,
         PGC_USERSET,
         0, NULL, NULL, NULL);
+
+    /* Daft execution engine GUCs.  Registration is harmless in an OFF build:
+     * the enum check hook rejects auto/force and no bridge code is invoked. */
+    DefineCustomEnumVariable(
+        "pg_orca.daft_enable",
+        "Daft execution mode (off | auto | force).",
+        NULL,
+        &pg_orca_daft_mode_value,
+        PG_ORCA_DAFT_OFF,
+        pg_orca_daft_enable_options,
+        PGC_USERSET,
+        0, pg_orca_check_daft_enable, pg_orca_assign_daft_enable, NULL);
+
+    DefineCustomStringVariable(
+        "pg_orca.daft_bridge_library",
+        "Absolute path to the optional Rust Daft bridge library.",
+        NULL, &pg_orca_daft_bridge_library, PG_ORCA_DAFT_BRIDGE_DEFAULT,
+        PGC_SUSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.daft_min_rows",
+        "Candidate-pruning row hint; it never replaces CBO costing.",
+        NULL, &pg_orca_daft_min_rows, 10000, 0, INT_MAX,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomRealVariable(
+        "pg_orca.daft_min_cost",
+        "Candidate-pruning cost hint; it never replaces CBO costing.",
+        NULL, &pg_orca_daft_min_cost, 10000.0, 0.0, DBL_MAX,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomStringVariable(
+        "pg_orca.daft_cost_model_version",
+        "Build identifier for reproducing ORCA Daft cost choices.",
+        NULL, &pg_orca_daft_cost_model_version,
+        PG_ORCA_DAFT_COST_MODEL_VERSION,
+        PGC_INTERNAL, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+
+    DefineCustomStringVariable(
+        "pg_orca.daft_cost_calibration_profile",
+        "Versioned Daft cost calibration profile.",
+        NULL, &pg_orca_daft_cost_calibration_profile, "default",
+        PGC_SUSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "pg_orca.daft_prefer_plan",
+        "Prefer eligible Daft fragments by multiplying each fragment's "
+        "complete accumulated cost by 0.1 at its ArrowToPg exit.",
+        "This is an explicit plan-selection policy, not calibrated runtime cost.",
+        &pg_orca_daft_prefer_plan, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.daft_batch_rows",
+        "Preferred number of PostgreSQL input rows per Arrow batch.",
+        NULL, &pg_orca_daft_batch_rows, 8192, 1, INT_MAX,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.daft_batch_bytes",
+        "Soft byte limit for one PostgreSQL input Arrow batch.",
+        NULL, &pg_orca_daft_batch_bytes, 8 * 1024 * 1024, 1024, INT_MAX,
+        PGC_USERSET, GUC_UNIT_BYTE, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.daft_memory_limit_mb",
+        "Per-fragment memory limit; values over 512 MB require a superuser.",
+        NULL, &pg_orca_daft_memory_limit_mb, 512, 1, INT_MAX,
+        PGC_USERSET, GUC_UNIT_MB, pg_orca_check_daft_memory_limit, NULL, NULL);
+
+    DefineCustomStringVariable(
+        "pg_orca.daft_spill_dir",
+        "Administrator-controlled absolute spill directory (empty disables spill).",
+        NULL, &pg_orca_daft_spill_dir, "",
+        PGC_SUSET, 0, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.daft_max_sources_per_fragment",
+        "Maximum number of PostgreSQL-owned sources in one Daft fragment.",
+        NULL, &pg_orca_daft_max_sources_per_fragment, 16, 1, 1024,
+        PGC_SUSET, 0, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.daft_max_inflight_batches",
+        "Maximum in-flight Arrow batches per PostgreSQL-owned source.",
+        NULL, &pg_orca_daft_max_inflight_batches, 2, 1, 4096,
+        PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.daft_worker_threads",
+        "Daft runtime worker limit per PostgreSQL backend.",
+        NULL, &pg_orca_daft_worker_threads, 2, 1, 256,
+        PGC_SUSET, 0, NULL, NULL, NULL);
+
+    DefineCustomIntVariable(
+        "pg_orca.daft_wait_timeout_ms",
+        "Maximum duration of one bridge wait before checking interrupts.",
+        NULL, &pg_orca_daft_wait_timeout_ms, 10, 1, 1000,
+        PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "pg_orca.daft_trace",
+        "Emit redacted Daft candidate and canonical cost diagnostics.",
+        NULL, &pg_orca_daft_trace, false,
+        PGC_USERSET, 0, NULL, NULL, NULL);
 
     /* ORCA tuning GUCs */
     DefineCustomBoolVariable(
@@ -967,6 +1351,9 @@ void _PG_init(void)
     MarkGUCPrefixReserved("pg_orca");
 
     RegisterDynScanCustomScanMethods();
+#if PG_ORCA_ENABLE_DAFT
+    pg_orca::daft::RegisterDaftCustomScanMethods();
+#endif
 
     /*
      * Hook chain conventions:

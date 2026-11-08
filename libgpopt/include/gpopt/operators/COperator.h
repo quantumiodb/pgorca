@@ -280,6 +280,17 @@ public:
 		// is large (e.g. TPC-H Q22's NOT EXISTS on orders).
 		EopPhysicalLeftAntiSemiHashJoinBuildOuter,
 
+		// Physical alternatives executed by an embedded Daft fragment.
+		EopPhysicalPgToArrow,
+		EopPhysicalArrowToPg,
+			EopPhysicalDaftProject,
+			EopPhysicalDaftLimit,
+			EopPhysicalDaftFilter,
+			EopPhysicalDaftHashJoin,
+			EopPhysicalDaftHashAggregate,
+			EopPhysicalDaftSort,
+			EopPhysicalDaftTopN,
+
 		EopSentinel
 	};
 

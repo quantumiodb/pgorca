@@ -18,6 +18,7 @@
 #include "gpopt/operators/CExpression.h"
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CPredicateUtils.h"
+#include "gpopt/xforms/CXformFactory.h"
 #include "naucrates/statistics/CFilterStatsProcessor.h"
 using namespace gpopt;
 
@@ -102,6 +103,11 @@ CLogicalSelect::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfSelect2DynamicBitmapBoolOp);
 	(void) xform_set->ExchangeSet(CXform::ExfSimplifySelectWithSubquery);
 	(void) xform_set->ExchangeSet(CXform::ExfSelect2Filter);
+	if (CXformFactory::Pxff()->IsXformIdUsed(
+			CXform::ExfDaftImplementFilter))
+	{
+		(void) xform_set->ExchangeSet(CXform::ExfDaftImplementFilter);
+	}
 	if (GPOS_FTRACE(EopttraceForceSplitWindowFunc))
 		(void) xform_set->ExchangeSet(CXform::ExfSplitWindowFunc);
 	return xform_set;

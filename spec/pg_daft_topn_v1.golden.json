@@ -1,0 +1,47 @@
+{
+  "capability_registry_sha256": "f0ce6eaa98c598d9c98132d05f09595a366eb1af84a284caf95f0394cb087e53",
+  "required_runtime_capability_bits": 1039,
+  "fragment_id": 1,
+  "root_node_id": 2,
+  "pg_source_drive_order": [0],
+  "sources": [
+    {
+      "source_id": 0,
+      "fields": [
+        {"column_id": 1, "name": "_pgd_f1_s0_c1", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}},
+        {"column_id": 2, "name": "_pgd_f1_s0_c2", "type": {"pg_oid": 25, "typmod": -1, "collation_oid": 950, "nullable": true, "arrow_format": "u", "daft_dtype": "Utf8"}},
+        {"column_id": 3, "name": "_pgd_f1_s0_c3", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": false, "arrow_format": "l", "daft_dtype": "Int64"}}
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "kind": "source",
+      "source_id": 0,
+      "output": [
+        {"column_id": 1, "name": "_pgd_f1_s0_c1", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}},
+        {"column_id": 2, "name": "_pgd_f1_s0_c2", "type": {"pg_oid": 25, "typmod": -1, "collation_oid": 950, "nullable": true, "arrow_format": "u", "daft_dtype": "Utf8"}},
+        {"column_id": 3, "name": "_pgd_f1_s0_c3", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": false, "arrow_format": "l", "daft_dtype": "Int64"}}
+      ]
+    },
+    {
+      "id": 2,
+      "kind": "top_n",
+      "input": 1,
+      "keys": [
+        {"expr": {"kind": "input_ref", "column_id": 1, "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}, "pg_sort_operator_oid": 521, "direction": "desc", "nulls_first": false, "collation_semantics": "none"},
+        {"expr": {"kind": "input_ref", "column_id": 2, "type": {"pg_oid": 25, "typmod": -1, "collation_oid": 950, "nullable": true, "arrow_format": "u", "daft_dtype": "Utf8"}}, "pg_sort_operator_oid": 664, "direction": "asc", "nulls_first": true, "collation_semantics": "c"},
+        {"expr": {"kind": "input_ref", "column_id": 3, "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": false, "arrow_format": "l", "daft_dtype": "Int64"}}, "pg_sort_operator_oid": 412, "direction": "asc", "nulls_first": false, "collation_semantics": "none"}
+      ],
+      "limit": 3,
+      "offset": 2
+    }
+  ],
+  "output_schema": [
+    {"column_id": 1, "name": "_pgd_f1_s0_c1", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}},
+    {"column_id": 2, "name": "_pgd_f1_s0_c2", "type": {"pg_oid": 25, "typmod": -1, "collation_oid": 950, "nullable": true, "arrow_format": "u", "daft_dtype": "Utf8"}},
+    {"column_id": 3, "name": "_pgd_f1_s0_c3", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": false, "arrow_format": "l", "daft_dtype": "Int64"}}
+  ],
+  "payload_sha256": "335d5ff83d2a32f428c760fc0624dcc5c480677580b8995731742e0ea511e14c"
+}

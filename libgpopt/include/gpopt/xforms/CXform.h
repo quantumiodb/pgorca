@@ -243,6 +243,16 @@ public:
 		ExfReduceAggInputViaCTE,
 		// Build-on-outer anti-semi hash join (Hash Right Anti Join in PG).
 		ExfLeftAntiSemiJoin2HashJoinBuildOuter,
+		// Daft implementation alternatives.  Keep these at the end so existing
+		// trace-flag/xform IDs remain stable.
+			ExfDaftImplementProject,
+			ExfDaftImplementLimit,
+			ExfDaftImplementFilter,
+			ExfDaftImplementInnerHashJoin,
+			ExfDaftImplementLeftHashJoin,
+			ExfDaftImplementHashAggregate,
+			ExfDaftImplementPlainAggregate,
+			ExfDaftImplementTopN,
 		ExfInvalid,
 		ExfSentinel = ExfInvalid
 	};

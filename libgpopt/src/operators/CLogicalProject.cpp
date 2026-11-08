@@ -24,6 +24,7 @@
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CScalarIdent.h"
 #include "gpopt/operators/CScalarProjectElement.h"
+#include "gpopt/xforms/CXformFactory.h"
 
 using namespace gpopt;
 using namespace gpnaucrates;
@@ -326,6 +327,11 @@ CLogicalProject::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfProject2Apply);
 	(void) xform_set->ExchangeSet(CXform::ExfProject2ComputeScalar);
 	(void) xform_set->ExchangeSet(CXform::ExfCollapseProject);
+	if (CXformFactory::Pxff()->IsXformIdUsed(
+			CXform::ExfDaftImplementProject))
+	{
+		(void) xform_set->ExchangeSet(CXform::ExfDaftImplementProject);
+	}
 
 	return xform_set;
 }

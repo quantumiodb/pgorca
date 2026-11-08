@@ -1,0 +1,56 @@
+-- =====================================================================
+-- daft_errors.sql  (P0-009-E)
+-- Error handling: runtime errors must surface cleanly and the backend must
+-- keep working afterwards (no hang, no crash).  Autocommit means each
+-- statement is its own transaction, so an ERROR aborts only that statement.
+-- The debug-only harness drives a real DaftExec and real Rust Bridge.  An
+-- injected PG child error must close the Bridge handle; a second DaftExec in
+-- the same backend proves that the active-fragment guard was also cleared.
+-- =====================================================================
+SET pg_orca.enable_orca = on;
+CREATE OR REPLACE FUNCTION pg_daft_exec_selftest_v1(bigint, bigint, bigint, integer)
+RETURNS text
+AS '$libdir/pg_orca', 'pg_daft_exec_selftest_v1'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+SET pg_orca.daft_enable = 'force';
+SET pg_orca.daft_batch_rows = 1;
+-- The third child pull fails after two rows crossed the Arrow boundary.
+\pset tuples_only on
+SELECT pg_daft_exec_selftest_v1(10, 10, 2, 0);
+ERROR:  PGDAFT_TEST_SOURCE_ERROR after_rows=2
+-- A new real DaftExec opens and closes cleanly in the same backend.
+SELECT pg_daft_exec_selftest_v1(3, 3, -1, 0);
+ rows=3 sum=6 input_rows=3 input_batches=3 output_rows=3 output_batches=3 input_bytes=27 output_bytes=24 ended=yes custom_ps=1 walker_children=1 explain_root=1 explain_children=1 child_end=1
+
+\pset tuples_only off
+SET pg_orca.daft_enable = 'auto';
+CREATE TABLE daft_err_t(a int unique);
+INSERT INTO daft_err_t VALUES (1), (2), (3);
+-- Division by zero: clean ERROR, statement aborts.
+SELECT 1 / 0 FROM daft_err_t;
+ERROR:  division by zero
+-- Backend recovers; subsequent statement works.
+SELECT count(*) AS still_works FROM daft_err_t;
+ still_works 
+-------------
+           3
+(1 row)
+
+-- Unique violation: clean ERROR.
+INSERT INTO daft_err_t VALUES (1);
+ERROR:  duplicate key value violates unique constraint "daft_err_t_a_key"
+DETAIL:  Key (a)=(1) already exists.
+-- Recovers again.
+SELECT a FROM daft_err_t ORDER BY a;
+ a 
+---
+ 1
+ 2
+ 3
+(3 rows)
+
+-- Undefined table: clean ERROR.
+SELECT * FROM daft_err_does_not_exist;
+ERROR:  relation "daft_err_does_not_exist" does not exist
+LINE 1: SELECT * FROM daft_err_does_not_exist;
+                      ^

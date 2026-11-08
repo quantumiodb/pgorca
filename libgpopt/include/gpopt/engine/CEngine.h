@@ -181,7 +181,8 @@ private:
 	static BOOL FProhibited(CEnfdProp::EPropEnforcingType epetOrder,
 							CEnfdProp::EPropEnforcingType epetDistribution,
 							CEnfdProp::EPropEnforcingType epetRewindability,
-							CEnfdProp::EPropEnforcingType epetPropagation);
+							CEnfdProp::EPropEnforcingType epetPropagation,
+							CEnfdProp::EPropEnforcingType epetExecutionFormat);
 
 	// check whether the given memo groups can be marked as duplicates. This is
 	// true only if they have the same logical properties
@@ -191,7 +192,8 @@ private:
 	static BOOL FOptimize(CEnfdProp::EPropEnforcingType epetOrder,
 						  CEnfdProp::EPropEnforcingType epetDistribution,
 						  CEnfdProp::EPropEnforcingType epetRewindability,
-						  CEnfdProp::EPropEnforcingType epetPropagation);
+						  CEnfdProp::EPropEnforcingType epetPropagation,
+						  CEnfdProp::EPropEnforcingType epetExecutionFormat);
 
 	// unrank the plan with the given 'plan_id' from the memo
 	CExpression *PexprUnrank(ULLONG plan_id);

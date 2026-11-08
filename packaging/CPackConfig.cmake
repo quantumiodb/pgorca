@@ -59,6 +59,12 @@ Apache Cloudberry) into a standard single-node PostgreSQL ${PG_MAJOR} \
 instance via the planner_hook interface. ORCA operates on an XML-based \
 intermediate representation called DXL; queries it cannot handle fall \
 back transparently to the standard PostgreSQL planner.")
+if(PG_ORCA_ENABLE_DAFT)
+    string(APPEND CPACK_PACKAGE_DESCRIPTION
+        " This build contains the optional lazy Daft integration, disabled "
+        "by default; the separately versioned Rust Bridge is not owned by "
+        "this core package.")
+endif()
 set(CPACK_PACKAGE_HOMEPAGE_URL   "https://github.com/apache/cloudberry")
 set(CPACK_RESOURCE_FILE_LICENSE  "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_RESOURCE_FILE_README   "${CMAKE_SOURCE_DIR}/README.md")

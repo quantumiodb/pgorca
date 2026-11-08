@@ -20,6 +20,7 @@ extern "C" {
 #include "access/attmap.h"
 #include "access/sysattr.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_type.h"
 /* cdb/cdbutil.h not present in PG18 — using compat stubs */
 #include "cdb/cdb_plan_nodes.h"
 /* cdb/cdbvars.h not present in PG18 */
@@ -30,6 +31,7 @@ extern "C" {
 #include "nodes/nodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/primnodes.h"
+#include "parser/parsetree.h"
 #include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
 #include "rewrite/rewriteManip.h"
@@ -81,6 +83,8 @@ extern "C" {
 #include "gpopt/translate/CPartPruneStepsBuilder.h"
 #include "gpopt/translate/CTranslatorDXLToPlStmt.h"
 #include "gpopt/translate/CTranslatorUtils.h"
+#include "pg_orca/daft/daft_exec.h"
+#include "pg_orca/daft/plan_ir.h"
 #include "naucrates/dxl/operators/CDXLDatumGeneric.h"
 #include "naucrates/dxl/operators/CDXLDirectDispatchInfo.h"
 #include "naucrates/dxl/operators/CDXLNode.h"
@@ -140,6 +144,231 @@ using namespace gpdxl;
 using namespace gpos;
 using namespace gpopt;
 using namespace gpmd;
+
+namespace
+{
+int64
+DaftLimitValue(const Node *node, int64 default_value)
+{
+	if (nullptr == node || !IsA(node, Const))
+		return default_value;
+
+	const Const *constant = reinterpret_cast<const Const *>(node);
+	if (constant->constisnull)
+		return default_value;
+
+	switch (constant->consttype)
+	{
+		case INT2OID:
+			return DatumGetInt16(constant->constvalue);
+		case INT4OID:
+			return DatumGetInt32(constant->constvalue);
+		case INT8OID:
+			return DatumGetInt64(constant->constvalue);
+		default:
+			return default_value;
+	}
+}
+
+struct DaftResolveVarContext
+{
+	Plan *plan;
+};
+
+Node *
+ResolveDaftOutputVars(Node *node, void *context_ptr)
+{
+	if (node == nullptr)
+		return nullptr;
+
+	DaftResolveVarContext *context =
+		reinterpret_cast<DaftResolveVarContext *>(context_ptr);
+	if (IsA(node, Var))
+	{
+		Var *var = reinterpret_cast<Var *>(node);
+		Plan *source_plan = nullptr;
+		List *source_targetlist = NIL;
+
+		if (var->varno == OUTER_VAR)
+			source_plan = context->plan->lefttree;
+		else if (var->varno == INNER_VAR)
+			source_plan = context->plan->righttree;
+		else if (var->varno == INDEX_VAR &&
+				 IsA(context->plan, CustomScan))
+		{
+			source_targetlist =
+				((CustomScan *) context->plan)->custom_scan_tlist;
+		}
+		else
+			return reinterpret_cast<Node *>(copyObject(var));
+
+		if (source_plan != nullptr)
+			source_targetlist = source_plan->targetlist;
+		TargetEntry *source_tle =
+			get_tle_by_resno(source_targetlist, var->varattno);
+		if (source_tle == nullptr)
+			return reinterpret_cast<Node *>(copyObject(var));
+
+		DaftResolveVarContext source_context = {
+			source_plan != nullptr ? source_plan : context->plan};
+		return ResolveDaftOutputVars(
+			reinterpret_cast<Node *>(source_tle->expr), &source_context);
+	}
+
+	return expression_tree_mutator(node, ResolveDaftOutputVars, context_ptr);
+}
+
+List *
+MakeDaftScanTargetList(Plan *template_plan)
+{
+	List *targetlist = NIL;
+	ListCell *cell = nullptr;
+	DaftResolveVarContext context = {template_plan};
+	foreach (cell, template_plan->targetlist)
+	{
+		TargetEntry *source_tle = (TargetEntry *) lfirst(cell);
+		TargetEntry *resolved_tle =
+			reinterpret_cast<TargetEntry *>(copyObject(source_tle));
+		resolved_tle->expr = reinterpret_cast<Expr *>(ResolveDaftOutputVars(
+			reinterpret_cast<Node *>(source_tle->expr), &context));
+		targetlist = lappend(targetlist, resolved_tle);
+	}
+	return targetlist;
+}
+
+Plan *
+UnwrapDaftHashInput(Plan *plan)
+{
+	return plan != nullptr && IsA(plan, Hash) ? outerPlan(plan) : plan;
+}
+
+Plan *
+FindDaftCarrierHashJoin(Plan *plan)
+{
+	Plan *current = plan;
+	while (current != nullptr && !IsA(current, HashJoin))
+	{
+		if (innerPlan(current) != nullptr || outerPlan(current) == nullptr)
+			return nullptr;
+		current = outerPlan(current);
+	}
+	return current;
+}
+
+void
+CollectDaftCarrierLeaves(Plan *plan, List **sources)
+{
+	Plan *carrier = FindDaftCarrierHashJoin(plan);
+	if (carrier == nullptr)
+	{
+		*sources = lappend(*sources, UnwrapDaftHashInput(plan));
+		return;
+	}
+	CollectDaftCarrierLeaves(outerPlan(carrier), sources);
+	CollectDaftCarrierLeaves(UnwrapDaftHashInput(innerPlan(carrier)), sources);
+}
+
+Plan *
+MakeDaftCustomScan(Plan *template_plan, Plan *child_plan,
+				   const std::string &payload_json, ULONG source_count,
+				   const std::string &output_nullability)
+{
+	pg_orca::daft::MarkDaftPlanSelected();
+	CustomScan *custom_scan = makeNode(CustomScan);
+	custom_scan->methods = pg_orca::daft::GetDaftCustomScanMethods();
+	custom_scan->scan.scanrelid = 0;
+	custom_scan->flags = 0;
+	List *source_plans = NIL;
+	if (source_count == 1)
+	{
+		source_plans = list_make1(child_plan);
+	}
+	else
+	{
+		Plan *carrier = FindDaftCarrierHashJoin(child_plan);
+		if (carrier != nullptr && source_count == 2)
+		{
+			// The common P1 two-table case is exact and deliberately does not
+			// inspect either PG-owned source subtree; a source is allowed to be
+			// a PostgreSQL HashJoin of its own.
+			source_plans = list_make2(
+				outerPlan(carrier),
+				UnwrapDaftHashInput(innerPlan(carrier)));
+		}
+		else
+		{
+			CollectDaftCarrierLeaves(child_plan, &source_plans);
+		}
+		if (list_length(source_plans) != static_cast<int>(source_count))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("DaftExec source carrier does not match selected fragment"),
+					 errdetail_internal("expected %lu sources, found %d",
+									static_cast<unsigned long>(source_count),
+									list_length(source_plans))));
+	}
+	custom_scan->custom_plans = source_plans;
+	custom_scan->custom_exprs = NIL;
+	custom_scan->custom_relids = nullptr;
+
+	Size payload_size = payload_json.size();
+	bytea *payload = reinterpret_cast<bytea *>(palloc(payload_size + VARHDRSZ));
+	SET_VARSIZE(payload, payload_size + VARHDRSZ);
+	memcpy(VARDATA(payload), payload_json.data(), payload_size);
+	Const *payload_const = makeConst(
+		BYTEAOID, -1, InvalidOid, -1, PointerGetDatum(payload), false, false);
+	custom_scan->custom_private = list_make2(
+		payload_const, makeString(pstrdup(output_nullability.c_str())));
+
+	Plan *plan = &custom_scan->scan.plan;
+	plan->disabled_nodes = template_plan->disabled_nodes;
+	plan->startup_cost = template_plan->startup_cost;
+	plan->total_cost = template_plan->total_cost;
+	plan->plan_rows = template_plan->plan_rows;
+	plan->plan_width = template_plan->plan_width;
+	plan->parallel_aware = false;
+	plan->parallel_safe = false;
+	plan->async_capable = false;
+	plan->plan_node_id = template_plan->plan_node_id;
+	// A CustomScan without scanrelid exposes its internal row through
+	// custom_scan_tlist.  PostgreSQL requires the public target list to refer
+	// to those columns with INDEX_VAR; copying the child's relation Vars here
+	// trips ExecAssignScanProjectionInfoWithVarno() in assert builds.
+	// The Limit/Result wrapper target list can contain OUTER_VAR references.
+	// Resolve those references through the wrapper's child, but retain only
+	// the columns that the selected Daft fragment actually exports.  The PG
+	// source child can contain extra predicate-only columns and is therefore
+	// not a valid description of the CustomScan's output tuple.
+	custom_scan->custom_scan_tlist = MakeDaftScanTargetList(template_plan);
+	List *custom_targetlist = NIL;
+	ListCell *cell = nullptr;
+	foreach (cell, template_plan->targetlist)
+	{
+		TargetEntry *source_tle = (TargetEntry *) lfirst(cell);
+		Node *source_expr = (Node *) source_tle->expr;
+		Var *output_var = makeVar(
+			INDEX_VAR, source_tle->resno, exprType(source_expr),
+			exprTypmod(source_expr), exprCollation(source_expr), 0);
+		TargetEntry *output_tle = makeTargetEntry(
+			(Expr *) output_var, source_tle->resno,
+			source_tle->resname ? pstrdup(source_tle->resname) : nullptr,
+			source_tle->resjunk);
+		output_tle->ressortgroupref = source_tle->ressortgroupref;
+		output_tle->resorigtbl = source_tle->resorigtbl;
+		output_tle->resorigcol = source_tle->resorigcol;
+		custom_targetlist = lappend(custom_targetlist, output_tle);
+	}
+	plan->targetlist = custom_targetlist;
+	plan->qual = NIL;
+	plan->lefttree = nullptr;
+	plan->righttree = nullptr;
+	plan->initPlan = template_plan->initPlan;
+	plan->extParam = template_plan->extParam;
+	plan->allParam = template_plan->allParam;
+
+	return plan;
+}
+}  // namespace
 
 #define GPDXL_ROOT_PLAN_ID -1
 #define GPDXL_PLAN_ID_START 1
@@ -1638,6 +1867,8 @@ CTranslatorDXLToPlStmt::TranslateDXLLimit(
 	// cleanup
 	child_contexts->Release();
 
+	CDXLPhysicalLimit *dxl_limit =
+		CDXLPhysicalLimit::Cast(limit_dxlnode->GetOperator());
 	return (Plan *) limit;
 }
 
@@ -4010,6 +4241,52 @@ restore_unknown_locale_resname(const Query *query, TargetEntry *target_entry)
 	}
 }
 
+// Build the visible tuple descriptor for an already-selected Daft fragment.
+// The DXL project list names the fragment's outputs, but computed outputs such
+// as COUNT/SUM do not exist in the PG-owned source child and therefore cannot
+// be translated as child Vars.  Typed NULLs are descriptor placeholders only;
+// DaftExec fills the CustomScan slot and the public target list references it
+// through INDEX_VAR.
+static List *
+MakeDaftPayloadTargetList(const CDXLNode *project_list_dxlnode,
+					  CDXLTranslateContext *output_context)
+{
+	List *target_list = NIL;
+	for (ULONG ul = 0; ul < project_list_dxlnode->Arity(); ++ul)
+	{
+		CDXLNode *project_element = (*project_list_dxlnode)[ul];
+		GPOS_ASSERT(EdxlopScalarProjectElem ==
+					project_element->GetOperator()->GetDXLOperator());
+		GPOS_ASSERT(1 == project_element->Arity());
+
+		CDXLScalarProjElem *project_operator =
+			CDXLScalarProjElem::Cast(project_element->GetOperator());
+		CDXLNode *expression = (*project_element)[0];
+		if (EdxlopScalarIdent !=
+			expression->GetOperator()->GetDXLOperator())
+		{
+			GPOS_RAISE(gpdxl::ExmaDXL,
+					   gpdxl::ExmiDXL2PlStmtAttributeNotFound,
+					   project_operator->Id());
+		}
+
+		CDXLScalarIdent *identifier =
+			CDXLScalarIdent::Cast(expression->GetOperator());
+		Oid type_oid = CMDIdGPDB::CastMdid(identifier->MdidType())->Oid();
+		TargetEntry *target_entry = makeTargetEntry(
+			(Expr *) makeNullConst(type_oid, identifier->TypeModifier(),
+								   gpdb::TypeCollation(type_oid)),
+			(AttrNumber) (ul + 1),
+			CTranslatorUtils::CreateMultiByteCharStringFromWCString(
+				project_operator->GetMdNameAlias()->GetMDName()->GetBuffer()),
+			false);
+		restore_unknown_locale_resname(output_context->GetQuery(), target_entry);
+		output_context->InsertMapping(project_operator->Id(), target_entry);
+		target_list = gpdb::LAppend(target_list, target_entry);
+	}
+	return target_list;
+}
+
 //------------------------------------------------------------------------------
 // If a result plan node is not required on top of a project set node then the
 // alias parameter needs to be set for all the project set nodes else not
@@ -4188,6 +4465,26 @@ CTranslatorDXLToPlStmt::TranslateDXLResult(
 	CDXLNode *filter_dxlnode = (*result_dxlnode)[EdxlresultIndexFilter];
 	CDXLNode *one_time_filter_dxlnode =
 		(*result_dxlnode)[EdxlresultIndexOneTimeFilter];
+	CDXLPhysicalResult *dxl_result =
+		CDXLPhysicalResult::Cast(result_dxlnode->GetOperator());
+	if (dxl_result->HasDaftPayload())
+	{
+		// The ArrowToPg carrier is created only with empty Result filters.  Its
+		// project columns describe Daft's output tuple, not columns to evaluate
+		// against the PG source child.
+		GPOS_ASSERT(0 == filter_dxlnode->Arity());
+		GPOS_ASSERT(0 == one_time_filter_dxlnode->Arity());
+		plan->targetlist =
+			MakeDaftPayloadTargetList(project_list_dxlnode, output_context);
+		plan->qual = NIL;
+		result->resconstantqual = nullptr;
+		plan->lefttree = child_plan;
+		SetParamIds(plan);
+		return MakeDaftCustomScan(plan, child_plan,
+							  dxl_result->DaftPayload(),
+							  dxl_result->DaftSourceCount(),
+							  dxl_result->DaftOutputNullability());
+	}
 	List *quals_list = nullptr;
 
 	CDXLTranslationContextArray *child_contexts =

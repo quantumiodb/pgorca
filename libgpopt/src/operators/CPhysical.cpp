@@ -92,6 +92,7 @@ CPhysical::UpdateOptRequests(ULONG ulPropIndex, ULONG ulRequests)
 	const ULONG ulDistrRequests = UlDistrRequests();
 	const ULONG ulRewindRequests = UlRewindRequests();
 	const ULONG ulPartPropagateRequests = UlPartPropagateRequests();
+	const ULONG ulExecutionFormatRequests = UlExecutionFormatRequests();
 
 	CRefCount::SafeRelease(m_pdrgpulpOptReqsExpanded);
 	m_pdrgpulpOptReqsExpanded = nullptr;
@@ -113,8 +114,20 @@ CPhysical::UpdateOptRequests(ULONG ulPropIndex, ULONG ulRequests)
 					pulpRequest[1] = ulDistr;
 					pulpRequest[2] = ulRewind;
 					pulpRequest[3] = ulPartPropagate;
-
-					m_pdrgpulpOptReqsExpanded->Append(pulpRequest);
+					for (ULONG ulExecutionFormat = 0;
+						 ulExecutionFormat < ulExecutionFormatRequests;
+						 ulExecutionFormat++)
+					{
+						ULONG_PTR *pulpFormatRequest = GPOS_NEW_ARRAY(
+							m_mp, ULONG_PTR, GPOPT_PLAN_PROPS);
+						for (ULONG ul = 0; ul < 4; ul++)
+						{
+							pulpFormatRequest[ul] = pulpRequest[ul];
+						}
+						pulpFormatRequest[4] = ulExecutionFormat;
+						m_pdrgpulpOptReqsExpanded->Append(pulpFormatRequest);
+					}
+					GPOS_DELETE_ARRAY(pulpRequest);
 				}
 			}
 		}
@@ -137,7 +150,8 @@ CPhysical::LookupRequest(
 	ULONG *pulOrderReq,			// output: order request number
 	ULONG *pulDistrReq,			// output: distribution request number
 	ULONG *pulRewindReq,		// output: rewindability request number
-	ULONG *pulPartPropagateReq	// output: partition propagation request number
+	ULONG *pulPartPropagateReq,	// output: partition propagation request number
+	ULONG *pulExecutionFormatReq  // output: execution format request number
 )
 {
 	GPOS_ASSERT(nullptr != m_pdrgpulpOptReqsExpanded);
@@ -146,12 +160,14 @@ CPhysical::LookupRequest(
 	GPOS_ASSERT(nullptr != pulDistrReq);
 	GPOS_ASSERT(nullptr != pulRewindReq);
 	GPOS_ASSERT(nullptr != pulPartPropagateReq);
+	GPOS_ASSERT(nullptr != pulExecutionFormatReq);
 
 	ULONG_PTR *pulpRequest = (*m_pdrgpulpOptReqsExpanded)[ulReqNo];
 	*pulOrderReq = (ULONG) pulpRequest[0];
 	*pulDistrReq = (ULONG) pulpRequest[1];
 	*pulRewindReq = (ULONG) pulpRequest[2];
 	*pulPartPropagateReq = (ULONG) pulpRequest[3];
+	*pulExecutionFormatReq = (ULONG) pulpRequest[4];
 }
 
 
@@ -1002,6 +1018,32 @@ CPhysical::PppsRequired(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	allowed_scan_ids->Release();
 
 	return pps_result;
+}
+
+CExecutionFormatSpec *
+CPhysical::PefsRequired(CMemoryPool *mp, CExpressionHandle &,
+						CExecutionFormatSpec *, ULONG,
+						CDrvdPropArray *, ULONG) const
+{
+	return GPOS_NEW(mp)
+		CExecutionFormatSpec(CExecutionFormatSpec::EefPgRow);
+}
+
+CExecutionFormatSpec *
+CPhysical::PefsDerive(CMemoryPool *mp, CExpressionHandle &) const
+{
+	return GPOS_NEW(mp)
+		CExecutionFormatSpec(CExecutionFormatSpec::EefPgRow);
+}
+
+CEnfdProp::EPropEnforcingType
+CPhysical::EpetExecutionFormat(CExpressionHandle &exprhdl,
+							   const CEnfdExecutionFormat *peef) const
+{
+	CExecutionFormatSpec *pefs =
+		CDrvdPropPlan::Pdpplan(exprhdl.Pdp())->Pefs();
+	return peef->FCompatible(pefs) ? CEnfdProp::EpetUnnecessary
+								   : CEnfdProp::EpetRequired;
 }
 
 CEnfdProp::EPropEnforcingType

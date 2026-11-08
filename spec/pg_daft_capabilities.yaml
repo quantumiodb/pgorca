@@ -1,0 +1,783 @@
+schema_version: 1
+registry_version: 1
+generated_files_must_not_be_edited: true
+
+source_lock:
+  postgres19: 7873db5369b967dd53984df34fd800003410d04f
+  pg_orca: 55339728f8987ff351d3e88e033a0dc3be78465f
+  daft: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+
+protocol:
+  ir_major: 1
+  ir_minor: 0
+  abi_major: 1
+  abi_minor: 1
+  cost_model_version: 1
+
+status_values:
+  - ORCA_EQUIVALENT
+  - PORTED_XFORM
+  - CBO_PHYSICAL_ALT
+  - DAFT_LOWERING_ONLY
+  - NOT_APPLICABLE
+  - BLOCKED
+
+runtime_policy:
+  default_enabled: false
+  enable_requires_differential_test: true
+  unknown_is_reject: true
+  digest_algorithm: sha256
+  registry_row_is_not_runtime_bit: true
+  optimizer_rules_may_have_runtime_bits: false
+  reserved_runtime_bits_must_be_zero: true
+
+# These bits report reusable runtime prerequisites and execution entry points.
+# They are not one-per-row aliases for the registry below. A registry entry may
+# require zero or more bits, and the same bit may be shared by many entries.
+runtime_capability_bits:
+  - {bit: 0, id: PLAN_V1, initial_enabled: true}
+  - {bit: 1, id: ARROW_C_DATA_V1, initial_enabled: true}
+  - {bit: 2, id: EMBEDDED_SWORDFISH, initial_enabled: true}
+  - {bit: 3, id: PG_OWNED_SOURCE, initial_enabled: true}
+  - {bit: 4, id: PROJECT, initial_enabled: true}
+  - {bit: 5, id: LIMIT, initial_enabled: true}
+  - {bit: 6, id: FILTER, initial_enabled: true}
+  - {bit: 7, id: HASH_JOIN, initial_enabled: true}
+  - {bit: 8, id: HASH_AGGREGATE, initial_enabled: true}
+  - {bit: 9, id: SORT, initial_enabled: true}
+  - {bit: 10, id: TOP_N, initial_enabled: true}
+  - {bit: 11, id: SPILL, initial_enabled: false}
+  - {bit: 12, id: EXTERNAL_PARQUET_SCAN, initial_enabled: false}
+  - {bit: 13, id: ARROW_FLIGHT_SIDECAR, initial_enabled: false}
+  - {bit: 14, id: PROVIDER_TRANSFORMERS, initial_enabled: false}
+  - {bit: 15, id: PROVIDER_OPENAI, initial_enabled: false}
+  - {bit: 16, id: PROVIDER_LM_STUDIO, initial_enabled: false}
+  - {bit: 17, id: PROVIDER_GOOGLE, initial_enabled: false}
+  - {bit: 18, id: PROVIDER_VLLM, initial_enabled: false}
+
+types:
+  - id: BOOL
+    pg_oid: 16
+    arrow_format: b
+    daft_dtype: Boolean
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: BYTEA
+    pg_oid: 17
+    arrow_format: z
+    daft_dtype: Binary
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: INT8
+    pg_oid: 20
+    arrow_format: l
+    daft_dtype: Int64
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: INT2
+    pg_oid: 21
+    arrow_format: s
+    daft_dtype: Int16
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: INT4
+    pg_oid: 23
+    arrow_format: i
+    daft_dtype: Int32
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: TEXT
+    pg_oid: 25
+    arrow_format: u
+    daft_dtype: Utf8
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+    constraints: [database_encoding_utf8, collation_c_or_posix_for_semantic_operations]
+  - id: VARCHAR
+    pg_oid: 1043
+    arrow_format: u
+    daft_dtype: Utf8
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+    constraints: [database_encoding_utf8, typmod_preserved]
+  - id: DATE
+    pg_oid: 1082
+    arrow_format: tdD
+    daft_dtype: Date
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: TIMESTAMP
+    pg_oid: 1114
+    arrow_format: "tsu:"
+    daft_dtype: TimestampMicroseconds
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: TIMESTAMPTZ
+    pg_oid: 1184
+    arrow_format: "tsu:UTC"
+    daft_dtype: TimestampMicrosecondsUTC
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+
+plan_nodes:
+  - id: SOURCE
+    ir_kind: source
+    phase: P0
+    status: CBO_PHYSICAL_ALT
+    requires_runtime_bits: [PLAN_V1, ARROW_C_DATA_V1, EMBEDDED_SWORDFISH, PG_OWNED_SOURCE]
+    implementation_evidence: [P0-004, P0-005, P0-007, daft-pg-bridge/execution_v1]
+  - id: PROJECT
+    ir_kind: project
+    phase: P0
+    status: CBO_PHYSICAL_ALT
+    requires_runtime_bits: [PLAN_V1, ARROW_C_DATA_V1, EMBEDDED_SWORDFISH, PROJECT]
+    implementation_evidence: [P0-008-B, daft-pg-bridge/execution_v1]
+  - id: LIMIT
+    ir_kind: limit
+    phase: P0
+    status: CBO_PHYSICAL_ALT
+    requires_runtime_bits: [PLAN_V1, ARROW_C_DATA_V1, EMBEDDED_SWORDFISH, LIMIT]
+    constraints: [constant_nonnegative_offset, constant_nonnegative_count]
+    implementation_evidence: [P0-008-B, daft-pg-bridge/execution_v1]
+  - id: FILTER
+    ir_kind: filter
+    phase: P1
+    status: CBO_PHYSICAL_ALT
+    requires_runtime_bits: [PLAN_V1, ARROW_C_DATA_V1, EMBEDDED_SWORDFISH, FILTER]
+    constraints: [immutable_predicate_whitelist, sql_where_three_valued_logic]
+    implementation_evidence: [P1-001-A, daft-pg-bridge/execution_v1]
+  - id: HASH_JOIN
+    ir_kind: hash_join
+    phase: P1
+    status: CBO_PHYSICAL_ALT
+    requires_runtime_bits: [PLAN_V1, ARROW_C_DATA_V1, EMBEDDED_SWORDFISH, HASH_JOIN]
+    constraints: [inner_or_left, equi_keys, null_equals_null_false]
+    implementation_evidence: [P1-001-B, P1-001-C, daft-pg-bridge/ir_v1]
+  - id: HASH_AGGREGATE
+    ir_kind: hash_aggregate
+    phase: P1
+    status: CBO_PHYSICAL_ALT
+    requires_runtime_bits: [PLAN_V1, ARROW_C_DATA_V1, EMBEDDED_SWORDFISH, HASH_AGGREGATE]
+    implementation_evidence: [P1-002-B, P1-002-C, daft-pg-bridge/execution_v1]
+  - id: SORT
+    ir_kind: sort
+    phase: P1
+    status: CBO_PHYSICAL_ALT
+    requires_runtime_bits: [PLAN_V1, ARROW_C_DATA_V1, EMBEDDED_SWORDFISH, SORT]
+    constraints: [admitted_noncollatable_type, exact_builtin_btree_operator, actual_retained_bytes_bounded]
+    implementation_evidence: [P1-003-B, P1-003-C, daft-pg-bridge/execution_v1]
+  - id: TOP_N
+    ir_kind: top_n
+    phase: P1
+    status: CBO_PHYSICAL_ALT
+    requires_runtime_bits: [PLAN_V1, ARROW_C_DATA_V1, EMBEDDED_SWORDFISH, TOP_N]
+    constraints: [constant_nonnegative_limit, constant_nonnegative_offset, admitted_noncollatable_type, exact_builtin_btree_operator, incremental_global_prefix_bounded]
+    implementation_evidence: [P1-003-B, P1-003-C, daft-pg-bridge/execution_v1]
+
+expression_families:
+  - id: INPUT_REF
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: LITERAL
+    phase: P0
+    status: DAFT_LOWERING_ONLY
+  - id: BOOL_EXPR
+    phase: P1
+    status: DAFT_LOWERING_ONLY
+  - id: COMPARE
+    phase: P1
+    status: DAFT_LOWERING_ONLY
+  - id: ARITHMETIC
+    phase: P1
+    status: BLOCKED
+  - id: NULL_TEST
+    phase: P1
+    status: DAFT_LOWERING_ONLY
+  - id: CAST
+    phase: P1
+    status: BLOCKED
+
+optimizer_rules:
+  - name: LiftProjectFromAgg
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/lift_project_from_agg.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [aggregate_expression_identity_and_aliases_preserved]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfCollapseProject]
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/lift_project_from_agg.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/LiftProjectFromAgg]
+    blocked_reason_code: PGDAFT_RULE_EQUIVALENCE_TEST_PENDING
+  - name: RewriteCountDistinct
+    current_status: BLOCKED
+    target_classification: PORTED_XFORM
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/rewrite_count_distinct.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [aggregate_oid_null_and_distinct_semantics_preserved]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSplitDQA, ExfGbAggWithMDQA2Join]
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/rewrite_count_distinct.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/RewriteCountDistinct]
+    blocked_reason_code: PGDAFT_RULE_DISTINCT_AGG_SEMANTICS_UNPROVEN
+  - name: UnnestScalarSubquery
+    current_status: BLOCKED
+    target_classification: BLOCKED
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: FUTURE
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/unnest_subquery.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [correlation_and_scalar_multirow_error_semantics_proven]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSimplifyProjectWithSubquery, ExfProject2Apply, ExfInnerApply2InnerJoin]
+      cost_or_stats_bridge: ORCA_MEMO_COST_MODEL
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/unnest_subquery.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/UnnestScalarSubquery]
+    blocked_reason_code: PGDAFT_RULE_SCALAR_SUBQUERY_SEMANTICS_UNPROVEN
+  - name: UnnestPredicateSubquery
+    current_status: BLOCKED
+    target_classification: BLOCKED
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: FUTURE
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/unnest_subquery.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [semi_anti_correlation_and_three_valued_logic_proven]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSimplifySelectWithSubquery, ExfSelect2Apply, ExfLeftSemiApply2LeftSemiJoin, ExfLeftAntiSemiApply2LeftAntiSemiJoin]
+      cost_or_stats_bridge: ORCA_MEMO_COST_MODEL
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/unnest_subquery.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/UnnestPredicateSubquery]
+    blocked_reason_code: PGDAFT_RULE_PREDICATE_SUBQUERY_SEMANTICS_UNPROVEN
+  - name: EliminateSubqueryAliasRule
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/eliminate_subquery_alias.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [column_identity_survives_dxl_alias_canonicalization]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/eliminate_subquery_alias.rs]
+    test_ids: [P1-004-C/daft_rules/EliminateSubqueryAliasRule]
+    blocked_reason_code: PGDAFT_RULE_NO_CONCRETE_XFORM_MAPPING
+  - name: ExtractWindowFunction
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/extract_window_function.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [window_partition_order_frame_and_null_semantics_proven]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSplitWindowFunc, ExfImplementSequenceProject]
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/extract_window_function.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/ExtractWindowFunction]
+    blocked_reason_code: PGDAFT_RULE_WINDOW_EXECUTION_UNSUPPORTED
+  - name: SplitExplodeFromProject
+    current_status: BLOCKED
+    target_classification: BLOCKED
+    requires_stats: false
+    changes_cardinality_or_order: true
+    phase: FUTURE
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/split_explode_from_project.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [explode_cardinality_null_and_error_semantics_proven]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/split_explode_from_project.rs]
+    test_ids: [P1-004-C/daft_rules/SplitExplodeFromProject]
+    blocked_reason_code: PGDAFT_RULE_EXPLODE_UNSUPPORTED
+  - name: SimplifyExpressionsRule
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/simplify_expressions.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [volatility_collation_overflow_and_error_timing_preserved]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/simplify_expressions.rs]
+    test_ids: [P1-004-C/daft_rules/SimplifyExpressionsRule]
+    blocked_reason_code: PGDAFT_RULE_SCALAR_EQUIVALENCE_UNPROVEN
+  - name: FilterNullJoinKey
+    current_status: BLOCKED
+    target_classification: PORTED_XFORM
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/filter_null_join_key.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [inner_equi_join_and_null_equals_null_false_only]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: ORCA_MEMO_COST_MODEL
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/filter_null_join_key.rs]
+    test_ids: [P1-004-C/daft_rules/FilterNullJoinKey]
+    blocked_reason_code: PGDAFT_RULE_NULL_JOIN_KEY_EQUIVALENCE_UNPROVEN
+  - name: PushDownAntiSemiJoin
+    current_status: BLOCKED
+    target_classification: PORTED_XFORM
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: FUTURE
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/push_down_anti_semi_join.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [semi_anti_join_null_and_correlation_constraints_proven]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSemiJoinInnerJoinSwap, ExfAntiSemiJoinInnerJoinSwap]
+      cost_or_stats_bridge: ORCA_MEMO_COST_MODEL
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/push_down_anti_semi_join.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/PushDownAntiSemiJoin]
+    blocked_reason_code: PGDAFT_RULE_SEMI_ANTI_JOIN_UNSUPPORTED
+  - name: DropRepartition
+    current_status: BLOCKED
+    target_classification: DAFT_LOWERING_ONLY
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/drop_repartition.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [selected_fragment_already_satisfies_required_distribution]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: POST_CBO_SELECTED_FRAGMENT_LOWERING
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/drop_repartition.rs]
+    test_ids: [P1-004-C/daft_rules/DropRepartition]
+    blocked_reason_code: PGDAFT_RULE_LOWERING_CONTRACT_TEST_PENDING
+    lowering_contract: {preserves_global_winner: true, preserves_cardinality: true, preserves_order: true, preserves_distribution: true, preserves_engine_boundaries: true}
+  - name: DropIntoBatches
+    current_status: BLOCKED
+    target_classification: DAFT_LOWERING_ONLY
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/drop_into_batches.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [batching_changes_only_morsel_organization]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: POST_CBO_SELECTED_FRAGMENT_LOWERING
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/drop_into_batches.rs]
+    test_ids: [P1-004-C/daft_rules/DropIntoBatches]
+    blocked_reason_code: PGDAFT_RULE_LOWERING_CONTRACT_TEST_PENDING
+    lowering_contract: {preserves_global_winner: true, preserves_cardinality: true, preserves_order: true, preserves_distribution: true, preserves_engine_boundaries: true}
+  - name: PushDownFilter
+    current_status: BLOCKED
+    target_classification: PORTED_XFORM
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/push_down_filter.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [rls_security_barrier_leakproof_and_volatility_constraints_proven]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfPushDownLeftOuterJoin]
+      cost_or_stats_bridge: ORCA_MEMO_COST_MODEL
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/push_down_filter.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/PushDownFilter]
+    blocked_reason_code: PGDAFT_RULE_FILTER_PUSHDOWN_EQUIVALENCE_UNPROVEN
+  - name: PushDownProjection
+    current_status: BLOCKED
+    target_classification: PORTED_XFORM
+    requires_stats: true
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/push_down_projection.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [required_columns_and_expression_error_timing_preserved]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfCollapseProject, ExfProject2ComputeScalar]
+      cost_or_stats_bridge: ORCA_MEMO_COST_MODEL
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/push_down_projection.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/PushDownProjection]
+    blocked_reason_code: PGDAFT_RULE_PROJECTION_PUSHDOWN_EQUIVALENCE_UNPROVEN
+  - name: EliminateCrossJoin
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/eliminate_cross_join.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [inner_join_graph_without_outer_or_lateral_constraints]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfExpandNAryJoin, ExfExpandNAryJoinDPv2]
+      cost_or_stats_bridge: ORCA_MEMO_JOIN_ORDER_COST
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/eliminate_cross_join.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/EliminateCrossJoin]
+    blocked_reason_code: PGDAFT_RULE_JOIN_GRAPH_EQUIVALENCE_TEST_PENDING
+  - name: SimplifyNullFilteredJoin
+    current_status: BLOCKED
+    target_classification: PORTED_XFORM
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/simplify_null_filtered_join.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [predicate_is_provably_null_rejecting]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSimplifyLeftOuterJoin]
+      cost_or_stats_bridge: ORCA_MEMO_COST_MODEL
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/simplify_null_filtered_join.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/SimplifyNullFilteredJoin]
+    blocked_reason_code: PGDAFT_RULE_NULL_REJECTING_PROOF_MISSING
+  - name: PushDownJoinPredicate
+    current_status: BLOCKED
+    target_classification: PORTED_XFORM
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/push_down_join_predicate.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [join_side_type_leakproof_and_lateral_constraints_proven]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfJoinAssociativity, ExfInnerJoinCommutativity]
+      cost_or_stats_bridge: ORCA_MEMO_JOIN_ORDER_COST
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/push_down_join_predicate.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/PushDownJoinPredicate]
+    blocked_reason_code: PGDAFT_RULE_JOIN_PREDICATE_EQUIVALENCE_UNPROVEN
+  - name: EliminateOffsets
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: false
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/eliminate_offsets.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [constant_nonnegative_offset_and_order_contract_preserved]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSplitLimit]
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/eliminate_offsets.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/EliminateOffsets]
+    blocked_reason_code: PGDAFT_RULE_OFFSET_EQUIVALENCE_TEST_PENDING
+  - name: RewriteOffset
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: false
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/rewrite_offset.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [constant_nonnegative_offset_limit_and_order_contract_preserved]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSplitLimit]
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/rewrite_offset.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/RewriteOffset]
+    blocked_reason_code: PGDAFT_RULE_OFFSET_REWRITE_TEST_PENDING
+  - name: PushDownLimit
+    current_status: BLOCKED
+    target_classification: PORTED_XFORM
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/push_down_limit.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [deterministic_order_and_operator_commutation_proven]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfSplitLimit, ExfImplementLimit]
+      cost_or_stats_bridge: ORCA_MEMO_COST_MODEL
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/push_down_limit.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/PushDownLimit]
+    blocked_reason_code: PGDAFT_RULE_LIMIT_PUSHDOWN_EQUIVALENCE_UNPROVEN
+  - name: SplitUDFsFromFilters
+    current_status: BLOCKED
+    target_classification: BLOCKED
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P2_AI
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/split_udfs.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [pg_udf_identity_volatility_error_timing_and_cost_available]
+    supported_execution_modes: [python_runtime]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/split_udfs.rs]
+    test_ids: [P1-004-C/daft_rules/SplitUDFsFromFilters]
+    blocked_reason_code: PGDAFT_RULE_PYTHON_UDF_UNSUPPORTED
+  - name: SplitUDFs
+    current_status: BLOCKED
+    target_classification: BLOCKED
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P2_AI
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/split_udfs.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [pg_udf_identity_volatility_error_timing_and_cost_available]
+    supported_execution_modes: [python_runtime]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/split_udfs.rs]
+    test_ids: [P1-004-C/daft_rules/SplitUDFs]
+    blocked_reason_code: PGDAFT_RULE_PYTHON_UDF_UNSUPPORTED
+  - name: SplitVLLM
+    current_status: BLOCKED
+    target_classification: BLOCKED
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P2_AI
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/split_vllm.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [vllm_provider_identity_batching_and_cost_available]
+    supported_execution_modes: [distributed_vllm]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/split_vllm.rs]
+    test_ids: [P1-004-C/daft_rules/SplitVLLM]
+    blocked_reason_code: PGDAFT_RULE_VLLM_NOT_APPLICABLE
+  - name: DetectMonotonicId
+    current_status: BLOCKED
+    target_classification: NOT_APPLICABLE
+    requires_stats: false
+    changes_cardinality_or_order: true
+    phase: FUTURE
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/detect_monotonic_id.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [pg_visible_monotonic_id_function_contract_exists]
+    supported_execution_modes: [daft_native]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/detect_monotonic_id.rs]
+    test_ids: [P1-004-C/daft_rules/DetectMonotonicId]
+    blocked_reason_code: PGDAFT_RULE_MONOTONIC_ID_NOT_APPLICABLE
+  - name: PushDownAggregation
+    current_status: BLOCKED
+    target_classification: CBO_PHYSICAL_ALT
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/push_down_aggregation.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [source_supports_exact_pg_aggregate_oid_null_and_overflow_semantics]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfPushGbBelowJoin, ExfPushGbBelowUnionAll]
+      cost_or_stats_bridge: CostHashAggregateCompute
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/push_down_aggregation.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h, pg_orca/gpopt/daft/cost_model.cpp]
+    test_ids: [P1-004-C/daft_rules/PushDownAggregation]
+    blocked_reason_code: PGDAFT_RULE_SOURCE_AGGREGATE_PUSHDOWN_UNSUPPORTED
+  - name: PushDownShard
+    current_status: BLOCKED
+    target_classification: NOT_APPLICABLE
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: FUTURE
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/push_down_shard.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [distributed_execution_mode_and_shard_cost_available]
+    supported_execution_modes: [distributed]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/push_down_shard.rs]
+    test_ids: [P1-004-C/daft_rules/PushDownShard]
+    blocked_reason_code: PGDAFT_RULE_SHARDING_NOT_APPLICABLE
+  - name: RewriteCheckpointSource
+    current_status: BLOCKED
+    target_classification: NOT_APPLICABLE
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: FUTURE
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/rewrite_checkpoint_source.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [daft_owned_checkpoint_source_exists]
+    supported_execution_modes: [daft_native_source]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/rewrite_checkpoint_source.rs]
+    test_ids: [P1-004-C/daft_rules/RewriteCheckpointSource]
+    blocked_reason_code: PGDAFT_RULE_CHECKPOINT_SOURCE_NOT_APPLICABLE
+  - name: MaterializeScans
+    current_status: BLOCKED
+    target_classification: DAFT_LOWERING_ONLY
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/materialize_scans.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [selected_pg_owned_streaming_source_identity_is_unchanged]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: POST_CBO_SELECTED_FRAGMENT_LOWERING
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/materialize_scans.rs]
+    test_ids: [P1-004-C/daft_rules/MaterializeScans]
+    blocked_reason_code: PGDAFT_RULE_LOWERING_CONTRACT_TEST_PENDING
+    lowering_contract: {preserves_global_winner: true, preserves_cardinality: true, preserves_order: true, preserves_distribution: true, preserves_engine_boundaries: true}
+  - name: ShardScans
+    current_status: BLOCKED
+    target_classification: NOT_APPLICABLE
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: FUTURE
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/shard_scans.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [distributed_source_snapshot_and_shard_cost_available]
+    supported_execution_modes: [distributed]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: NONE
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/shard_scans.rs]
+    test_ids: [P1-004-C/daft_rules/ShardScans]
+    blocked_reason_code: PGDAFT_RULE_SHARDED_SCAN_NOT_APPLICABLE
+  - name: ReorderJoins
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: true
+    changes_cardinality_or_order: true
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/reorder_joins/mod.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [orca_join_graph_covers_same_legal_orders_and_constraints]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: [ExfExpandNAryJoinDP, ExfExpandNAryJoinDPv2, ExfExpandNAryJoinGreedy]
+      cost_or_stats_bridge: ORCA_MEMO_JOIN_ORDER_COST
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/reorder_joins/mod.rs, pg_orca/libgpopt/include/gpopt/xforms/CXform.h]
+    test_ids: [P1-004-C/daft_rules/ReorderJoins]
+    blocked_reason_code: PGDAFT_RULE_JOIN_ORDER_EQUIVALENCE_TEST_PENDING
+  - name: EnrichWithStats
+    current_status: BLOCKED
+    target_classification: ORCA_EQUIVALENT
+    requires_stats: true
+    changes_cardinality_or_order: false
+    phase: P1
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/enrich_with_stats.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [pg_orca_statistics_are_the_only_selected_fragment_statistics]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: ORCA_DERIVED_RELATIONAL_STATS
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/enrich_with_stats.rs, pg_orca/gpopt/daft/cost_model.cpp]
+    test_ids: [P1-004-C/daft_rules/EnrichWithStats]
+    blocked_reason_code: PGDAFT_RULE_NO_CONCRETE_XFORM_MAPPING
+  - name: SplitGranularProjection
+    current_status: BLOCKED
+    target_classification: DAFT_LOWERING_ONLY
+    requires_stats: false
+    changes_cardinality_or_order: false
+    phase: P2_AI
+    daft_source_file: daft/src/daft-logical-plan/src/optimization/rules/granular_projections.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [only_morsel_splitting_variant_is_used_after_cbo]
+    supported_execution_modes: [embedded_swordfish]
+    orca_mapping:
+      xform_ids: []
+      cost_or_stats_bridge: POST_CBO_SELECTED_FRAGMENT_LOWERING
+      source_evidence: [daft/src/daft-logical-plan/src/optimization/rules/granular_projections.rs]
+    test_ids: [P1-004-C/daft_rules/SplitGranularProjection]
+    blocked_reason_code: PGDAFT_RULE_LOWERING_CONTRACT_TEST_PENDING
+    lowering_contract: {preserves_global_winner: true, preserves_cardinality: true, preserves_order: true, preserves_distribution: true, preserves_engine_boundaries: true}
+    note: resource_or_engine_boundary_variants_must_be_separate_CBO_PHYSICAL_ALT
+
+physical_decisions:
+  - name: determine_join_strategy
+    current_status: BLOCKED
+    target_classification: CBO_PHYSICAL_ALT
+    requires_stats: true
+    changes_cardinality_or_order: false
+    phase: P1
+    source_kind: distributed_translator_function_not_OptimizerRule
+    source_file: daft/src/daft-distributed/src/pipeline_node/join/translate_join.rs
+    daft_git_sha: b2fba655a96fe8f2cc5c21915ddc81dbe9610d3a
+    semantic_preconditions: [distributed_join_candidates_share_pg_orca_semantics_and_statistics]
+    supported_execution_modes: [distributed]
+    orca_mapping:
+      xform_ids: [ExfDaftImplementInnerHashJoin, ExfDaftImplementLeftHashJoin]
+      cost_or_stats_bridge: CostHashJoinCompute
+      source_evidence: [daft/src/daft-distributed/src/pipeline_node/join/translate_join.rs#determine_join_strategy, pg_orca/gpopt/daft/implementation_xforms.cpp, pg_orca/gpopt/daft/cost_model.cpp#CostHashJoin]
+    test_ids: [P1-004-C/daft_rules/determine_join_strategy]
+    blocked_reason_code: PGDAFT_RULE_DISTRIBUTED_JOIN_STRATEGY_NOT_APPLICABLE
+    note: embedded execution must not invoke the distributed translator decision
+
+ai_functions:
+  - {id: embed_text, status: BLOCKED, phase: P2_AI}
+  - {id: embed_image, status: BLOCKED, phase: P2_AI}
+  - {id: classify_text, status: BLOCKED, phase: P2_AI}
+  - {id: classify_image, status: BLOCKED, phase: P2_AI}
+  - {id: prompt, status: BLOCKED, phase: P2_AI}
+  - {id: llm_generate, status: NOT_APPLICABLE, phase: P2_AI}
+  - {id: decode_image, status: BLOCKED, phase: P2_AI}
+  - {id: decode_image_file, status: BLOCKED, phase: P2_AI}
+  - {id: resize, status: BLOCKED, phase: P2_AI}
+  - {id: crop, status: BLOCKED, phase: P2_AI}
+  - {id: convert_image, status: BLOCKED, phase: P2_AI}
+  - {id: image_to_tensor, status: BLOCKED, phase: P2_AI}
+  - {id: encode_image, status: BLOCKED, phase: P2_AI}
+  - {id: image_attribute, status: BLOCKED, phase: P2_AI}
+  - {id: image_width, status: BLOCKED, phase: P2_AI}
+  - {id: image_height, status: BLOCKED, phase: P2_AI}
+  - {id: image_channel, status: BLOCKED, phase: P2_AI}
+  - {id: image_mode, status: BLOCKED, phase: P2_AI}
+  - {id: image_file_metadata, status: BLOCKED, phase: P2_AI}
+  - {id: image_hash, status: BLOCKED, phase: P2_AI}
+  - {id: audio_metadata, status: BLOCKED, phase: P2_AI}
+  - {id: resample, status: BLOCKED, phase: P2_AI}
+  - {id: video_metadata, status: BLOCKED, phase: P2_AI}
+  - {id: video_keyframes, status: BLOCKED, phase: P2_AI}
+  - {id: video_frames, status: BLOCKED, phase: P2_AI}
+  - {id: get_video_frame_by_idx, status: BLOCKED, phase: P2_AI}
+  - {id: cosine_distance, status: BLOCKED, phase: P2_AI}
+  - {id: euclidean_distance, status: BLOCKED, phase: P2_AI}
+  - {id: dot_product, status: BLOCKED, phase: P2_AI}
+  - {id: cosine_similarity, status: BLOCKED, phase: P2_AI}
+  - {id: pearson_correlation, status: BLOCKED, phase: P2_AI}
+  - {id: jaccard_similarity, status: BLOCKED, phase: P2_AI}
+  - {id: hamming_distance, status: BLOCKED, phase: P2_AI}
+
+ai_providers:
+  - {id: transformers, status: BLOCKED, phase: P2_AI, requires_runtime_bits: [PROVIDER_TRANSFORMERS]}
+  - {id: openai, status: BLOCKED, phase: P2_AI, requires_runtime_bits: [PROVIDER_OPENAI]}
+  - {id: lm_studio, status: BLOCKED, phase: P2_AI, requires_runtime_bits: [PROVIDER_LM_STUDIO]}
+  - {id: google, status: BLOCKED, phase: P2_AI, requires_runtime_bits: [PROVIDER_GOOGLE]}
+  - {id: vllm, status: BLOCKED, phase: P2_AI, requires_runtime_bits: [PROVIDER_VLLM]}
+
+external_capabilities:
+  daft_owned_external_scan: {status: BLOCKED, phase: P3_002, requires_runtime_bits: [EXTERNAL_PARQUET_SCAN]}
+  arrow_flight_sidecar: {status: BLOCKED, phase: P3_001, requires_runtime_bits: [ARROW_FLIGHT_SIDECAR]}

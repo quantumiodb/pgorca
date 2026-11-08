@@ -26,7 +26,8 @@ using namespace gpdxl;
 //		Constructor
 //
 //---------------------------------------------------------------------------
-CDXLPhysicalLimit::CDXLPhysicalLimit(CMemoryPool *mp) : CDXLPhysical(mp)
+CDXLPhysicalLimit::CDXLPhysicalLimit(CMemoryPool *mp, BOOL is_daft)
+	: CDXLPhysical(mp), m_is_daft(is_daft)
 {
 }
 

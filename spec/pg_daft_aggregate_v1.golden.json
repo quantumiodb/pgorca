@@ -1,0 +1,128 @@
+{
+  "capability_registry_sha256": "ad468a17c82941b3f0b42e289f76d00e74a2886a82c729460f25cf72b2b7d9cd",
+  "required_runtime_capability_bits": 271,
+  "fragment_id": 1,
+  "root_node_id": 2,
+  "pg_source_drive_order": [0],
+  "sources": [
+    {
+      "source_id": 0,
+      "fields": [
+        {"column_id": 1, "name": "_pgd_f1_s0_c1", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}},
+        {"column_id": 2, "name": "_pgd_f1_s0_c2", "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}},
+        {"column_id": 3, "name": "_pgd_f1_s0_c3", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "kind": "source",
+      "source_id": 0,
+      "output": [
+        {"column_id": 1, "name": "_pgd_f1_s0_c1", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}},
+        {"column_id": 2, "name": "_pgd_f1_s0_c2", "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}},
+        {"column_id": 3, "name": "_pgd_f1_s0_c3", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}
+      ]
+    },
+    {
+      "id": 2,
+      "kind": "hash_aggregate",
+      "input": 1,
+      "stage": "complete",
+      "grouping_mode": "simple",
+      "group_keys": [
+        {
+          "output": {"column_id": 10, "name": "_pgd_f1_s0_c10", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}},
+          "expr": {"kind": "input_ref", "column_id": 1, "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}
+        }
+      ],
+      "aggregates": [
+        {
+          "semantic_id": "count_star",
+          "pg_aggregate_oid": 2803,
+          "args": [],
+          "distinct": false,
+          "order_by": [],
+          "filter": null,
+          "output": {"column_id": 11, "name": "_pgd_f1_s0_c11", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": false, "arrow_format": "l", "daft_dtype": "Int64"}}
+        },
+        {
+          "semantic_id": "count_value",
+          "pg_aggregate_oid": 2147,
+          "args": [{"kind": "input_ref", "column_id": 3, "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}],
+          "distinct": false,
+          "order_by": [],
+          "filter": null,
+          "output": {"column_id": 12, "name": "_pgd_f1_s0_c12", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": false, "arrow_format": "l", "daft_dtype": "Int64"}}
+        },
+        {
+          "semantic_id": "sum_int2",
+          "pg_aggregate_oid": 2109,
+          "args": [{"kind": "input_ref", "column_id": 2, "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}}],
+          "distinct": false,
+          "order_by": [],
+          "filter": null,
+          "output": {"column_id": 13, "name": "_pgd_f1_s0_c13", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "l", "daft_dtype": "Int64"}}
+        },
+        {
+          "semantic_id": "sum_int4",
+          "pg_aggregate_oid": 2108,
+          "args": [{"kind": "input_ref", "column_id": 3, "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}],
+          "distinct": false,
+          "order_by": [],
+          "filter": null,
+          "output": {"column_id": 14, "name": "_pgd_f1_s0_c14", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "l", "daft_dtype": "Int64"}}
+        },
+        {
+          "semantic_id": "min_int2",
+          "pg_aggregate_oid": 2133,
+          "args": [{"kind": "input_ref", "column_id": 2, "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}}],
+          "distinct": false,
+          "order_by": [],
+          "filter": null,
+          "output": {"column_id": 15, "name": "_pgd_f1_s0_c15", "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}}
+        },
+        {
+          "semantic_id": "min_int4",
+          "pg_aggregate_oid": 2132,
+          "args": [{"kind": "input_ref", "column_id": 3, "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}],
+          "distinct": false,
+          "order_by": [],
+          "filter": null,
+          "output": {"column_id": 16, "name": "_pgd_f1_s0_c16", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}
+        },
+        {
+          "semantic_id": "max_int2",
+          "pg_aggregate_oid": 2117,
+          "args": [{"kind": "input_ref", "column_id": 2, "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}}],
+          "distinct": false,
+          "order_by": [],
+          "filter": null,
+          "output": {"column_id": 17, "name": "_pgd_f1_s0_c17", "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}}
+        },
+        {
+          "semantic_id": "max_int4",
+          "pg_aggregate_oid": 2116,
+          "args": [{"kind": "input_ref", "column_id": 3, "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}],
+          "distinct": false,
+          "order_by": [],
+          "filter": null,
+          "output": {"column_id": 18, "name": "_pgd_f1_s0_c18", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}
+        }
+      ]
+    }
+  ],
+  "output_schema": [
+    {"column_id": 10, "name": "_pgd_f1_s0_c10", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}},
+    {"column_id": 11, "name": "_pgd_f1_s0_c11", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": false, "arrow_format": "l", "daft_dtype": "Int64"}},
+    {"column_id": 12, "name": "_pgd_f1_s0_c12", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": false, "arrow_format": "l", "daft_dtype": "Int64"}},
+    {"column_id": 13, "name": "_pgd_f1_s0_c13", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "l", "daft_dtype": "Int64"}},
+    {"column_id": 14, "name": "_pgd_f1_s0_c14", "type": {"pg_oid": 20, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "l", "daft_dtype": "Int64"}},
+    {"column_id": 15, "name": "_pgd_f1_s0_c15", "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}},
+    {"column_id": 16, "name": "_pgd_f1_s0_c16", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}},
+    {"column_id": 17, "name": "_pgd_f1_s0_c17", "type": {"pg_oid": 21, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "s", "daft_dtype": "Int16"}},
+    {"column_id": 18, "name": "_pgd_f1_s0_c18", "type": {"pg_oid": 23, "typmod": -1, "collation_oid": 0, "nullable": true, "arrow_format": "i", "daft_dtype": "Int32"}}
+  ],
+  "payload_sha256": "bde6c50551728d17d3695b4a8bd780942abb851d00f8ae0a46901d3b9cd618db"
+}

@@ -15,6 +15,7 @@
 
 #include "gpopt/base/CCTEMap.h"
 #include "gpopt/base/CDrvdPropCtxtPlan.h"
+#include "gpopt/base/CExecutionFormatSpec.h"
 #include "gpopt/base/CReqdPropPlan.h"
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CPhysical.h"
@@ -50,6 +51,7 @@ CDrvdPropPlan::~CDrvdPropPlan()
 	CRefCount::SafeRelease(m_prs);
 	CRefCount::SafeRelease(m_ppps);
 	CRefCount::SafeRelease(m_pcm);
+	CRefCount::SafeRelease(m_pefs);
 }
 
 
@@ -97,6 +99,7 @@ CDrvdPropPlan::Derive(CMemoryPool *mp, CExpressionHandle &exprhdl,
 		m_pds = popPhysical->PdsDerive(mp, exprhdl);
 		m_prs = popPhysical->PrsDerive(mp, exprhdl);
 		m_ppps = popPhysical->PppsDerive(mp, exprhdl);
+		m_pefs = popPhysical->PefsDerive(mp, exprhdl);
 
 		GPOS_ASSERT(CDistributionSpec::EdtAny != m_pds->Edt() &&
 					"CDistributionAny is a require-only, cannot be derived");
@@ -157,6 +160,9 @@ CDrvdPropPlan::CopyCTEProducerPlanProps(CMemoryPool *mp, CDrvdPropCtxt *pdpctxt,
 		// distinguish between a CTE consumer and the inlined expression
 		m_ppps = GPOS_NEW(mp) CPartitionPropagationSpec(mp);
 
+		pdpplan->Pefs()->AddRef();
+		m_pefs = pdpplan->Pefs();
+
 		GPOS_ASSERT(CDistributionSpec::EdtAny != m_pds->Edt() &&
 					"CDistributionAny is a require-only, cannot be derived");
 	}
@@ -179,11 +185,13 @@ CDrvdPropPlan::FSatisfies(const CReqdPropPlan *prpp) const
 	GPOS_ASSERT(nullptr != prpp->Ped());
 	GPOS_ASSERT(nullptr != prpp->Per());
 	GPOS_ASSERT(nullptr != prpp->Pcter());
+	GPOS_ASSERT(nullptr != prpp->Peef());
 
 	return m_pos->FSatisfies(prpp->Peo()->PosRequired()) &&
 		   m_pds->FSatisfies(prpp->Ped()->PdsRequired()) &&
 		   m_prs->FSatisfies(prpp->Per()->PrsRequired()) &&
 		   m_ppps->FSatisfies(prpp->Pepp()->PppsRequired()) &&
+		   m_pefs->FSatisfies(prpp->Peef()->PefsRequired()) &&
 		   m_pcm->FSatisfies(prpp->Pcter());
 }
 
@@ -202,6 +210,7 @@ CDrvdPropPlan::HashValue() const
 	ULONG ulHash = gpos::CombineHashes(m_pos->HashValue(), m_pds->HashValue());
 	ulHash = gpos::CombineHashes(ulHash, m_prs->HashValue());
 	ulHash = gpos::CombineHashes(ulHash, m_pcm->HashValue());
+	ulHash = gpos::CombineHashes(ulHash, m_pefs->HashValue());
 
 	return ulHash;
 }
@@ -219,6 +228,7 @@ CDrvdPropPlan::Equals(const CDrvdPropPlan *pdpplan) const
 {
 	return m_pos->Matches(pdpplan->Pos()) && m_pds->Equals(pdpplan->Pds()) &&
 		   m_prs->Matches(pdpplan->Prs()) && m_ppps->Equals(pdpplan->Ppps()) &&
+		   m_pefs->Matches(pdpplan->Pefs()) &&
 		   m_pcm->Equals(pdpplan->GetCostModel());
 }
 
@@ -235,7 +245,8 @@ CDrvdPropPlan::OsPrint(IOstream &os) const
 {
 	os << "Drvd Plan Props ("
 	   << "ORD: " << (*m_pos) << ", DIST: " << (*m_pds)
-	   << ", REWIND: " << (*m_prs) << ", PART PROP:" << (*m_ppps) << ")"
+	   << ", REWIND: " << (*m_prs) << ", PART PROP:" << (*m_ppps)
+	   << ", FORMAT: " << (*m_pefs) << ")"
 	   << ", CTE Map: [" << *m_pcm << "]";
 
 	return os;

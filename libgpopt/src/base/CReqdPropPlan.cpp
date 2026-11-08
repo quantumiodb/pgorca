@@ -21,10 +21,12 @@
 #include "gpopt/base/CDistributionSpecAny.h"
 #include "gpopt/base/CDistributionSpecSingleton.h"
 #include "gpopt/base/CEnfdDistribution.h"
+#include "gpopt/base/CEnfdExecutionFormat.h"
 #include "gpopt/base/CEnfdOrder.h"
 #include "gpopt/base/CEnfdPartitionPropagation.h"
 #include "gpopt/base/CEnfdRewindability.h"
 #include "gpopt/base/CPartInfo.h"
+#include "gpopt/base/CExecutionFormatSpec.h"
 #include "gpopt/base/CUtils.h"
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CLogical.h"
@@ -44,12 +46,14 @@ using namespace gpopt;
 //---------------------------------------------------------------------------
 CReqdPropPlan::CReqdPropPlan(CColRefSet *pcrs, CEnfdOrder *peo,
 							 CEnfdDistribution *ped, CEnfdRewindability *per,
-							 CEnfdPartitionPropagation *pepp, CCTEReq *pcter)
+							 CEnfdPartitionPropagation *pepp,
+							 CEnfdExecutionFormat *peef, CCTEReq *pcter)
 	: m_pcrs(pcrs),
 	  m_peo(peo),
 	  m_ped(ped),
 	  m_per(per),
 	  m_pepp(pepp),
+	  m_peef(peef),
 	  m_pcter(pcter)
 {
 	GPOS_ASSERT(nullptr != pcrs);
@@ -57,6 +61,7 @@ CReqdPropPlan::CReqdPropPlan(CColRefSet *pcrs, CEnfdOrder *peo,
 	GPOS_ASSERT(nullptr != ped);
 	GPOS_ASSERT(nullptr != per);
 	GPOS_ASSERT(nullptr != pepp);
+	GPOS_ASSERT(nullptr != peef);
 	GPOS_ASSERT(nullptr != pcter);
 }
 
@@ -76,6 +81,7 @@ CReqdPropPlan::~CReqdPropPlan()
 	CRefCount::SafeRelease(m_ped);
 	CRefCount::SafeRelease(m_per);
 	CRefCount::SafeRelease(m_pepp);
+	CRefCount::SafeRelease(m_peef);
 	CRefCount::SafeRelease(m_pcter);
 }
 
@@ -148,8 +154,9 @@ CReqdPropPlan::Compute(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	ULONG ulDistrReq = 0;
 	ULONG ulRewindReq = 0;
 	ULONG ulPartPropagateReq = 0;
+	ULONG ulExecutionFormatReq = 0;
 	popPhysical->LookupRequest(ulOptReq, &ulOrderReq, &ulDistrReq, &ulRewindReq,
-							   &ulPartPropagateReq);
+							   &ulPartPropagateReq, &ulExecutionFormatReq);
 
 	m_peo = GPOS_NEW(mp) CEnfdOrder(
 		popPhysical->PosRequired(mp, exprhdl, prppInput->Peo()->PosRequired(),
@@ -173,6 +180,10 @@ CReqdPropPlan::Compute(CMemoryPool *mp, CExpressionHandle &exprhdl,
 								  prppInput->Pepp()->PppsRequired(),
 								  child_index, pdrgpdpCtxt, ulPartPropagateReq),
 		CEnfdPartitionPropagation::EppmSatisfy);
+
+	m_peef = GPOS_NEW(mp) CEnfdExecutionFormat(popPhysical->PefsRequired(
+		mp, exprhdl, prppInput->Peef()->PefsRequired(), child_index,
+		pdrgpdpCtxt, ulExecutionFormatReq));
 }
 
 //---------------------------------------------------------------------------
@@ -201,6 +212,9 @@ CReqdPropPlan::Pps(ULONG ul) const
 
 		case CPropSpec::EpstPartPropagation:
 			return m_pepp->PppsRequired();
+
+		case CPropSpec::EpstExecutionFormat:
+			return m_peef->PefsRequired();
 
 		default:
 			GPOS_ASSERT(!"Invalid property spec index");
@@ -268,7 +282,7 @@ CReqdPropPlan::Equals(const CReqdPropPlan *prpp) const
 	BOOL result = PcrsRequired()->Equals(prpp->PcrsRequired()) &&
 				  Pcter()->Equals(prpp->Pcter()) &&
 				  Peo()->Matches(prpp->Peo()) && Ped()->Matches(prpp->Ped()) &&
-				  Per()->Matches(prpp->Per());
+				  Per()->Matches(prpp->Per()) && Peef()->Matches(prpp->Peef());
 
 	if (result)
 	{
@@ -302,12 +316,14 @@ CReqdPropPlan::HashValue() const
 	GPOS_ASSERT(nullptr != m_ped);
 	GPOS_ASSERT(nullptr != m_per);
 	GPOS_ASSERT(nullptr != m_pcter);
+	GPOS_ASSERT(nullptr != m_peef);
 
 	ULONG ulHash = m_pcrs->HashValue();
 	ulHash = gpos::CombineHashes(ulHash, m_peo->HashValue());
 	ulHash = gpos::CombineHashes(ulHash, m_ped->HashValue());
 	ulHash = gpos::CombineHashes(ulHash, m_per->HashValue());
 	ulHash = gpos::CombineHashes(ulHash, m_pcter->HashValue());
+	ulHash = gpos::CombineHashes(ulHash, m_peef->HashValue());
 
 	return ulHash;
 }
@@ -345,6 +361,7 @@ CReqdPropPlan::FSatisfied(const CDrvdPropRelational *pdprel,
 		return pdpplan->Pds()->FSatisfies(this->Ped()->PdsRequired()) &&
 			   pdpplan->Prs()->FSatisfies(this->Per()->PrsRequired()) &&
 			   pdpplan->Ppps()->FSatisfies(this->Pepp()->PppsRequired()) &&
+			   pdpplan->Pefs()->FSatisfies(this->Peef()->PefsRequired()) &&
 			   pdpplan->GetCostModel()->FSatisfies(this->Pcter());
 	}
 
@@ -378,6 +395,7 @@ CReqdPropPlan::FCompatible(CExpressionHandle &exprhdl, CPhysical *popPhysical,
 		   m_ped->FCompatible(pdpplan->Pds()) &&
 		   m_per->FCompatible(pdpplan->Prs()) &&
 		   pdpplan->Ppps()->FSatisfies(m_pepp->PppsRequired()) &&
+		   m_peef->FCompatible(pdpplan->Pefs()) &&
 		   popPhysical->FProvidesReqdCTEs(exprhdl, m_pcter);
 }
 
@@ -406,9 +424,13 @@ CReqdPropPlan::PrppEmpty(CMemoryPool *mp)
 		GPOS_NEW(mp) CEnfdRewindability(prs, CEnfdRewindability::ErmSatisfy);
 	CEnfdPartitionPropagation *pepp = GPOS_NEW(mp)
 		CEnfdPartitionPropagation(pps, CEnfdPartitionPropagation::EppmSatisfy);
+	CExecutionFormatSpec *pefs = GPOS_NEW(mp)
+		CExecutionFormatSpec(CExecutionFormatSpec::EefPgRow);
+	CEnfdExecutionFormat *peef = GPOS_NEW(mp) CEnfdExecutionFormat(pefs);
 	CCTEReq *pcter = GPOS_NEW(mp) CCTEReq(mp);
 
-	return GPOS_NEW(mp) CReqdPropPlan(pcrs, peo, ped, per, pepp, pcter);
+	return GPOS_NEW(mp)
+		CReqdPropPlan(pcrs, peo, ped, per, pepp, peef, pcter);
 }
 
 //---------------------------------------------------------------------------
@@ -461,6 +483,11 @@ CReqdPropPlan::OsPrint(IOstream &os) const
 	{
 		os << GetPrintablePtr(m_pepp);
 	}
+	os << "], req execution format: [";
+	if (nullptr != m_peef)
+	{
+		os << (*m_peef);
+	}
 	os << "]";
 
 	return os;
@@ -485,6 +512,10 @@ CReqdPropPlan::UlHashForCostBounding(const CReqdPropPlan *prpp)
 	{
 		ulHash = CombineHashes(ulHash, prpp->Ped()->HashValue());
 	}
+	if (nullptr != prpp->Peef())
+	{
+		ulHash = CombineHashes(ulHash, prpp->Peef()->HashValue());
+	}
 
 	return ulHash;
 }
@@ -505,14 +536,17 @@ CReqdPropPlan::FEqualForCostBounding(const CReqdPropPlan *prppFst,
 	GPOS_ASSERT(nullptr != prppFst);
 	GPOS_ASSERT(nullptr != prppSnd);
 
-	if (nullptr == prppFst->Ped() || nullptr == prppSnd->Ped())
+	if (nullptr == prppFst->Ped() || nullptr == prppSnd->Ped() ||
+		nullptr == prppFst->Peef() || nullptr == prppSnd->Peef())
 	{
 		return nullptr == prppFst->Ped() && nullptr == prppSnd->Ped() &&
+			   nullptr == prppFst->Peef() && nullptr == prppSnd->Peef() &&
 			   prppFst->PcrsRequired()->Equals(prppSnd->PcrsRequired());
 	}
 
 	return prppFst->PcrsRequired()->Equals(prppSnd->PcrsRequired()) &&
-		   prppFst->Ped()->Matches(prppSnd->Ped());
+		   prppFst->Ped()->Matches(prppSnd->Ped()) &&
+		   prppFst->Peef()->Matches(prppSnd->Peef());
 }
 
 
@@ -601,7 +635,11 @@ CReqdPropPlan::PrppRemapForCTE(CMemoryPool *mp, CReqdPropPlan *prppProducer,
 	prppProducer->Pcter()->AddRef();
 	CCTEReq *pcter = prppProducer->Pcter();
 
-	return GPOS_NEW(mp) CReqdPropPlan(pcrsRequired, peo, ped, per, pepp, pcter);
+	prppProducer->Peef()->AddRef();
+	CEnfdExecutionFormat *peef = prppProducer->Peef();
+
+	return GPOS_NEW(mp)
+		CReqdPropPlan(pcrsRequired, peo, ped, per, pepp, peef, pcter);
 }
 
 

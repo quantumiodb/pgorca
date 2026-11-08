@@ -14,6 +14,9 @@
 #include "gpopt/base/CColRefSet.h"
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/operators/CPhysicalSort.h"
+#include "pg_orca/daft/cost_model.h"
+#include "pg_orca/daft/physical_operators.h"
+#include "pg_orca/daft/rule_registry.h"
 
 #ifdef GPOS_DEBUG
 #include "gpos/error/CAutoTrace.h"
@@ -215,6 +218,24 @@ COrderSpec::AppendEnforcers(CMemoryPool *mp,
 	CExpression *pexprSort = GPOS_NEW(mp)
 		CExpression(mp, GPOS_NEW(mp) CPhysicalSort(mp, this), pexpr);
 	pdrgpexpr->Append(pexprSort);
+
+	// A Daft sort is a genuine alternative enforcer in this same optimization
+	// context.  It is appended only when the frozen query capability snapshot,
+	// calibrated cost profile, and exact per-key semantics all permit it.
+	pg_orca::daft::RuleRegistry registry(
+		&pg_orca::daft::CapabilitySnapshot::Current());
+	if (pg_orca::daft::DaftCalibrationProfileValid() &&
+		registry.CanUsePlanNode("SOURCE") &&
+		registry.CanUsePlanNode("SORT") &&
+		registry.CanUseExpression("INPUT_REF") &&
+		pg_orca::daft::IsDaftOrderSpecSemanticallySupported(this))
+	{
+		AddRef();
+		pexpr->AddRef();
+		pdrgpexpr->Append(GPOS_NEW(mp) CExpression(
+			mp, GPOS_NEW(mp) pg_orca::daft::CPhysicalDaftSort(mp, this),
+			pexpr));
+	}
 }
 
 
