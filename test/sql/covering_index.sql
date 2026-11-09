@@ -60,3 +60,26 @@ reset enable_indexscan;
 reset enable_seqscan;
 
 drop table covering_include;
+
+-- When two indexes have the same keys, the bitmap candidate with fewer stored
+-- columns must still win: INCLUDE columns make the index wider on disk even
+-- though they can never be used in an index condition.  covering_bm_wide is
+-- created first on purpose, so a tie on width would hand it the plan.
+create table covering_bm_width (a int, b int, payload text);
+create index covering_bm_wide on covering_bm_width (a) include (payload);
+create index covering_bm_narrow on covering_bm_width (a);
+create index covering_bm_b on covering_bm_width (b);
+insert into covering_bm_width
+  select i, i, repeat('x', 100) from generate_series(1, 2000) i;
+vacuum analyze covering_bm_width;
+
+-- KEYS: [a]    INCLUDED: [payload]
+-- KEYS: [a]
+-- KEYS: [b]
+set enable_seqscan = off;
+EXPLAIN (COSTS OFF)
+select * from covering_bm_width where a in (1, 100, 1000) or b = 17;
+select a, b from covering_bm_width where a in (1, 100, 1000) or b = 17 order by a;
+reset enable_seqscan;
+
+drop table covering_bm_width;
