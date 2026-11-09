@@ -40,6 +40,8 @@ extern "C" {
 #include "utils/rel.h"
 }
 
+#include <vector>
+
 #include "gpos/attributes.h"
 #include "gpos/base.h"
 #include "gpos/common/CAutoTimer.h"
@@ -412,8 +414,8 @@ CTranslatorUtils::ResolvePolymorphicTypes(CMemoryPool *mp,
 	const ULONG num_args = std::min(num_arg_types, num_args_from_query);
 	const ULONG total_args = num_args + num_return_args;
 
-	OID arg_types[total_args];
-	char arg_modes[total_args];
+	std::vector<OID> arg_types(total_args);
+	std::vector<char> arg_modes(total_args);
 
 	// copy the first 'num_args' function argument types
 	ListCell *arg_type = nullptr;
@@ -435,8 +437,8 @@ CTranslatorUtils::ResolvePolymorphicTypes(CMemoryPool *mp,
 		arg_modes[arg_index++] = PROARGMODE_TABLE;
 	}
 
-	if (!gpdb::ResolvePolymorphicArgType(total_args, arg_types, arg_modes,
-										 funcexpr))
+	if (!gpdb::ResolvePolymorphicArgType(total_args, arg_types.data(),
+										 arg_modes.data(), funcexpr))
 	{
 		GPOS_RAISE(
 			gpdxl::ExmaDXL, gpdxl::ExmiDXLUnrecognizedType,
