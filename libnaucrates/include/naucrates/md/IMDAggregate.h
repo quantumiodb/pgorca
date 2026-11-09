@@ -62,6 +62,10 @@ public:
 	// is aggregate replicate slice execution safe
 	virtual BOOL IsAggRepSafe() const = 0;
 
+	// is the result independent of the order of the input, even with an
+	// ORDER BY clause in the aggregate call
+	virtual BOOL IsOrderInsensitive() const = 0;
+
 	// mdid of the transition function (pg_aggregate.aggtransfn).  Returned
 	// pointer is owned by the cache object — do not release.  May be
 	// nullptr for cache entries created from DXL (since DXL does not

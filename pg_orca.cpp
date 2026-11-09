@@ -71,6 +71,7 @@ bool  optimizer_metadata_caching                = true;
 bool  optimizer_use_streaming_hashagg           = false;
 bool  optimizer_enable_child_opt_memo           = true;
 bool  optimizer_verify_child_opt_memo           = false;
+bool  optimizer_enable_presorted_agg            = true;
 
 int   optimizer_mdcache_size                    = 16384;  /* KB */
 int   optimizer_segments                        = 1;
@@ -966,6 +967,13 @@ void _PG_init(void)
         "Optimize the children of requests that could reuse child contexts "
         "and report differences.",
         NULL, &optimizer_verify_child_opt_memo, false,
+        PGC_USERSET, GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_enable_presorted_agg",
+        "Enable sorting the input of order sensitive aggregates with ORDER BY, "
+        "e.g. string_agg(), below aggregates without GROUP BY.",
+        NULL, &optimizer_enable_presorted_agg, true,
         PGC_USERSET, GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 
     DefineCustomRealVariable(

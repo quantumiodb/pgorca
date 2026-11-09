@@ -4681,6 +4681,18 @@ CUtils::FAggHasOrderBy(CExpression *pexprAggFunc)
 		   (*pexprAggFunc)[EaggfuncIndexOrder]->Arity() > 0;
 }
 
+// returns true if the result of the aggregate function may depend on the
+// order of its input.  That is assumed for every aggregate that is not known
+// to be order insensitive, including all user-defined ones that are not
+// MIN/MAX-like, see is_agg_order_insensitive().
+BOOL
+CUtils::FOrderSensitiveAgg(IMDId *agg_mdid)
+{
+	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
+
+	return !md_accessor->RetrieveAgg(agg_mdid)->IsOrderInsensitive();
+}
+
 
 // returns true if expression contains an ordered aggregate function that
 // should be split to an internal gp_percentile aggregate

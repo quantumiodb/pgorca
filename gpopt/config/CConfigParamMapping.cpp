@@ -94,6 +94,7 @@ static bool enable_nljoin            = true;
 extern bool optimizer_use_streaming_hashagg;
 extern bool optimizer_enable_child_opt_memo;
 extern bool optimizer_verify_child_opt_memo;
+extern bool optimizer_enable_presorted_agg;
 
 // Scan / join controls
 static bool enable_indexjoin         = true;
@@ -288,6 +289,11 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 
 	{EopttraceDisableOrderedAgg, &enable_orderedagg,
 	 true,  GPOS_WSZ_LIT("Disable ordered aggregate plans.")},
+
+	{EopttraceDisablePresortedAgg, &optimizer_enable_presorted_agg,
+	 true,  GPOS_WSZ_LIT(
+		 "Disable sorting the input of order sensitive aggregates with "
+		 "ORDER BY below aggregates without GROUP BY.")},
 
 	{EopttraceExpandFullJoin, &expand_fulljoin,
 	 false, GPOS_WSZ_LIT("Enable Expand Full Join transform.")},

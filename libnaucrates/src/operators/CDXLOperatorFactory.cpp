@@ -1077,6 +1077,9 @@ CDXLOperatorFactory::MakeDXLAggFunc(CDXLMemoryManager *dxl_memory_manager,
 	BOOL is_agg_star = ExtractConvertAttrValueToBool(dxl_memory_manager, attrs,
 		EdxltokenAggrefIsAggStar,
 		EdxltokenScalarAggref);
+	BOOL is_presorted = ExtractConvertAttrValueToBool(
+		dxl_memory_manager, attrs, EdxltokenAggrefIsPresorted,
+		EdxltokenScalarAggref, true /*is_optional*/, false /*default_value*/);
 
 	const XMLCh *agg_kind_xml =
 		ExtractAttrValue(attrs, EdxltokenAggrefKind, EdxltokenScalarAggref);
@@ -1157,9 +1160,12 @@ CDXLOperatorFactory::MakeDXLAggFunc(CDXLMemoryManager *dxl_memory_manager,
 			dxl_memory_manager, attrs, EdxltokenTypeId, EdxltokenScalarAggref);
 	}
 
-	return GPOS_NEW(mp)
-		CDXLScalarAggref(mp, agg_mdid, resolved_rettype, is_distinct, agg_stage,
-						 agg_kind, argtypelist, is_agg_star);
+	CDXLScalarAggref *dxl_op =
+		GPOS_NEW(mp) CDXLScalarAggref(mp, agg_mdid, resolved_rettype, is_distinct,
+									  agg_stage, agg_kind, argtypelist, is_agg_star);
+	dxl_op->SetPresorted(is_presorted);
+
+	return dxl_op;
 }
 
 //---------------------------------------------------------------------------

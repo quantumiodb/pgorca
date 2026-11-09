@@ -238,6 +238,11 @@ enum EOptTraceFlag
 	// disable inner merge join alternatives
 	EopttraceDisableInnerMergeJoin = 103050,
 
+	// Disable sorting the input of order sensitive aggregates with ORDER BY,
+	// e.g. string_agg(), below aggregates without GROUP BY, so that they
+	// don't need to sort it themselves
+	EopttraceDisablePresortedAgg = 103055,
+
 	// reuse the child contexts that the same request of a group expression
 	// reached under another context, instead of optimizing the children again
 	EopttraceChildOptMemo = 103070,

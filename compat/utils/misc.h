@@ -87,6 +87,9 @@ bool    is_agg_repsafe(Oid aggid);
 /* is_agg_partial_capable (from lsyscache.c) */
 bool    is_agg_partial_capable(Oid aggid);
 
+/* is_agg_order_insensitive (from lsyscache.c) */
+bool    is_agg_order_insensitive(Oid aggid);
+
 /* func_exec_location (from lsyscache.c) — PROEXECLOCATION_* defines */
 #define PROEXECLOCATION_ANY         'a'
 #define PROEXECLOCATION_COORDINATOR 'c'

@@ -148,14 +148,16 @@ EXPLAIN (COSTS OFF) SELECT k, string_agg(v, ',') FROM t_agg_group GROUP BY k;
  Optimizer: pg_orca
 (4 rows)
 
--- scalar aggregate with ORDER BY is unaffected
+-- scalar aggregate with ORDER BY: its input is presorted, see below
 EXPLAIN (COSTS OFF) SELECT string_agg(v, ',' ORDER BY v) FROM t_agg_group;
-          QUERY PLAN           
--------------------------------
+             QUERY PLAN              
+-------------------------------------
  Aggregate
-   ->  Seq Scan on t_agg_group
+   ->  Sort
+         Sort Key: v
+         ->  Seq Scan on t_agg_group
  Optimizer: pg_orca
-(3 rows)
+(5 rows)
 
 SELECT string_agg(v, ',' ORDER BY v) FROM t_agg_group;
                                         string_agg                                         
@@ -163,4 +165,371 @@ SELECT string_agg(v, ',' ORDER BY v) FROM t_agg_group;
  01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30
 (1 row)
 
+-- ======================================================================
+-- Presorted input for order sensitive aggregates without GROUP BY
+-- ======================================================================
+--
+-- ORCA requires the input of a scalar aggregate to be sorted by the ORDER BY
+-- of an order sensitive aggregate such as string_agg(), and marks the
+-- aggregates presorted (Aggref.aggpresorted) so that they don't sort again.
+-- The order can then come from an index, or one Sort can be shared by
+-- several aggregates.  Ported from Cloudberry be8dc05f49 (the MPP part, a
+-- sort on the segments merged by the Gather Motion, has no equivalent here).
+--
+-- The same commit also stops CXformSplitGbAgg / CXformSplitDQA from
+-- splitting an order sensitive aggregate with ORDER BY into partial and
+-- final aggregation; that is not visible in single-node plans.
+CREATE TABLE t_agg_presort (id int, v text, b bytea);
+INSERT INTO t_agg_presort SELECT g, lpad(g::text, 2, '0'), lpad(g::text, 2, '0')::bytea
+FROM generate_series(1, 30) g;
+-- the Sort must place the NULLs according to NULLS FIRST / LAST
+INSERT INTO t_agg_presort SELECT g, NULL, NULL FROM generate_series(31, 35) g;
+ANALYZE t_agg_presort;
+EXPLAIN (COSTS OFF) SELECT string_agg(v, ',' ORDER BY v) FROM t_agg_presort;
+              QUERY PLAN               
+---------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: v
+         ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT string_agg(v, ',' ORDER BY v) FROM t_agg_presort;
+                                        string_agg                                         
+-------------------------------------------------------------------------------------------
+ 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30
+(1 row)
+
+SELECT string_agg(v, ',' ORDER BY v DESC) FROM t_agg_presort;
+                                        string_agg                                         
+-------------------------------------------------------------------------------------------
+ 30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,09,08,07,06,05,04,03,02,01
+(1 row)
+
+SELECT array_agg(v ORDER BY v) FROM t_agg_presort;
+                                                      array_agg                                                       
+----------------------------------------------------------------------------------------------------------------------
+ {01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,NULL,NULL,NULL,NULL,NULL}
+(1 row)
+
+SELECT array_agg(v ORDER BY v DESC) FROM t_agg_presort;
+                                                      array_agg                                                       
+----------------------------------------------------------------------------------------------------------------------
+ {NULL,NULL,NULL,NULL,NULL,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,09,08,07,06,05,04,03,02,01}
+(1 row)
+
+SELECT array_agg(v ORDER BY v NULLS FIRST) FROM t_agg_presort;
+                                                      array_agg                                                       
+----------------------------------------------------------------------------------------------------------------------
+ {NULL,NULL,NULL,NULL,NULL,01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}
+(1 row)
+
+EXPLAIN (COSTS OFF)
+SELECT array_agg(id ORDER BY v DESC NULLS LAST, id) FROM t_agg_presort;
+               QUERY PLAN                
+-----------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: v DESC NULLS LAST, id
+         ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT array_agg(id ORDER BY v DESC NULLS LAST, id) FROM t_agg_presort;
+                                             array_agg                                             
+---------------------------------------------------------------------------------------------------
+ {30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,31,32,33,34,35}
+(1 row)
+
+SELECT string_agg(b, ',' ORDER BY b) FROM t_agg_presort;
+                                                                                      string_agg                                                                                      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ \x30312c30322c30332c30342c30352c30362c30372c30382c30392c31302c31312c31322c31332c31342c31352c31362c31372c31382c31392c32302c32312c32322c32332c32342c32352c32362c32372c32382c32392c3330
+(1 row)
+
+-- aggregates with the same ORDER BY share the sorted input
+EXPLAIN (COSTS OFF)
+SELECT string_agg(v, ',' ORDER BY v), max(id ORDER BY v), count(*) FROM t_agg_presort;
+              QUERY PLAN               
+---------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: v
+         ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT string_agg(v, ',' ORDER BY v), max(id ORDER BY v), count(*) FROM t_agg_presort;
+                                        string_agg                                         | max | count 
+-------------------------------------------------------------------------------------------+-----+-------
+ 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30 |  35 |    35
+(1 row)
+
+-- not used with different orders, DISTINCT, an ORDER BY expression, or
+-- only order insensitive aggregates
+EXPLAIN (COSTS OFF)
+SELECT string_agg(v, ',' ORDER BY v), array_agg(id ORDER BY id) FROM t_agg_presort;
+           QUERY PLAN            
+---------------------------------
+ Aggregate
+   ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(3 rows)
+
+SELECT string_agg(v, ',' ORDER BY v), array_agg(id ORDER BY id) FROM t_agg_presort;
+                                        string_agg                                         |                                             array_agg                                             
+-------------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------------
+ 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30 | {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}
+(1 row)
+
+EXPLAIN (COSTS OFF)
+SELECT array_agg(v ORDER BY v), array_agg(v ORDER BY v NULLS FIRST) FROM t_agg_presort;
+           QUERY PLAN            
+---------------------------------
+ Aggregate
+   ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(3 rows)
+
+SELECT array_agg(v ORDER BY v), array_agg(v ORDER BY v NULLS FIRST) FROM t_agg_presort;
+                                                      array_agg                                                       |                                                      array_agg                                                       
+----------------------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------
+ {01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,NULL,NULL,NULL,NULL,NULL} | {NULL,NULL,NULL,NULL,NULL,01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}
+(1 row)
+
+EXPLAIN (COSTS OFF)
+SELECT string_agg(DISTINCT v, ',' ORDER BY v) FROM t_agg_presort;
+           QUERY PLAN            
+---------------------------------
+ Aggregate
+   ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(3 rows)
+
+SELECT string_agg(DISTINCT v, ',' ORDER BY v) FROM t_agg_presort;
+                                        string_agg                                         
+-------------------------------------------------------------------------------------------
+ 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30
+(1 row)
+
+EXPLAIN (COSTS OFF)
+SELECT string_agg(v, ',' ORDER BY v || 'x') FROM t_agg_presort;
+           QUERY PLAN            
+---------------------------------
+ Aggregate
+   ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(3 rows)
+
+SELECT string_agg(v, ',' ORDER BY v || 'x') FROM t_agg_presort;
+                                        string_agg                                         
+-------------------------------------------------------------------------------------------
+ 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT sum(id ORDER BY id) FROM t_agg_presort;
+           QUERY PLAN            
+---------------------------------
+ Aggregate
+   ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(3 rows)
+
+-- which aggregates are order sensitive: MIN/MAX only if equal values are
+-- identical (not numeric, where ORDER BY decides which of 4.0 and 4.00
+-- max() returns), floating point sums, and user-defined aggregates
+EXPLAIN (COSTS OFF)
+SELECT max(id ORDER BY v), max(v ORDER BY v) FROM t_agg_presort;
+           QUERY PLAN            
+---------------------------------
+ Aggregate
+   ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT max(id::numeric ORDER BY id) FROM t_agg_presort;
+              QUERY PLAN               
+---------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: id
+         ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT sum(id::float8 ORDER BY id) FROM t_agg_presort;
+              QUERY PLAN               
+---------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: id
+         ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(5 rows)
+
+CREATE AGGREGATE my_concat(text) (
+    sfunc = textcat, stype = text, combinefunc = textcat, initcond = '');
+EXPLAIN (COSTS OFF) SELECT my_concat(v ORDER BY v) FROM t_agg_presort;
+              QUERY PLAN               
+---------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: v
+         ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT my_concat(v || ',' ORDER BY v) FROM t_agg_presort;
+                                         my_concat                                          
+--------------------------------------------------------------------------------------------
+ 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,
+(1 row)
+
+DROP AGGREGATE my_concat(text);
+-- not used with an ORDER BY on an outer reference, which the input of the
+-- aggregate cannot be sorted by; this must not fail to produce a plan
+EXPLAIN (COSTS OFF)
+SELECT o.id, (SELECT length(string_agg(i.v, ',' ORDER BY o.v))
+              FROM t_agg_presort i WHERE i.id % 3 = o.id % 3)
+FROM t_agg_presort o WHERE o.id <= 3 ORDER BY 1;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Result
+   ->  Sort
+         Sort Key: o.id
+         ->  Seq Scan on t_agg_presort o
+               Filter: (id <= 3)
+   SubPlan 1
+     ->  Aggregate
+           ->  Seq Scan on t_agg_presort i
+                 Filter: ((id % 3) = (o.id % 3))
+ Optimizer: pg_orca
+(10 rows)
+
+SELECT o.id, (SELECT length(string_agg(i.v, ',' ORDER BY o.v))
+              FROM t_agg_presort i WHERE i.id % 3 = o.id % 3)
+FROM t_agg_presort o WHERE o.id <= 3 ORDER BY 1;
+ id | length 
+----+--------
+  1 |     29
+  2 |     29
+  3 |     29
+(3 rows)
+
+-- a correlated subquery whose aggregate orders by an inner column
+EXPLAIN (COSTS OFF)
+SELECT o.id, (SELECT string_agg(i.v, ',' ORDER BY i.v DESC)
+              FROM t_agg_presort i WHERE i.id % 10 = o.id)
+FROM t_agg_presort o WHERE o.id <= 3 ORDER BY 1;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Result
+   ->  Sort
+         Sort Key: o.id
+         ->  Seq Scan on t_agg_presort o
+               Filter: (id <= 3)
+   SubPlan 1
+     ->  Aggregate
+           ->  Sort
+                 Sort Key: i.v DESC
+                 ->  Seq Scan on t_agg_presort i
+                       Filter: ((id % 10) = o.id)
+ Optimizer: pg_orca
+(12 rows)
+
+SELECT o.id, (SELECT string_agg(i.v, ',' ORDER BY i.v DESC)
+              FROM t_agg_presort i WHERE i.id % 10 = o.id)
+FROM t_agg_presort o WHERE o.id <= 3 ORDER BY 1;
+ id | string_agg 
+----+------------
+  1 | 21,11,01
+  2 | 22,12,02
+  3 | 23,13,03
+(3 rows)
+
+-- not used when disabled
+SET optimizer_enable_presorted_agg TO off;
+EXPLAIN (COSTS OFF) SELECT string_agg(v, ',' ORDER BY v) FROM t_agg_presort;
+           QUERY PLAN            
+---------------------------------
+ Aggregate
+   ->  Seq Scan on t_agg_presort
+ Optimizer: pg_orca
+(3 rows)
+
+SELECT string_agg(v, ',' ORDER BY v) FROM t_agg_presort;
+                                        string_agg                                         
+-------------------------------------------------------------------------------------------
+ 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30
+(1 row)
+
+RESET optimizer_enable_presorted_agg;
+DROP TABLE t_agg_presort;
+-- an index scan can provide the order, so that nothing is sorted at all.
+-- ORCA only considers an index scan for a predicate (or ORDER BY LIMIT,
+-- MIN/MAX), not as an ordered full scan, so this needs a WHERE clause.
+CREATE TABLE t_agg_presort_idx (id int, v text);
+INSERT INTO t_agg_presort_idx SELECT g, lpad(g::text, 6, '0')
+FROM generate_series(1, 20000) g;
+CREATE INDEX t_agg_presort_idx_v ON t_agg_presort_idx (v);
+VACUUM ANALYZE t_agg_presort_idx;
+EXPLAIN (COSTS OFF)
+SELECT md5(string_agg(v, ',' ORDER BY v)) FROM t_agg_presort_idx
+WHERE v >= '019000';
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Aggregate
+   ->  Index Only Scan using t_agg_presort_idx_v on t_agg_presort_idx
+         Index Cond: (v >= '019000'::text)
+ Optimizer: pg_orca
+(4 rows)
+
+SELECT md5(string_agg(v, ',' ORDER BY v)) FROM t_agg_presort_idx
+WHERE v >= '019000';
+               md5                
+----------------------------------
+ cbe63a760bbfde772835460e6315cb0a
+(1 row)
+
+-- a backward index scan is only considered for ORDER BY LIMIT, so DESC sorts
+EXPLAIN (COSTS OFF)
+SELECT md5(string_agg(v, ',' ORDER BY v DESC)) FROM t_agg_presort_idx
+WHERE v >= '019000';
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: v DESC
+         ->  Index Only Scan using t_agg_presort_idx_v on t_agg_presort_idx
+               Index Cond: (v >= '019000'::text)
+ Optimizer: pg_orca
+(6 rows)
+
+SELECT md5(string_agg(v, ',' ORDER BY v DESC)) FROM t_agg_presort_idx
+WHERE v >= '019000';
+               md5                
+----------------------------------
+ 24d5767917d161c5b553daf5879a97ba
+(1 row)
+
+-- without a predicate, the input is sorted
+EXPLAIN (COSTS OFF)
+SELECT md5(string_agg(v, ',' ORDER BY v)) FROM t_agg_presort_idx;
+                QUERY PLAN                 
+-------------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: v
+         ->  Seq Scan on t_agg_presort_idx
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT md5(string_agg(v, ',' ORDER BY v)) FROM t_agg_presort_idx;
+               md5                
+----------------------------------
+ eba114a4faca1656434aa3c2f72f73d7
+(1 row)
+
+DROP TABLE t_agg_presort_idx;
 DROP SCHEMA orca_agg_order_by CASCADE;

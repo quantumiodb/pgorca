@@ -70,6 +70,9 @@ class CMDAggregateGPDB : public IMDAggregate
 	// when loaded from a DXL stream that does not carry this field
 	IMDId *m_mdid_transfn = nullptr;
 
+	// is the result independent of the order of the input
+	BOOL m_is_order_insensitive;
+
 public:
 	CMDAggregateGPDB(const CMDAggregateGPDB &) = delete;
 
@@ -78,7 +81,8 @@ public:
 					 IMDId *result_type_mdid,
 					 IMDId *intermediate_result_type_mdid, BOOL is_ordered_agg,
 					 BOOL is_splittable, BOOL is_hash_agg_capable,
-					 BOOL is_repsafe, IMDId *transfn_mdid = nullptr);
+					 BOOL is_repsafe, IMDId *transfn_mdid = nullptr,
+					 BOOL is_order_insensitive = false);
 
 	//dtor
 	~CMDAggregateGPDB() override;
@@ -134,6 +138,12 @@ public:
 	GetTransfnMdid() const override
 	{
 		return m_mdid_transfn;
+	}
+
+	BOOL
+	IsOrderInsensitive() const override
+	{
+		return m_is_order_insensitive;
 	}
 
 #ifdef GPOS_DEBUG
