@@ -2,7 +2,7 @@
    "name": "pg_orca",
    "abstract": "ORCA query optimizer as a PostgreSQL extension",
    "description": "Plugs the Apache Cloudberry / Greenplum ORCA cost-based optimizer into single-node PostgreSQL 18 via planner_hook. ORCA operates on an intermediate XML-based representation (DXL); if it cannot handle a query it falls back to the standard PG planner automatically. Useful for analytical workloads where ORCA's transformation-based search and cost model produce better plans than PG's standard optimizer (TPC-H, TPC-DS, many-relation joins).",
-   "version": "1.0.0",
+   "version": "1.1.0",
    "maintainer": "Jianghua Yang <yjhjstz@gmail.com>",
    "license": "apache_2_0",
    "provides": {
@@ -10,7 +10,7 @@
          "abstract": "ORCA query optimizer planner_hook for PostgreSQL 18",
          "file": "pg_orca.control",
          "docfile": "README.md",
-         "version": "1.0.0"
+         "version": "1.1.0"
       }
    },
    "prereqs": {

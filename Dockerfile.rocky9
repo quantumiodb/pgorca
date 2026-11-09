@@ -9,11 +9,11 @@
 # /docker-entrypoint-initdb.d/, and then execs postgres in the foreground.
 #
 # Build:
-#   docker build -f Dockerfile.rocky9 -t pg_orca:18-rocky9-1.0.0 .
+#   docker build -f Dockerfile.rocky9 -t pg_orca:18-rocky9-1.1.0 .
 #
 # Run:
 #   docker run --name pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres \
-#       -d pg_orca:18-rocky9-1.0.0
+#       -d pg_orca:18-rocky9-1.1.0
 #   docker exec -it pg psql -U postgres -c \
 #       "CREATE EXTENSION pg_orca; SHOW pg_orca.enable_orca;"
 
@@ -76,8 +76,8 @@ COPY --from=builder /staging/usr/pgsql-18/lib/pg_orca.so \
                     /usr/pgsql-18/lib/pg_orca.so
 COPY --from=builder /staging/usr/pgsql-18/share/extension/pg_orca.control \
                     /usr/pgsql-18/share/extension/pg_orca.control
-COPY --from=builder /staging/usr/pgsql-18/share/extension/pg_orca--1.0.0.sql \
-                    /usr/pgsql-18/share/extension/pg_orca--1.0.0.sql
+COPY --from=builder /staging/usr/pgsql-18/share/extension/pg_orca--*.sql \
+                    /usr/pgsql-18/share/extension/
 
 # Bootstrap SQL: same one the Debian image uses.
 COPY docker/pg_orca-bootstrap.sql /docker-entrypoint-initdb.d/00-pg_orca-bootstrap.sql
@@ -104,4 +104,4 @@ LABEL org.opencontainers.image.title="pg_orca"
 LABEL org.opencontainers.image.description="PostgreSQL 18 (Rocky Linux 9) with ORCA query optimizer (Apache Cloudberry/Greenplum) preloaded as a planner_hook extension"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/quantumiodb/pgorca"
-LABEL org.opencontainers.image.version="1.0.0-rocky9"
+LABEL org.opencontainers.image.version="1.1.0-rocky9"

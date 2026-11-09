@@ -311,6 +311,8 @@ endif()
 install(FILES
     pg_orca.control
     pg_orca--1.0.0.sql
+    pg_orca--1.1.0.sql
+    pg_orca--1.0.0--1.1.0.sql
     DESTINATION "${PG_SHAREDIR}/extension")
 
 # -------------------------------------------------------------------
