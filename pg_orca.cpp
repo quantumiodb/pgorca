@@ -69,6 +69,8 @@ bool  optimizer_enable_motions                  = false;
 bool  optimizer_enable_motions_masteronly_queries = true;
 bool  optimizer_metadata_caching                = true;
 bool  optimizer_use_streaming_hashagg           = false;
+bool  optimizer_enable_child_opt_memo           = true;
+bool  optimizer_verify_child_opt_memo           = false;
 
 int   optimizer_mdcache_size                    = 16384;  /* KB */
 int   optimizer_segments                        = 1;
@@ -951,6 +953,20 @@ void _PG_init(void)
         "Use streaming hash agg in ORCA-generated local partial hash aggregations.",
         NULL, &optimizer_use_streaming_hashagg, false,
         PGC_USERSET, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_enable_child_opt_memo",
+        "Reuse the child contexts that the same request of a group expression "
+        "reached under another context.",
+        NULL, &optimizer_enable_child_opt_memo, true,
+        PGC_USERSET, GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable(
+        "optimizer_verify_child_opt_memo",
+        "Optimize the children of requests that could reuse child contexts "
+        "and report differences.",
+        NULL, &optimizer_verify_child_opt_memo, false,
+        PGC_USERSET, GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 
     DefineCustomRealVariable(
         "optimizer_damping_factor_filter",

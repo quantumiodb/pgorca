@@ -92,6 +92,8 @@ static bool enable_use_dist_in_dqa   = false;
 static bool orca_enable_hashjoin     = true;
 static bool enable_nljoin            = true;
 extern bool optimizer_use_streaming_hashagg;
+extern bool optimizer_enable_child_opt_memo;
+extern bool optimizer_verify_child_opt_memo;
 
 // Scan / join controls
 static bool enable_indexjoin         = true;
@@ -314,6 +316,14 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttraceDisableStreamingHashAgg, &optimizer_use_streaming_hashagg,
 	 true,  GPOS_WSZ_LIT(
 		 "Disable streaming hash agg in ORCA-generated local partial aggregations.")},
+
+	{EopttraceChildOptMemo, &optimizer_enable_child_opt_memo,
+	 false, GPOS_WSZ_LIT(
+		 "Reuse the child contexts that the same request of a group expression reached under another context.")},
+
+	{EopttraceVerifyChildOptMemo, &optimizer_verify_child_opt_memo,
+	 false, GPOS_WSZ_LIT(
+		 "Optimize the children of requests that could reuse child contexts and report differences.")},
 };
 
 //---------------------------------------------------------------------------
