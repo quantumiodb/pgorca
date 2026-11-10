@@ -1,0 +1,229 @@
+-- USING joins whose merged column needs a coercion
+--
+-- The merged column of a USING join is the left input coerced to the common
+-- type when the two input types differ.  For binary-compatible types such as
+-- varchar vs text or int vs oid the parser emits a RelabelType, which the
+-- query-to-DXL translator used to reject with an assertion, falling back to
+-- the Postgres planner.  "Optimizer: pg_orca" in the plans shows ORCA planned
+-- the query.
+--
+-- Port of Cloudberry commits fa4fddedba and 5921f13526.
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+create table using_coerce_t1(k varchar(10), f2 int);
+create table using_coerce_t2(k text, f2 oid);
+insert into using_coerce_t1 values ('a', 1), ('b', 2);
+insert into using_coerce_t2 values ('a', 1), ('c', 3);
+analyze using_coerce_t1, using_coerce_t2;
+-- varchar vs text: merged column is RelabelType(t1.k)
+explain (costs off) select k from using_coerce_t1 left join using_coerce_t2 using(k) order by 1;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Sort
+   Sort Key: ((using_coerce_t1.k)::character varying)
+   ->  Hash Left Join
+         Hash Cond: ((using_coerce_t1.k)::text = using_coerce_t2.k)
+         ->  Seq Scan on using_coerce_t1
+         ->  Hash
+               ->  Seq Scan on using_coerce_t2
+ Optimizer: pg_orca
+(8 rows)
+
+select k from using_coerce_t1 left join using_coerce_t2 using(k) order by 1;
+ k 
+---
+ a
+ b
+(2 rows)
+
+-- int vs oid
+explain (costs off) select f2, count(*) from using_coerce_t1 left join using_coerce_t2 using(f2) group by f2 order by 1;
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Sort
+   Sort Key: ((using_coerce_t1.f2)::oid)
+   ->  HashAggregate
+         Group Key: (using_coerce_t1.f2)::oid
+         ->  Hash Left Join
+               Hash Cond: ((using_coerce_t1.f2)::oid = using_coerce_t2.f2)
+               ->  Seq Scan on using_coerce_t1
+               ->  Hash
+                     ->  Seq Scan on using_coerce_t2
+ Optimizer: pg_orca
+(10 rows)
+
+select f2, count(*) from using_coerce_t1 left join using_coerce_t2 using(f2) group by f2 order by 1;
+ f2 | count 
+----+-------
+  1 |     1
+  2 |     1
+(2 rows)
+
+-- nested left join, the shape from the aggregates test
+explain (costs off) select f2, count(*) from using_coerce_t1 x(x0,x1) left join (using_coerce_t1 left join using_coerce_t2 using(f2)) on (x0 = 'a') group by f2 order by 1;
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Sort
+   Sort Key: ((using_coerce_t1.f2)::oid)
+   ->  HashAggregate
+         Group Key: (using_coerce_t1.f2)::oid
+         ->  Nested Loop Left Join
+               Join Filter: ((x.k)::text = 'a'::text)
+               ->  Seq Scan on using_coerce_t1 x
+               ->  Hash Left Join
+                     Hash Cond: ((using_coerce_t1.f2)::oid = using_coerce_t2.f2)
+                     ->  Seq Scan on using_coerce_t1
+                     ->  Hash
+                           ->  Seq Scan on using_coerce_t2
+ Optimizer: pg_orca
+(13 rows)
+
+select f2, count(*) from using_coerce_t1 x(x0,x1) left join (using_coerce_t1 left join using_coerce_t2 using(f2)) on (x0 = 'a') group by f2 order by 1;
+ f2 | count 
+----+-------
+  1 |     1
+  2 |     1
+    |     1
+(3 rows)
+
+-- inner and full joins on the coerced column
+select k from using_coerce_t1 join using_coerce_t2 using(k) order by 1;
+ k 
+---
+ a
+(1 row)
+
+explain (costs off) select k from using_coerce_t1 full join using_coerce_t2 using(k) order by 1;
+                                               QUERY PLAN                                               
+--------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: (COALESCE((using_coerce_t1.k)::character varying, (using_coerce_t2.k)::character varying))
+   ->  Hash Full Join
+         Hash Cond: ((using_coerce_t1.k)::text = using_coerce_t2.k)
+         ->  Seq Scan on using_coerce_t1
+         ->  Hash
+               ->  Seq Scan on using_coerce_t2
+ Optimizer: pg_orca
+(8 rows)
+
+select k from using_coerce_t1 full join using_coerce_t2 using(k) order by 1;
+ k 
+---
+ a
+ b
+ c
+(3 rows)
+
+-- Quals are deliberately not flattened by flatten_join_alias_var_optimizer, so
+-- a predicate on the merged column references the computed join output column
+-- directly.  Without a projection producing it ORCA fell back with
+-- "Attribute number N not found in project list".
+explain (costs off) select k from using_coerce_t1 left join using_coerce_t2 using(k) where k = 'a';
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Hash Right Join
+   Hash Cond: (using_coerce_t2.k = (using_coerce_t1.k)::text)
+   ->  Seq Scan on using_coerce_t2
+   ->  Hash
+         ->  Seq Scan on using_coerce_t1
+               Filter: ((k)::text = 'a'::text)
+ Optimizer: pg_orca
+(7 rows)
+
+select k from using_coerce_t1 left join using_coerce_t2 using(k) where k = 'a';
+ k 
+---
+ a
+(1 row)
+
+explain (costs off) select f2 from using_coerce_t1 join using_coerce_t2 using(f2) where f2 = 1;
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Hash Join
+   Hash Cond: ((using_coerce_t1.f2)::oid = using_coerce_t2.f2)
+   ->  Seq Scan on using_coerce_t1
+         Filter: ((f2)::oid = '1'::oid)
+   ->  Hash
+         ->  Seq Scan on using_coerce_t2
+               Filter: (f2 = '1'::oid)
+ Optimizer: pg_orca
+(8 rows)
+
+select f2 from using_coerce_t1 join using_coerce_t2 using(f2) where f2 = 1;
+ f2 
+----
+  1
+(1 row)
+
+explain (costs off) select k from using_coerce_t1 full join using_coerce_t2 using(k) where k = 'c';
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
+ Result
+   Filter: (((COALESCE((using_coerce_t1.k)::character varying, (using_coerce_t2.k)::character varying)))::text = 'c'::text)
+   ->  Hash Full Join
+         Hash Cond: ((using_coerce_t1.k)::text = using_coerce_t2.k)
+         ->  Seq Scan on using_coerce_t1
+         ->  Hash
+               ->  Seq Scan on using_coerce_t2
+ Optimizer: pg_orca
+(8 rows)
+
+select k from using_coerce_t1 full join using_coerce_t2 using(k) where k = 'c';
+ k 
+---
+ c
+(1 row)
+
+drop table using_coerce_t1;
+drop table using_coerce_t2;
+--
+-- Same, for a merged column that needs a real cast function (FuncExpr) rather
+-- than a binary-compatible relabel.
+--
+create table using_coerce_t3(k int, v int);
+create table using_coerce_t4(k bigint, v int);
+insert into using_coerce_t3 values (1, 1), (2, 2);
+insert into using_coerce_t4 values (1, 1), (3, 3);
+analyze using_coerce_t3, using_coerce_t4;
+explain (costs off) select k from using_coerce_t3 left join using_coerce_t4 using(k) where k = 1;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Hash Right Join
+   Hash Cond: (using_coerce_t4.k = (using_coerce_t3.k)::bigint)
+   ->  Seq Scan on using_coerce_t4
+   ->  Hash
+         ->  Seq Scan on using_coerce_t3
+               Filter: ((k)::bigint = 1)
+ Optimizer: pg_orca
+(7 rows)
+
+select k from using_coerce_t3 left join using_coerce_t4 using(k) where k = 1;
+ k 
+---
+ 1
+(1 row)
+
+explain (costs off) select k from using_coerce_t3 full join using_coerce_t4 using(k) order by 1;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Sort
+   Sort Key: (COALESCE((using_coerce_t3.k)::bigint, using_coerce_t4.k))
+   ->  Hash Full Join
+         Hash Cond: ((using_coerce_t3.k)::bigint = using_coerce_t4.k)
+         ->  Seq Scan on using_coerce_t3
+         ->  Hash
+               ->  Seq Scan on using_coerce_t4
+ Optimizer: pg_orca
+(8 rows)
+
+select k from using_coerce_t3 full join using_coerce_t4 using(k) order by 1;
+ k 
+---
+ 1
+ 2
+ 3
+(3 rows)
+
+drop table using_coerce_t3;
+drop table using_coerce_t4;
