@@ -704,6 +704,23 @@ CPhysicalJoin::FMergeJoinCompatible(
 		const IMDType *left_type = mda->RetrieveType(pmdidTypeOuter);
 		const IMDType *right_type = mda->RetrieveType(pmdidTypeInner);
 
+		// An operator with no hash opfamily cannot drive the distribution a
+		// merge join needs, so it is not merge joinable here.  Checking this
+		// before the comparison below matters: CUtils::Equals() treats two
+		// null mdids as equal, so an operator and a type that *both* lack an
+		// opfamily would compare as compatible and the checks below would
+		// pass vacuously.  ImplementMergeJoin() then dereferences the null
+		// opfamily it was promised (see the matching guard in
+		// FHashJoinCompatible above).
+		//
+		// On PG18 this is reached by a type whose "=" is declared HASHES
+		// (so IMDType::IsHashable() is true) but which belongs to no hash
+		// opfamily, so neither the operator nor the type has a hash opfamily.
+		if (nullptr == op->HashOpfamilyMdid())
+		{
+			return false;
+		}
+
 		// MJ sends Sort requests whose btree opclass must match that of the join
 		// clause. ORCA currently doesn't have support to retrive the information
 		// to send such requests.

@@ -762,18 +762,36 @@ CXformUtils::ImplementHashJoin(CXformContext *pxfctxt, CXformResult *pxfres,
 												  pexprInner, &pexprPredOuter,
 												  &pexprPredInner, &mdid_scop);
 
+			// Resolve the opfamily before appending anything, so that a
+			// predicate we end up rejecting leaves pdrgpexprOuter/Inner and
+			// join_opfamilies the same length -- which the assertions after
+			// this loop require.
+			IMDId *hash_opfamily = nullptr;
+			if (GPOS_FTRACE(EopttraceConsiderOpfamiliesForDistribution))
+			{
+				CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+				hash_opfamily =
+					mda->RetrieveScOp(mdid_scop)->HashOpfamilyMdid();
+				GPOS_ASSERT_IMP(nullptr != hash_opfamily,
+								hash_opfamily->IsValid());
+			}
+
+			if (GPOS_FTRACE(EopttraceConsiderOpfamiliesForDistribution) &&
+				nullptr == hash_opfamily)
+			{
+				// Defence in depth.  FHashJoinCompatible() already rejects an
+				// operator with no hash opfamily; if one ever reaches here,
+				// leave it out of the hash keys instead of dereferencing null.
+				continue;
+			}
+
 			pexprPredInner->AddRef();
 			pexprPredOuter->AddRef();
 			pdrgpexprOuter->Append(pexprPredOuter);
 			pdrgpexprInner->Append(pexprPredInner);
 
-			if (GPOS_FTRACE(EopttraceConsiderOpfamiliesForDistribution))
+			if (nullptr != hash_opfamily)
 			{
-				CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
-				IMDId *hash_opfamily =
-					mda->RetrieveScOp(mdid_scop)->HashOpfamilyMdid();
-				GPOS_ASSERT(nullptr != hash_opfamily &&
-							hash_opfamily->IsValid());
 				hash_opfamily->AddRef();
 				join_opfamilies->Append(hash_opfamily);
 			}
@@ -918,18 +936,40 @@ CXformUtils::ImplementMergeJoin(CXformContext *pxfctxt, CXformResult *pxfres,
 												  pexprInner, &pexprPredOuter,
 												  &pexprPredInner, &mdid_scop);
 
+			// Resolve the opfamily before appending anything, so that a
+			// predicate we end up rejecting leaves pdrgpexprOuter/Inner and
+			// join_opfamilies the same length -- which the assertions after
+			// this loop require.
+			IMDId *hash_opfamily = nullptr;
+			if (GPOS_FTRACE(EopttraceConsiderOpfamiliesForDistribution))
+			{
+				CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+				hash_opfamily =
+					mda->RetrieveScOp(mdid_scop)->HashOpfamilyMdid();
+				GPOS_ASSERT_IMP(nullptr != hash_opfamily,
+								hash_opfamily->IsValid());
+			}
+
+			if (GPOS_FTRACE(EopttraceConsiderOpfamiliesForDistribution) &&
+				nullptr == hash_opfamily)
+			{
+				// Defence in depth, mirroring the else branch below: a FULL
+				// merge join needs every clause usable, so give up on the
+				// alternative rather than dereference null.
+				pdrgpexpr->Release();
+				pdrgpexprOuter->Release();
+				pdrgpexprInner->Release();
+				CRefCount::SafeRelease(join_opfamilies);
+				return;
+			}
+
 			pexprPredInner->AddRef();
 			pexprPredOuter->AddRef();
 			pdrgpexprOuter->Append(pexprPredOuter);
 			pdrgpexprInner->Append(pexprPredInner);
 
-			if (GPOS_FTRACE(EopttraceConsiderOpfamiliesForDistribution))
+			if (nullptr != hash_opfamily)
 			{
-				CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
-				IMDId *hash_opfamily =
-					mda->RetrieveScOp(mdid_scop)->HashOpfamilyMdid();
-				GPOS_ASSERT(nullptr != hash_opfamily &&
-							hash_opfamily->IsValid());
 				hash_opfamily->AddRef();
 				join_opfamilies->Append(hash_opfamily);
 			}
