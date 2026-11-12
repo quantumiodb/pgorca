@@ -1,0 +1,33 @@
+-- Array comparison whose elements are all NULL
+--
+-- CDatumSortedSet drops NULLs, so NOT IN (NULL, NULL) left
+-- PcnstrIntervalFromScalarArrayCmp() with an empty datum set and the trailing
+-- range was built from a null datum, crashing the backend.  All of these
+-- match no rows.
+--
+-- Port of Apache Cloudberry PR #2310.
+
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET pg_orca.trace_fallback = on;
+SET client_min_messages = warning;
+
+create table orca_null_array (a int, b int);
+insert into orca_null_array values (1, 1), (2, 2), (3, NULL);
+
+explain (costs off) select * from orca_null_array where b not in (NULL, NULL);
+
+select count(*) from orca_null_array where b not in (NULL, NULL);
+select count(*) from orca_null_array where b not in (NULL);
+select count(*) from orca_null_array where b in (NULL, NULL);
+select count(*) from orca_null_array where b not in (1, NULL);
+
+-- a cast on the column reaches the same code through
+-- FCompareCastIdentToConstArray()
+select count(*) from orca_null_array where b::bigint not in (NULL, NULL);
+
+-- arrays with a real datum still derive their constraint as before
+select count(*) from orca_null_array where b not in (1, 2);
+select count(*) from orca_null_array where b in (1, 2);
+
+drop table orca_null_array;

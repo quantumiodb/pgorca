@@ -23,3 +23,4 @@ test: extended_stats
 test: covering_index
 test: join_using
 test: join_no_hash_opfamily
+test: not_in_null_array
