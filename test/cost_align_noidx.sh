@@ -20,7 +20,11 @@ setup=$(awk '/^EXPLAIN/{exit} {print}' "$SQL_FILE")
 
 DISABLE='SET enable_indexscan=off; SET enable_indexonlyscan=off; SET enable_bitmapscan=off;'
 
-mapfile -t queries < <(grep -E "^EXPLAIN " "$SQL_FILE")
+# Not `mapfile`: that is bash 4+, and macOS ships bash 3.2 as /bin/bash.
+queries=()
+while IFS= read -r query_line; do
+  queries+=("$query_line")
+done < <(grep -E "^EXPLAIN " "$SQL_FILE")
 
 same_ok=0; same_off=0; diff_plan=0; total=0; fail=0
 printf "%-3s | %-22s | %-22s | %-7s | %s\n" "#" "PG native" "ORCA pg" "diff%" "Query"

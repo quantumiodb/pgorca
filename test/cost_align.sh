@@ -44,7 +44,11 @@ fi
 setup_sql=$(awk '/^EXPLAIN/{exit} {print}' "$SQL_FILE")
 "$PSQL" -d "$PGDATABASE" -X -At >/dev/null 2>&1 <<<"$setup_sql"
 
-mapfile -t queries < <(grep -E "^EXPLAIN " "$SQL_FILE")
+# Not `mapfile`: that is bash 4+, and macOS ships bash 3.2 as /bin/bash.
+queries=()
+while IFS= read -r query_line; do
+  queries+=("$query_line")
+done < <(grep -E "^EXPLAIN " "$SQL_FILE")
 
 same_aligned=0
 same_off=0
