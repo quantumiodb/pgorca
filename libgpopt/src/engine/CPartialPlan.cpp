@@ -245,15 +245,13 @@ CPartialPlan::CostCompute(CMemoryPool *mp)
 	// compute partial plan cost
 	CCost cost = pcm->Cost(exprhdl, &ci);
 
-	if (0 < ci.ChildCount() && 1.0 < cost.Get())
-	{
-		// cost model implementation adds an artificial const (1.0) to
-		// sum of children cost,
-		// we subtract this 1.0 here since we compute a lower bound
-
-		// TODO:  05/07/2014: remove artificial const 1.0 in CostSum() function
-		cost = CCost(cost.Get() - 1.0);
-	}
+	// The partial plan cost is used as-is.  ORCA used to subtract 1.0 here to
+	// undo an artificial constant that the legacy cost model's CostSum() added
+	// to the sum of the children's costs.  Neither CCostModelGPDB nor
+	// CCostModelPG adds that constant, so the subtraction only made the bound
+	// 1.0 looser than the costs it is compared against — and under
+	// CCostModelPG, whose NL join costing re-prices the inner index probe from
+	// its child cost, pushed the inner's bound below its own IO component.
 
 	return cost;
 }

@@ -853,9 +853,8 @@ CCostModelPG::CostFilter(CMemoryPool *,	 // mp
 //	  run += cpu_per_tuple * (outer_rows * inner_rows)
 //	approximating qual_cost.per_tuple as cpu_operator_cost × n_qual_cols.
 //
-static DOUBLE ComputeIndexScanIOAmortizationDelta(COperator *inner_op,
-												  DOUBLE tuples_per_probe,
-												  DOUBLE outer_rows);
+static DOUBLE AmortizeIndexScanIO(DOUBLE per_exec, COperator *inner_op,
+								  DOUBLE tuples_per_probe, DOUBLE outer_rows);
 
 // Recursively walk a CGroup's expressions looking for an IndexScan or
 // IndexOnlyScan operator.  Returns the first one found within `max_depth`
@@ -1158,8 +1157,8 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 		// runs with NumRebinds=1 (CJoinStatsProcessor.cpp:682 deliberately
 		// keeps inner-side rebinds at the default), so the inner_total_cost
 		// stored in pci->PdCost()[1] is a single-shot value.
-		per_exec += ComputeIndexScanIOAmortizationDelta(
-			inner_op, inner_rows, outer_rows);
+		per_exec =
+			AmortizeIndexScanIO(per_exec, inner_op, inner_rows, outer_rows);
 
 		if (has_indexed_join_quals)
 		{
@@ -1197,8 +1196,8 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 		{
 			DOUBLE per_exec = inner_total_cost / inner_rebinds;
 			// IO amortization: see SEMI branch comment.
-			per_exec += ComputeIndexScanIOAmortizationDelta(
-				inner_op, inner_rows, outer_rows);
+			per_exec = AmortizeIndexScanIO(per_exec, inner_op, inner_rows,
+										   outer_rows);
 			extra_rescan = n_extra * per_exec;
 		}
 	}
@@ -1487,7 +1486,7 @@ static DOUBLE IndexPagesFetched(DOUBLE tuples_fetched, DOUBLE pages,
 // Mirrors the heap-fetch portion: max_IO (uncorrelated, Mackert-Lohman on
 // tuples_fetched × loop_count, pro-rated by loop_count) and min_IO (
 // correlated, ceil(selectivity × T) × loop_count again pro-rated), then
-// linear interpolation by correlation².  See ComputeIndexScanIOAmortization
+// linear interpolation by correlation².  See AmortizeIndexScanIO
 // for the NL caller.
 static DOUBLE
 IndexScanIOAtLoopCount(DOUBLE tuples_fetched, DOUBLE N, DOUBLE T,
@@ -1584,39 +1583,50 @@ IndexScanIOAtLoopCount(DOUBLE tuples_fetched, DOUBLE N, DOUBLE T,
 	return heap_io + index_io;
 }
 
-// Compute the per-probe IO delta for the inner IndexScan when used as the
-// inner of a NL with `outer_rows` probes.  ORCA's CostIndexScan ran with
-// NumRebinds=1 (no amortization across probes), so inner_total_cost stored
-// in pci->PdCost()[1] reflects single-shot IO.  PG, by contrast, would have
-// invoked cost_index(loop_count=outer_path_rows) in create_index_path,
-// pro-rating IO via Mackert-Lohman's cache model.  Returns the
-// (amortized - unamortized) per-probe IO delta — typically negative.  Zero
-// when inner is not a plain IndexScan/IndexOnlyScan or stats unavailable.
+// Re-price the per-probe cost of an inner IndexScan when it is the inner of
+// a NL with `outer_rows` probes.  ORCA's CostIndexScan ran with NumRebinds=1
+// (no amortization across probes), so the inner cost in pci->PdCost()[1]
+// reflects single-shot IO.  PG, by contrast, would have invoked
+// cost_index(loop_count=outer_path_rows) in create_index_path, pro-rating IO
+// via Mackert-Lohman's cache model.  Returns `per_exec` with the single-shot
+// IO (io_at_1) swapped for the amortized IO (io_at_n); returns `per_exec`
+// unchanged when inner is not a plain IndexScan/IndexOnlyScan or stats are
+// unavailable.
+//
+// `per_exec` is not guaranteed to contain io_at_1: on the lower-bound path
+// (CPartialPlan) it is the inner group's cost lower bound, i.e. the minimum
+// over every group expression, which need not be the IndexScan that
+// FindIndexScanInGroup located.  Subtracting the full io_at_1 - io_at_n from
+// such a value drove the per-probe cost — and, multiplied by outer_rows, the
+// whole join — negative.  When per_exec is below io_at_1, treat all of it as
+// IO and scale it by io_at_n / io_at_1 instead.  The result is never
+// negative, is identical to the plain swap whenever per_exec >= io_at_1, and
+// is monotonic in per_exec, so a lower bound on the inner cost still yields
+// a lower bound on the amortized cost.
 static DOUBLE
-ComputeIndexScanIOAmortizationDelta(COperator *inner_op,
-									DOUBLE tuples_per_probe,
-									DOUBLE outer_rows)
+AmortizeIndexScanIO(DOUBLE per_exec, COperator *inner_op,
+					DOUBLE tuples_per_probe, DOUBLE outer_rows)
 {
 	if (nullptr == inner_op || outer_rows <= 1.0 || tuples_per_probe <= 0.0)
 	{
-		return 0.0;
+		return per_exec;
 	}
 	const COperator::EOperatorId op_id = inner_op->Eopid();
 	const BOOL is_indexscan =
 		(COperator::EopPhysicalIndexScan == op_id ||
 		 COperator::EopPhysicalIndexOnlyScan == op_id);
-	if (!is_indexscan) return 0.0;
+	if (!is_indexscan) return per_exec;
 	const BOOL indexonly = (COperator::EopPhysicalIndexOnlyScan == op_id);
 
 	IMDId *index_mdid =
 		(COperator::EopPhysicalIndexScan == op_id)
 			? CPhysicalIndexScan::PopConvert(inner_op)->Pindexdesc()->MDId()
 			: CPhysicalIndexOnlyScan::PopConvert(inner_op)->Pindexdesc()->MDId();
-	if (nullptr == index_mdid) return 0.0;
+	if (nullptr == index_mdid) return per_exec;
 
 	CPhysicalScan *pscan = CPhysicalScan::PopConvert(inner_op);
 	IStatistics *base_stats = pscan->PstatsBaseTable();
-	if (nullptr == base_stats) return 0.0;
+	if (nullptr == base_stats) return per_exec;
 	CStatistics *base = CStatistics::CastStats(base_stats);
 	const DOUBLE N = base->Rows().Get();
 	DOUBLE T = static_cast<DOUBLE>(base->RelPages());
@@ -1662,7 +1672,15 @@ ComputeIndexScanIOAmortizationDelta(COperator *inner_op,
 	const DOUBLE io_at_n = IndexScanIOAtLoopCount(
 		tuples_per_probe, N, T, index_pages, correlation, allvis_frac,
 		indexonly, outer_rows);
-	return io_at_n - io_at_1;
+	if (io_at_1 <= 0.0)
+	{
+		return per_exec;
+	}
+	if (per_exec >= io_at_1)
+	{
+		return per_exec - io_at_1 + io_at_n;
+	}
+	return per_exec * (io_at_n / io_at_1);
 }
 
 // PG's index_pages_fetched (costsize.c:907) — Mackert-Lohman formula.
