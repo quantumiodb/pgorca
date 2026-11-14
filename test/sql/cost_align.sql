@@ -158,6 +158,15 @@ ANALYZE cb_coerce_b;
 ANALYZE cb_tt;
 ANALYZE cb_tq;
 
+-- Two-column btree whose leading column has few distinct values: PG18
+-- prices a qual on the second column as a skip scan (one descent per
+-- leading value) rather than a full index walk.
+DROP TABLE IF EXISTS cal_skip;
+CREATE TABLE cal_skip AS
+SELECT g % 20 AS k1, g AS k2, g % 7 AS v FROM generate_series(1, 100000) g;
+CREATE INDEX cal_skip_k1_k2 ON cal_skip (k1, k2);
+ANALYZE cal_skip;
+
 -- ---------------------------------------------------------------------
 -- Queries -- each line is one EXPLAIN that the driver compares.
 -- Keep one statement per line so the driver can split on newlines.
@@ -626,3 +635,15 @@ EXPLAIN WITH t AS NOT MATERIALIZED (SELECT * FROM cal_tenk1) SELECT t.hundred, c
 -- bfv_planner: anti-join NOT EXISTS over multi-column correlation
 EXPLAIN SELECT * FROM cal_tenk1 t WHERE NOT EXISTS (SELECT 1 FROM cal_onek o WHERE o.unique1 = t.unique1 AND o.hundred = t.hundred);
 EXPLAIN SELECT * FROM cb_subq_a a WHERE NOT EXISTS (SELECT 1 FROM cb_subq_a a2 WHERE a2.i = a.i + 1);
+
+-- PG18 btree skip scan over the unconstrained leading column
+EXPLAIN SELECT * FROM cal_skip WHERE k2 = 4242;
+EXPLAIN SELECT count(*) FROM cal_skip WHERE k2 = 4242;
+
+-- PG18 hash_agg_entry_size (Bump allocator): 100k / 10k groups fit in
+-- hash_mem, so no spill cost
+EXPLAIN SELECT k2, count(*) FROM cal_skip GROUP BY k2;
+EXPLAIN SELECT unique1, unique2, count(*) FROM cal_tenk1 GROUP BY unique1, unique2;
+
+-- finalCost only for aggregates with a final function (count has none)
+EXPLAIN SELECT ten, count(*), avg(unique1::numeric) FROM cal_tenk1 GROUP BY ten;

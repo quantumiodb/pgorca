@@ -53,6 +53,7 @@ done < <(grep -E "^EXPLAIN " "$SQL_FILE")
 same_aligned=0
 same_off=0
 diff_plan=0
+fallback=0
 total=0
 fail=0
 
@@ -75,7 +76,10 @@ echo "----+------------------------+------------------------+---------+---------
   # GUCs that must persist across per-query SETs in the batch.  Each
   # batch is a fresh psql session, so the setup-script SETs don't leak
   # in; prepend these explicitly.
-  COMMON_GUCS="SET enable_partitionwise_join = on; SET enable_partitionwise_aggregate = on;"
+  # LOAD explicitly: without it (no shared/session_preload_libraries on the
+  # target server) SET pg_orca.* only creates placeholder GUCs and the
+  # "ORCA" side silently runs the PG planner, making every query "aligned".
+  COMMON_GUCS="LOAD 'pg_orca'; SET enable_partitionwise_join = on; SET enable_partitionwise_aggregate = on;"
   # ORCA-only: turn off DynamicTableScan so partition queries use Append +
   # per-partition Scans, matching PG's plan shape (and now exact cost).
   # Default partition mode: keep enable_dynamic_tablescan=on (the
@@ -183,7 +187,12 @@ for q in "${queries[@]}"; do
   abs_pct=$(echo "$diff_pct" | tr -d '-')
 
   mark=""
-  if [ "$pg_top" = "$orca_top" ]; then
+  if ! echo "$orca_out" | grep -q "Optimizer: pg_orca"; then
+    # ORCA fell back to the PG planner: identical cost by construction, so
+    # it says nothing about cost alignment.  Reported, not failed.
+    fallback=$((fallback+1))
+    mark="FALLBK"
+  elif [ "$pg_top" = "$orca_top" ]; then
     if awk -v p="$abs_pct" -v t="$TOL" 'BEGIN { exit (p+0 <= t+0) ? 0 : 1 }'; then
       same_aligned=$((same_aligned+1))
       mark="OK"
@@ -198,11 +207,11 @@ for q in "${queries[@]}"; do
   fi
 
   display=$(echo "$q" | sed -E 's/^EXPLAIN //' | cut -c1-40)
-  printf "%-3d | %-22s | %-22s | %-7s | %-4s %s\n" "$i" "$pg_cost" "$orca_cost" "$diff_pct" "$mark" "$display"
+  printf "%-3d | %-22s | %-22s | %-7s | %-6s %s\n" "$i" "$pg_cost" "$orca_cost" "$diff_pct" "$mark" "$display"
 done
 
 echo "----+------------------------+------------------------+---------+----------"
-echo "Total=$total | same-plan ≤${TOL}%=$same_aligned | same-plan off=$same_off | diff plan=$diff_plan"
+echo "Total=$total | same-plan ≤${TOL}%=$same_aligned | same-plan off=$same_off | diff plan=$diff_plan | ORCA fallback=$fallback"
 
 if [ "$fail" -gt 0 ]; then
   echo "FAIL: $fail same-plan query/queries exceed ${TOL}% tolerance"
