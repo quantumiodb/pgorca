@@ -1,0 +1,70 @@
+--
+-- Row level security: every scan of a relation must get the security quals
+-- of its own range table entry.
+--
+-- ORCA doesn't translate security quals. They are added to the scans of a
+-- relation when the plan is translated, by looking up the range table entry
+-- of the relation by oid.
+--
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+
+CREATE ROLE regress_rls_owner;
+CREATE ROLE regress_rls_alice;
+GRANT ALL ON SCHEMA public TO regress_rls_owner;
+
+SET ROLE regress_rls_owner;
+
+-- A partition that has the columns of its parent at other attribute numbers.
+-- (ORCA falls back on multi-level partitioned tables, so no sub-partitions.)
+CREATE TABLE rls_part (id int, tenant text, payload text) PARTITION BY RANGE (id);
+CREATE TABLE rls_part1 PARTITION OF rls_part FOR VALUES FROM (0) TO (100);
+CREATE TABLE rls_part2 (id int, payload text, tenant text);
+ALTER TABLE rls_part ATTACH PARTITION rls_part2 FOR VALUES FROM (100) TO (200);
+INSERT INTO rls_part VALUES
+    (1, 'regress_rls_alice', 'part1 alice row'),
+    (2, 'regress_rls_bob', 'part1 bob row'),
+    (101, 'regress_rls_alice', 'part2 alice row'),
+    (102, 'regress_rls_bob', 'regress_rls_alice'),
+    (103, 'regress_rls_carol', 'regress_rls_alice');
+ALTER TABLE rls_part ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON rls_part USING (tenant = current_user);
+
+-- Same, with a column of another type at the attribute number.
+CREATE TABLE rls_lvl (id int, lvl int, payload text) PARTITION BY RANGE (id);
+CREATE TABLE rls_lvl1 PARTITION OF rls_lvl FOR VALUES FROM (0) TO (100);
+CREATE TABLE rls_lvl2 (id int, payload text, lvl int);
+ALTER TABLE rls_lvl ATTACH PARTITION rls_lvl2 FOR VALUES FROM (100) TO (200);
+INSERT INTO rls_lvl VALUES (1, 1, 'lvl1 visible'), (2, 5, 'lvl1 hidden'),
+    (101, 1, 'lvl2 visible'), (102, 5, 'lvl2 hidden');
+ALTER TABLE rls_lvl ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON rls_lvl USING (lvl < 3);
+
+GRANT SELECT ON rls_part, rls_part1, rls_part2 TO regress_rls_alice;
+GRANT SELECT ON rls_lvl, rls_lvl1, rls_lvl2 TO regress_rls_alice;
+
+RESET ROLE;
+ANALYZE rls_part;
+ANALYZE rls_lvl;
+
+SET ROLE regress_rls_alice;
+
+-- The security quals of the partitioned table refer to the attribute numbers
+-- of the partitioned table, not to those of the partition.
+SELECT * FROM rls_part ORDER BY id;
+SELECT * FROM rls_lvl ORDER BY id;
+
+SET pg_orca.enable_dynamic_tablescan = off;
+EXPLAIN (COSTS OFF) SELECT * FROM rls_part;
+SELECT * FROM rls_part ORDER BY id;
+SELECT * FROM rls_part WHERE id > 100 ORDER BY id;
+EXPLAIN (COSTS OFF) SELECT * FROM rls_lvl;
+SELECT * FROM rls_lvl ORDER BY id;
+RESET pg_orca.enable_dynamic_tablescan;
+
+RESET ROLE;
+DROP TABLE rls_part, rls_lvl;
+REVOKE ALL ON SCHEMA public FROM regress_rls_owner;
+DROP ROLE regress_rls_owner;
+DROP ROLE regress_rls_alice;
