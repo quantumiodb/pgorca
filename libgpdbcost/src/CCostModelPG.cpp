@@ -1055,6 +1055,68 @@ IsInnerUniqueOnJoinKeys(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	return covers_a_key;
 }
 
+// JOIN_INNER selectivity of the equijoin conjuncts `outer_col = inner_col`
+// of a join predicate, as clauselist_selectivity would give it without MCV
+// matching: eqjoinsel_inner's (1 − nullfrac₁)(1 − nullfrac₂) / max(nd₁, nd₂)
+// per clause, multiplied across clauses.  NDV and null fraction come from
+// the children's derived histograms, so restrictions below the join are
+// already reflected.  Returns a negative value when no conjunct could be
+// estimated.
+static DOUBLE
+EquiJoinInnerSelectivity(CMemoryPool *mp, const ICostModel::SCostingInfo *pci,
+						 CExpression *pexprJoinPred)
+{
+	if (nullptr == pexprJoinPred || pci->ChildCount() < 2 ||
+		nullptr == pci->Pcstats(0) || nullptr == pci->Pcstats(1) ||
+		nullptr == pci->Pcstats(0)->Pstats() ||
+		nullptr == pci->Pcstats(1)->Pstats())
+	{
+		return -1.0;
+	}
+	CStatistics *outer_stats =
+		CStatistics::CastStats(pci->Pcstats(0)->Pstats());
+	CStatistics *inner_stats =
+		CStatistics::CastStats(pci->Pcstats(1)->Pstats());
+
+	DOUBLE sel = 1.0;
+	BOOL any = false;
+	CExpressionArray *conjs =
+		CPredicateUtils::PdrgpexprConjuncts(mp, pexprJoinPred);
+	for (ULONG i = 0; i < conjs->Size(); i++)
+	{
+		CExpression *conj = (*conjs)[i];
+		if (!CPredicateUtils::IsEqualityOp(conj) || 2 != conj->Arity() ||
+			COperator::EopScalarIdent != (*conj)[0]->Pop()->Eopid() ||
+			COperator::EopScalarIdent != (*conj)[1]->Pop()->Eopid())
+		{
+			continue;
+		}
+		const CColRef *c0 = CScalarIdent::PopConvert((*conj)[0]->Pop())->Pcr();
+		const CColRef *c1 = CScalarIdent::PopConvert((*conj)[1]->Pop())->Pcr();
+		const CHistogram *h_outer = outer_stats->GetHistogram(c0->Id());
+		const CHistogram *h_inner = inner_stats->GetHistogram(c1->Id());
+		if (nullptr == h_outer || nullptr == h_inner)
+		{
+			h_outer = outer_stats->GetHistogram(c1->Id());
+			h_inner = inner_stats->GetHistogram(c0->Id());
+		}
+		if (nullptr == h_outer || nullptr == h_inner)
+		{
+			continue;
+		}
+		const DOUBLE nd = std::max(
+			1.0, std::max(h_outer->GetNumDistinct().Get(),
+						  h_inner->GetNumDistinct().Get()));
+		const DOUBLE nonnull =
+			std::max(0.0, 1.0 - h_outer->GetNullFreq().Get()) *
+			std::max(0.0, 1.0 - h_inner->GetNullFreq().Get());
+		sel *= nonnull / nd;
+		any = true;
+	}
+	conjs->Release();
+	return any ? sel : -1.0;
+}
+
 //	Semi/anti joins (early termination on first match) follow PG's
 //	final_cost_nestloop SEMI branch (costsize.c:3389): matched outer rows
 //	scan only inner_scan_frac = 2/(match_count+1) of the inner per probe,
@@ -1200,20 +1262,6 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 		//     expected match count (CJoinStatsProcessor scales it).
 		//   - uncorrelated SEMI/ANTI: inner_rows is total inner cardinality;
 		//     approximate per-outer matches as inner_rows / outer_rows.
-		DOUBLE match_count;
-		if (is_inner_unique)
-		{
-			match_count = 1.0;
-		}
-		else
-		{
-			const BOOL inner_is_correlated = (inner_rebinds > 1.0);
-			match_count = inner_is_correlated
-				? std::max(1.0, inner_rows)
-				: std::max(1.0, inner_rows / std::max(1.0, outer_rows));
-		}
-		const DOUBLE inner_scan_frac = 2.0 / (match_count + 1.0);
-
 		// PG's outer_match_frac = jselec (SEMI selectivity) = fraction of
 		// outer rows producing ≥ 1 SEMI output row.  For SEMI joins the
 		// output cardinality already equals matched outer count, so
@@ -1232,6 +1280,40 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 				? std::min(1.0, output_rows / outer_rows)
 				: 1.0;
 		}
+
+		DOUBLE match_count;
+		if (is_inner_unique)
+		{
+			match_count = 1.0;
+		}
+		else if (inner_rebinds > 1.0)
+		{
+			match_count = std::max(1.0, inner_rows);
+		}
+		else
+		{
+			// Uncorrelated inner: PG compute_semi_anti_join_factors,
+			//   avgmatch = jselec(JOIN_INNER) × inner_rows / outer_match_frac
+			// i.e. the inner rows matching one matched outer row.  The old
+			// inner_rows / outer_rows stand-in is only right when every
+			// inner row matches some outer row; for a large inner probed by
+			// a few outer rows (TPC-DS Q95: 169 outer rows against a 7.4M
+			// row CTE) it inflated match_count ~350× and priced the
+			// repeated inner scans as nearly free.
+			const DOUBLE jselec = EquiJoinInnerSelectivity(
+				mp, pci, exprhdl.PexprScalarRepChild(2));
+			if (jselec >= 0.0 && outer_match_frac > 0.0)
+			{
+				match_count =
+					std::max(1.0, jselec * inner_rows / outer_match_frac);
+			}
+			else
+			{
+				match_count =
+					std::max(1.0, inner_rows / std::max(1.0, outer_rows));
+			}
+		}
+		const DOUBLE inner_scan_frac = 2.0 / (match_count + 1.0);
 		const DOUBLE outer_matched = outer_rows * outer_match_frac;
 		const DOUBLE outer_unmatched = outer_rows - outer_matched;
 
