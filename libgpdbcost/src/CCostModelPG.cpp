@@ -18,6 +18,8 @@
 #include "gpos/base.h"
 
 #include "gpopt/base/CAutoOptCtxt.h"
+#include "gpopt/base/CCostContext.h"
+#include "gpopt/base/COptimizationContext.h"
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/base/CUtils.h"
 #include "gpopt/mdcache/CMDAccessor.h"
@@ -2517,24 +2519,98 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 	COperator *child_op = exprhdl.Pop(0);
 	DOUBLE run = subpath_total;	 // default: streaming
 	DOUBLE sort_topk_correction = 0.0;
-	// Peel through pass-through inner Limits.  ORCA's optimizer explores
-	// Limit(Limit(...)) candidates (e.g., when the subquery has ORDER BY
-	// and the outer query has LIMIT); the inner Limit doesn't reduce
-	// cardinality but interposes itself so the per-op detection below
-	// would see EopPhysicalLimit instead of the real bottom operator.
-	if (nullptr != child_op &&
-		COperator::EopPhysicalLimit == child_op->Eopid())
+
+	// Peel through operators that stream their input (Limit, Filter — e.g. a
+	// HAVING clause — and ComputeScalar).  ORCA puts them between the Limit
+	// and the operator that actually decides the startup/run split, so the
+	// per-op detection below used to see the wrapper, treat the subpath as
+	// streaming and pro-rate the whole aggregation / sort away (Limit 1 over
+	// Filter(HashAgg) cost 0.80 against a HashAgg of 3155).  When a cost
+	// context is available, walk down the best child contexts and keep the
+	// blocking operator's own total cost and rows: its startup (total − run)
+	// then stays unscaled, as in PG's adjust_limit_rows_costs, and the
+	// wrappers' streaming work is pro-rated with the run part.
+	auto is_passthrough = [](COperator *op) {
+		if (nullptr == op) return false;
+		const COperator::EOperatorId id = op->Eopid();
+		return COperator::EopPhysicalLimit == id ||
+			   COperator::EopPhysicalFilter == id ||
+			   COperator::EopPhysicalComputeScalar == id;
+	};
+	BOOL peeled = false;
+	// ExecSetTupleBound (execProcnode.c) pushes the LIMIT bound into a Sort
+	// through qual-less Result nodes (ORCA's ComputeScalar) and Limits, but
+	// not through a Result with a qual (ORCA's Filter).
+	// Once the walk passes an inner Limit, that Limit has already applied
+	// the bound (and its discount) to the subpath cost; don't apply it twice.
+	BOOL bound_reaches_sort =
+		(nullptr != child_op &&
+		 COperator::EopPhysicalFilter != child_op->Eopid() &&
+		 COperator::EopPhysicalLimit != child_op->Eopid());
+	DOUBLE blocking_total = 0.0;
+	DOUBLE blocking_rows = 0.0;
+	if (is_passthrough(child_op))
 	{
-		COperator *grand = exprhdl.PopGrandchild(0, 0, nullptr);
-		if (nullptr != grand)
+		CCostContext *pcc = nullptr;
+		COperator *grand = exprhdl.PopGrandchild(0, 0, &pcc);
+		for (ULONG depth = 0; nullptr != pcc && is_passthrough(grand) &&
+							  depth < 4;
+			 depth++)
 		{
+			if (COperator::EopPhysicalFilter == grand->Eopid() ||
+				COperator::EopPhysicalLimit == grand->Eopid())
+			{
+				bound_reaches_sort = false;
+			}
+			COptimizationContextArray *pdrgpoc = pcc->Pdrgpoc();
+			if (nullptr == pdrgpoc || 0 == pdrgpoc->Size() ||
+				nullptr == (*pdrgpoc)[0] || nullptr == (*pdrgpoc)[0]->PccBest())
+			{
+				pcc = nullptr;
+				break;
+			}
+			pcc = (*pdrgpoc)[0]->PccBest();
+			grand = pcc->Pgexpr()->Pop();
+		}
+		if (nullptr != pcc && nullptr != pcc->Pstats())
+		{
+			child_op = grand;
+			peeled = true;
+			blocking_total = pcc->Cost().Get();
+			blocking_rows = pcc->Pstats()->Rows().Get();
+		}
+		else if (nullptr != grand &&
+				 COperator::EopPhysicalLimit == child_op->Eopid())
+		{
+			// lower-bound costing (no cost context): keep the old one-level
+			// Limit(Limit(...)) peel
 			child_op = grand;
 		}
 	}
+	// run portion of the subpath once the blocking operator's own run part
+	// (blocking_run) is known: everything but the blocking startup
+	auto peeled_run = [&](DOUBLE blocking_run) {
+		const DOUBLE startup = std::max(0.0, blocking_total - blocking_run);
+		return std::max(0.0, subpath_total - startup);
+	};
 	if (nullptr != child_op)
 	{
 		const COperator::EOperatorId op = child_op->Eopid();
-		if (COperator::EopPhysicalSort == op)
+		if (COperator::EopPhysicalSort == op && peeled)
+		{
+			run = peeled_run(cpu_operator_cost * blocking_rows);
+			// bounded (top-N heap) sort, as in the direct-child case below
+			if (bound_reaches_sort && blocking_rows > 2.0 * output_rows &&
+				output_rows >= 1.0)
+			{
+				const DOUBLE comparison_cost = 2.0 * cpu_operator_cost;
+				sort_topk_correction =
+					comparison_cost * blocking_rows *
+					std::max(0.0, std::log2(std::max(blocking_rows, 2.0)) -
+									  std::log2(std::max(2.0 * output_rows, 2.0)));
+			}
+		}
+		else if (COperator::EopPhysicalSort == op)
 		{
 			run = cpu_operator_cost * input_rows;
 			// PG cost_tuplesort switches to a bounded heap-sort when
@@ -2558,7 +2634,8 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 		else if (COperator::EopPhysicalHashAgg == op ||
 				 COperator::EopPhysicalHashAggDeduplicate == op)
 		{
-			run = cpu_tuple_cost * input_rows;
+			run = peeled ? peeled_run(cpu_tuple_cost * blocking_rows)
+						 : cpu_tuple_cost * input_rows;
 		}
 		else if (COperator::EopPhysicalInnerHashJoin == op ||
 				 COperator::EopPhysicalLeftSemiHashJoin == op ||
@@ -2569,7 +2646,8 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 				 COperator::EopPhysicalRightOuterHashJoin == op ||
 				 COperator::EopPhysicalFullHashJoin == op)
 		{
-			run = cpu_tuple_cost * input_rows;
+			run = peeled ? peeled_run(cpu_tuple_cost * blocking_rows)
+						 : cpu_tuple_cost * input_rows;
 		}
 		else if (COperator::EopPhysicalIndexScan == op ||
 				 COperator::EopPhysicalIndexOnlyScan == op ||
@@ -2621,7 +2699,10 @@ CCostModelPG::CostLimit(CMemoryPool *,	// mp
 	}
 	if (run > subpath_total) run = subpath_total;
 
-	return CCost(-sort_topk_correction - (1.0 - ratio) * run);
+	// The local term only removes part of the subpath cost; never more than
+	// all of it (the composite Limit cost must stay non-negative).
+	return CCost(std::max(-subpath_total,
+						  -sort_topk_correction - (1.0 - ratio) * run));
 }
 
 //---------------------------------------------------------------------------
