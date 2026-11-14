@@ -74,16 +74,32 @@ extern double hash_mem_multiplier;
 
 namespace
 {
-// Match PG's hash_agg_entry_size():
-//   sizeof(TupleHashEntryData) + tupleChunk + pergroupChunk
-//   where tupleChunk = CHUNKHDRSZ + SizeofMinimalTupleHeader + width
-//         pergroupChunk = CHUNKHDRSZ + nAggs * sizeof(AggStatePerGroupData)
-// All constants are MAXALIGN'd; the closed-form constant 88 below covers the
-// fixed overhead (≈ 16 + 16 + 24 + 16 + 16) and 16 B per pergroup entry.
-CDouble
-HashAggEntrySize(DOUBLE input_width, ULONG nAggs)
+// PG18 hash_agg_entry_size() (nodeAgg.c).  Since PG18 hash table entries
+// are allocated from a Bump context, so the tuple and per-group arrays carry
+// no chunk header; only by-ref transition values (AllocSet, power-of-two
+// rounded) do:
+//   sizeof(TupleHashEntryData)                        16
+// + MAXALIGN(MAXALIGN(SizeofMinimalTupleHeader) + w)  MAXALIGN(16 + w)
+// + numTrans × sizeof(AggStatePerGroupData)           16 × numTrans
+// + CHUNKHDRSZ + pg_nextpower2(transitionSpace)       when transitionSpace > 0
+DOUBLE
+HashAggEntrySize(DOUBLE input_width, ULONG num_trans, DOUBLE transition_space)
 {
-	return CDouble(input_width + 88.0 + 16.0 * static_cast<DOUBLE>(nAggs));
+	constexpr DOUBLE kTupleHashEntrySize = 16.0;
+	constexpr DOUBLE kMinimalTupleHeader = 16.0;	 // MAXALIGN(15)
+	constexpr DOUBLE kPerGroupSize = 16.0;
+	constexpr DOUBLE kChunkHdrSz = 8.0;
+	const DOUBLE tuple_chunk =
+		std::ceil((kMinimalTupleHeader + std::max(0.0, input_width)) / 8.0) *
+		8.0;
+	DOUBLE transition_chunk = 0.0;
+	if (transition_space > 0.0)
+	{
+		transition_chunk =
+			kChunkHdrSz + std::exp2(std::ceil(std::log2(transition_space)));
+	}
+	return kTupleHashEntrySize + tuple_chunk +
+		   kPerGroupSize * static_cast<DOUBLE>(num_trans) + transition_chunk;
 }
 
 // MAXALIGN8 rounds up to multiple of 8 (typical PG alignment).
@@ -93,73 +109,111 @@ MaxAlign8(DOUBLE x)
 	return std::ceil(x / 8.0) * 8.0;
 }
 
-// Hash-spill cost for HashAgg, mirroring cost_agg's spill block
-// (costsize.c:2783, AGG_HASHED branch).  Contribution to path->total_cost:
+// get_hash_memory_limit() (nodeHash.c), in bytes.
+inline DOUBLE
+HashMemLimitBytes()
+{
+	return static_cast<DOUBLE>(work_mem) * 1024.0 * hash_mem_multiplier;
+}
+
+// PG18 hash_choose_num_partitions() (nodeAgg.c) with used_bits = 0.
+DOUBLE
+HashAggChooseNumPartitions(DOUBLE input_groups, DOUBLE hashentrysize)
+{
+	constexpr DOUBLE kPartitionFactor = 1.50;	// HASHAGG_PARTITION_FACTOR
+	constexpr DOUBLE kMinPartitions = 4.0;		// HASHAGG_MIN_PARTITIONS
+	constexpr DOUBLE kMaxPartitions = 1024.0;	// HASHAGG_MAX_PARTITIONS
+	const DOUBLE kBufSize = static_cast<DOUBLE>(BLCKSZ);	// HASHAGG_*_BUFFER_SIZE
+	const DOUBLE hash_mem_limit = HashMemLimitBytes();
+
+	const DOUBLE partition_limit = (hash_mem_limit * 0.25 - kBufSize) / kBufSize;
+	const DOUBLE mem_wanted = kPartitionFactor * input_groups * hashentrysize;
+	DOUBLE dpartitions = 1.0 + (mem_wanted / hash_mem_limit);
+	if (dpartitions > partition_limit) dpartitions = partition_limit;
+	if (dpartitions < kMinPartitions) dpartitions = kMinPartitions;
+	if (dpartitions > kMaxPartitions) dpartitions = kMaxPartitions;
+
+	// npartitions = (int) dpartitions, then rounded up to a power of two
+	const DOUBLE npartitions = std::floor(dpartitions);
+	const DOUBLE partition_bits =
+		std::min(31.0, std::ceil(std::log2(npartitions)));
+	return std::exp2(partition_bits);
+}
+
+// Hash-spill cost for HashAgg, a port of the AGG_HASHED spill block of PG18
+// cost_agg (costsize.c) including hash_agg_set_limits (nodeAgg.c):
 //
-//   pages_io := pages × depth × 2  ("HashAgg has somewhat worse IO
-//                                    behavior than Sort" hardware penalty)
-//   writes  += pages_io × random_page_cost
-//   reads   += pages_io × seq_page_cost
-//   cpu     += depth × input_tuples × 2 × cpu_tuple_cost
+//   if numGroups × entrysize <= hash_mem:   no spill
+//   else
+//     npartitions   = hash_choose_num_partitions(...)
+//     partition_mem = BLCKSZ × (1 + npartitions)
+//     mem_limit     = hash_mem − partition_mem   (or 0.75 × hash_mem when
+//                                                 hash_mem <= 4 × partition_mem)
+//     ngroups_limit = mem_limit / entrysize
+//   nbatches = ceil(max(numGroups × entrysize / mem_limit,
+//                       numGroups / ngroups_limit))
+//   depth    = ceil(log(nbatches) / log(max(npartitions, 2)))
+//   pages_io = relation_byte_size(input) / BLCKSZ × depth × 2
+//   cost     = pages_io × (random_page_cost + seq_page_cost)
+//            + depth × input_rows × 2 × cpu_tuple_cost
 //
 // PG's "startup += X; total += X" pattern is bookkeeping for the
 // startup/total split; each term contributes once to total_cost.
-//
-// Simplifications vs PG still standing:
-//   - num_partitions fixed at 16 (PG picks adaptively via
-//     hash_choose_num_partitions, often 32-64 for default work_mem).
-//   - partition_mem subtraction from hash_agg_set_limits not modeled;
-//     effective mem_limit is overestimated by ~num_partitions × 8KB.
-// Returns 0 when the hash table fits in memory.
-CDouble
+DOUBLE
 HashAggSpillCost(DOUBLE input_rows, DOUBLE input_width, DOUBLE numGroups,
-				 ULONG nAggs)
+				 ULONG num_trans, DOUBLE transition_space)
 {
-	if (input_rows <= 0.0 || input_width <= 0.0 || numGroups <= 0.0)
+	if (input_rows <= 0.0 || numGroups <= 0.0)
 	{
-		return CDouble(0.0);
+		return 0.0;
+	}
+	const DOUBLE hash_mem_limit = HashMemLimitBytes();
+	if (hash_mem_limit <= 0.0)
+	{
+		return 0.0;
+	}
+	const DOUBLE hashentrysize =
+		HashAggEntrySize(input_width, num_trans, transition_space);
+
+	DOUBLE mem_limit;
+	DOUBLE ngroups_limit;
+	DOUBLE num_partitions = 0.0;
+	if (numGroups * hashentrysize <= hash_mem_limit)
+	{
+		mem_limit = hash_mem_limit;
+		ngroups_limit = std::floor(hash_mem_limit / hashentrysize);
+	}
+	else
+	{
+		num_partitions = HashAggChooseNumPartitions(numGroups, hashentrysize);
+		const DOUBLE partition_mem =
+			static_cast<DOUBLE>(BLCKSZ) * (1.0 + num_partitions);
+		mem_limit = (hash_mem_limit > 4.0 * partition_mem)
+						? hash_mem_limit - partition_mem
+						: std::floor(hash_mem_limit * 0.75);
+		ngroups_limit = (mem_limit > hashentrysize)
+							? std::floor(mem_limit / hashentrysize)
+							: 1.0;
+	}
+	ngroups_limit = std::max(1.0, ngroups_limit);
+
+	DOUBLE nbatches = std::max((numGroups * hashentrysize) / mem_limit,
+							   numGroups / ngroups_limit);
+	nbatches = std::max(std::ceil(nbatches), 1.0);
+	num_partitions = std::max(num_partitions, 2.0);
+	const DOUBLE depth = std::ceil(std::log(nbatches) / std::log(num_partitions));
+	if (depth <= 0.0)
+	{
+		return 0.0;
 	}
 
-	const DOUBLE entry_size = HashAggEntrySize(input_width, nAggs).Get();
-	const DOUBLE mem_limit_bytes =
-		static_cast<DOUBLE>(work_mem) * 1024.0 * hash_mem_multiplier;
-	if (mem_limit_bytes <= 0.0)
-	{
-		return CDouble(0.0);
-	}
-
-	DOUBLE nbatches =
-		std::ceil((numGroups * entry_size) / mem_limit_bytes);
-	if (nbatches < 1.0) nbatches = 1.0;
-	if (nbatches <= 1.0)
-	{
-		return CDouble(0.0);
-	}
-
-	// PG's hash_choose_num_partitions picks adaptively (typically 32-64 for
-	// default work_mem and our scale of nbatches).  Use 32 as a midpoint;
-	// in tests this matched PG's planned 64-partition runs within one
-	// log-step for nbatches in [50, 10000].
-	constexpr DOUBLE kNumPartitions = 32.0;
-	const DOUBLE depth = std::ceil(std::log(nbatches) /
-								   std::log(kNumPartitions));
-
-	// relation_byte_size: bytes/tuple = MAXALIGN(width) +
-	// MAXALIGN(SizeofHeapTupleHeader=23) = MAXALIGN(width) + 24.
+	// relation_byte_size: tuples × (MAXALIGN(width) + MAXALIGN(23))
 	constexpr DOUBLE kHeapTupleHeader = 24.0;
-	const DOUBLE bytes_per_tuple = MaxAlign8(input_width) + kHeapTupleHeader;
-	const DOUBLE pages =
-		(input_rows * bytes_per_tuple) / static_cast<DOUBLE>(BLCKSZ);
-
-	// pages_written = pages_read = pages × depth, doubled for hardware
-	// penalty.  Each contributes once to path->total_cost.
+	const DOUBLE pages = (input_rows * (MaxAlign8(input_width) + kHeapTupleHeader)) /
+						 static_cast<DOUBLE>(BLCKSZ);
 	const DOUBLE pages_io = pages * depth * 2.0;
-	const DOUBLE write_io = pages_io * random_page_cost;
-	const DOUBLE read_io = pages_io * seq_page_cost;
-	const DOUBLE spill_cpu =
-		depth * input_rows * 2.0 * cpu_tuple_cost;
-
-	return CDouble(write_io + read_io + spill_cpu);
+	return pages_io * random_page_cost + pages_io * seq_page_cost +
+		   depth * input_rows * 2.0 * cpu_tuple_cost;
 }
 }  // namespace
 
@@ -417,48 +471,47 @@ NumDistinctGroupCols(CExpressionHandle &exprhdl)
 	return static_cast<ULONG>(uniq.size());
 }
 
-// PG `get_agg_clause_costs` calls `find_compatible_pertrans` (nodeAgg.c)
-// to share a single transition-function invocation across multiple
-// aggregates that have the same (aggtransfn, args, filter, sortlist).
-// Common cases:
-//   - sum(x) + avg(x) of numeric type both use `numeric_avg_accum`
-//   - corr(a,b) + covar_pop(a,b) + regr_*(a,b) all share `float8_regr_accum`
-//
-// ORCA's previous behavior counted each aggref individually, over-billing
-// by `(extra_aggs) × cpu_op × input_rows` plus the per-aggref argument
-// evaluation cost.  Replace `NumAggsFromExprHdl` + `CountAggArgOps` with
-// this dedup-aware pair when computing transCost.per_tuple.
-//
-// Returns:
-//   `n_aggs_out`    — number of distinct transition function invocations
-//   `n_arg_ops_out` — sum of CountQualOps over args, counted once per
-//                     distinct (transfn, args) pair
-//
-// Falls back to per-aggref counting when transfn mdid is unavailable
-// (e.g. DXL-loaded MD entries without the transfn field).
-static void
-DedupAggsByTransfn(CExpressionHandle &exprhdl, ULONG *n_aggs_out,
-				   ULONG *n_arg_ops_out)
+// Inputs of PG's AggClauseCosts (prepagg.c get_agg_clause_costs) for the
+// aggregates of one Agg node.
+struct SAggCostInputs
 {
-	*n_aggs_out = 0;
-	*n_arg_ops_out = 0;
+	// distinct transition states (root->aggtransinfos): PG's
+	// find_compatible_trans shares one transfn invocation across aggregates
+	// with the same (aggtransfn, args, filter, sortlist), e.g. sum(x) and
+	// avg(x) of numeric both use numeric_avg_accum
+	ULONG n_trans = 0;
+	// CountQualOps over the arguments, counted once per transition state
+	ULONG n_arg_ops = 0;
+	// AggClauseCosts.transitionSpace: summed over transition states
+	DOUBLE transition_space = 0.0;
+	// finalCost.per_tuple / cpu_operator_cost: procost of each distinct
+	// aggregate's finalfn (0 for count/sum(int)/min/max)
+	DOUBLE final_ops = 0.0;
+};
+
+// Falls back to per-aggregate counting and one final op per aggregate when
+// the MD object lacks transfn / finalfn information (e.g. loaded from DXL).
+static SAggCostInputs
+AggCostInputs(CExpressionHandle &exprhdl)
+{
+	SAggCostInputs res;
 
 	if (exprhdl.Arity() < 2)
 	{
-		return;
+		return res;
 	}
 	CExpression *proj_list = exprhdl.PexprScalarRepChild(1);
 	if (nullptr == proj_list)
 	{
-		return;
+		return res;
 	}
 	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
 
-	// Dedup key = transfn_mdid value combined with the hash of the agg
-	// function's child expression tree (args + direct args + order +
-	// filter).  CExpression::HashValue is stable across structurally
-	// identical trees (per ORCA's HashValue contract).
-	std::unordered_set<gpos::ULLONG> seen;
+	// Dedup keys combine an OID with the hash of the aggregate's child
+	// expression tree (args + direct args + order + filter).
+	// CExpression::HashValue is stable across structurally identical trees.
+	std::unordered_set<gpos::ULLONG> seen_trans;
+	std::unordered_set<gpos::ULLONG> seen_agg;
 	for (ULONG i = 0; i < proj_list->Arity(); i++)
 	{
 		CExpression *pr_el = (*proj_list)[i];
@@ -473,76 +526,75 @@ DedupAggsByTransfn(CExpressionHandle &exprhdl, ULONG *n_aggs_out,
 			continue;
 		}
 
-		// Compute the dedup key.
+		IMDId *agg_mdid = CScalarAggFunc::PopConvert(agg_func->Pop())->MDId();
 		const IMDAggregate *pmdagg = nullptr;
-		IMDId *transfn_mdid = nullptr;
+		if (nullptr != agg_mdid && agg_mdid->IsValid())
 		{
-			IMDId *agg_mdid =
-				CScalarAggFunc::PopConvert(agg_func->Pop())->MDId();
-			if (nullptr != agg_mdid && agg_mdid->IsValid())
-			{
-				pmdagg = mda->RetrieveAgg(agg_mdid);
-				if (nullptr != pmdagg)
-				{
-					transfn_mdid = pmdagg->GetTransfnMdid();
-				}
-			}
+			pmdagg = mda->RetrieveAgg(agg_mdid);
 		}
-		// Hash of the agg's child expression tree captures (args, filter,
-		// sortlist) — structurally identical args produce the same hash.
+		IMDId *transfn_mdid =
+			(nullptr != pmdagg) ? pmdagg->GetTransfnMdid() : nullptr;
+
 		ULONG args_hash = 0;
 		for (ULONG c = 0; c < agg_func->Arity(); c++)
 		{
-			args_hash =
-				gpos::CombineHashes(args_hash, CExpression::HashValue((*agg_func)[c]));
+			args_hash = gpos::CombineHashes(args_hash,
+											CExpression::HashValue((*agg_func)[c]));
+		}
+		const gpos::ULLONG agg_key =
+			((nullptr != agg_mdid)
+				 ? (static_cast<gpos::ULLONG>(agg_mdid->HashValue()) << 32)
+				 : 0) ^
+			static_cast<gpos::ULLONG>(args_hash);
+
+		// finalCost is per distinct Aggref (root->agginfos)
+		if (seen_agg.insert(agg_key).second)
+		{
+			const DOUBLE finalfn_cost =
+				(nullptr != pmdagg) ? pmdagg->GetFinalfnCost() : -1.0;
+			res.final_ops += (finalfn_cost < 0.0) ? 1.0 : finalfn_cost;
 		}
 
-		// Compose 64-bit key: transfn OID in low 32, args hash in high 32.
-		// Fall back to the agg mdid OID when transfn isn't plumbed (DXL),
-		// degrading to per-aggregate dedup (matches old behavior for
-		// duplicates of the same aggregate, doesn't catch sum/avg sharing).
-		gpos::ULLONG transfn_key = 0;
+		// transCost / numTrans / transitionSpace are per transition state.
+		// Without a transfn OID fall back to the aggregate OID, which only
+		// dedupes repeated calls of the same aggregate.
+		gpos::ULLONG trans_key = agg_key;
 		if (nullptr != transfn_mdid && transfn_mdid->IsValid())
 		{
-			transfn_key =
-				static_cast<gpos::ULLONG>(transfn_mdid->HashValue());
+			trans_key =
+				(static_cast<gpos::ULLONG>(transfn_mdid->HashValue()) << 32) ^
+				static_cast<gpos::ULLONG>(args_hash);
 		}
-		else
+		if (!seen_trans.insert(trans_key).second)
 		{
-			IMDId *agg_mdid =
-				CScalarAggFunc::PopConvert(agg_func->Pop())->MDId();
-			if (nullptr != agg_mdid)
-			{
-				transfn_key = static_cast<gpos::ULLONG>(agg_mdid->HashValue());
-			}
+			continue;
 		}
-		const gpos::ULLONG key =
-			(transfn_key << 32) ^ static_cast<gpos::ULLONG>(args_hash);
-
-		if (!seen.insert(key).second)
+		res.n_trans++;
+		if (nullptr != pmdagg)
 		{
-			continue;  // already counted this transfn+args invocation
+			res.transition_space +=
+				static_cast<DOUBLE>(pmdagg->GetTransitionSpace());
 		}
-		(*n_aggs_out)++;
 		for (ULONG c = 0; c < agg_func->Arity(); c++)
 		{
-			*n_arg_ops_out += CountQualOps((*agg_func)[c]);
+			res.n_arg_ops += CountQualOps((*agg_func)[c]);
 		}
 	}
+	return res;
 }
 
 //---------------------------------------------------------------------------
 //	CCostModelPG::CostScalarAgg
 //
-//	Port of PG cost_agg AGG_PLAIN branch (costsize.c:2452).
-//	  local = cpu_operator_cost × nAggs × input_rows  (transCost.per_tuple)
-//        + cpu_operator_cost × nAggs                 (finalCost.per_tuple × 1)
+//	Port of PG cost_agg AGG_PLAIN branch (costsize.c).
+//	  local = cpu_operator_cost × (numTrans + arg ops) × input_rows
+//	                                              (transCost.per_tuple)
+//        + cpu_operator_cost × Σ finalfn procost   (finalCost.per_tuple × 1)
 //        + cpu_tuple_cost                            (emit, 1 output row)
 //
-//	finalCost is an upper-bound approximation: PG sums the cost of each
-//	aggregate's finalfn, which is 0 for count/sum/min/max and
-//	≈ cpu_operator_cost for avg/stddev/array_agg.  Charging cpu_operator_cost
-//	× nAggs per group overestimates by at most a few μ-cost per group.
+//	numTrans counts distinct transition states and finalCost only the
+//	aggregates that have a final function (see AggCostInputs), as in
+//	get_agg_clause_costs (prepagg.c).
 //
 //	SubqueryScan layer: PG inserts a SubqueryScan node between an
 //	aggregate and a pullup-blocking subquery (LIMIT/OFFSET, etc.),
@@ -560,12 +612,11 @@ CCostModelPG::CostScalarAgg(CMemoryPool *,	// mp
 	GPOS_ASSERT(COperator::EopPhysicalScalarAgg == exprhdl.Pop()->Eopid());
 
 	const DOUBLE input_rows = pci->PdRows()[0];
-	ULONG nAggs = 0, nArgOps = 0;
-	DedupAggsByTransfn(exprhdl, &nAggs, &nArgOps);
+	const SAggCostInputs aggs = AggCostInputs(exprhdl);
 
-	CDouble trans =
-		CDouble(cpu_operator_cost) * CDouble(nAggs + nArgOps) * input_rows;
-	CDouble final_per_tuple = CDouble(cpu_operator_cost) * CDouble(nAggs);
+	CDouble trans = CDouble(cpu_operator_cost) *
+					CDouble(aggs.n_trans + aggs.n_arg_ops) * input_rows;
+	CDouble final_per_tuple = CDouble(cpu_operator_cost) * CDouble(aggs.final_ops);
 	CDouble emit = CDouble(cpu_tuple_cost);	 // 1 output row
 
 	CDouble subqueryscan = CDouble(0.0);
@@ -583,8 +634,8 @@ CCostModelPG::CostScalarAgg(CMemoryPool *,	// mp
 //	CCostModelPG::CostStreamAgg
 //
 //	Port of PG cost_agg AGG_SORTED branch.
-//	  local = cpu_operator_cost × (nAggs + nGroupCols) × input_rows
-//        + cpu_operator_cost × nAggs × output_rows   (finalCost.per_tuple)
+//	  local = cpu_operator_cost × (numTrans + arg ops + nGroupCols) × input_rows
+//        + finalCost.per_tuple × output_rows
 //        + cpu_tuple_cost × output_rows
 //---------------------------------------------------------------------------
 CCost
@@ -602,14 +653,14 @@ CCostModelPG::CostStreamAgg(CMemoryPool *,	// mp
 	// of work.  ORCA's `pci->Rows()` may report 0 for a WHERE 1=2 filtered
 	// agg, mismatching PG's `cost=0.00..0.01` 1-group floor.
 	const DOUBLE output_rows = std::max(1.0, pci->Rows());
-	ULONG nAggs = 0, nArgOps = 0;
-	DedupAggsByTransfn(exprhdl, &nAggs, &nArgOps);
+	const SAggCostInputs aggs = AggCostInputs(exprhdl);
 	const ULONG nGroupCols = NumDistinctGroupCols(exprhdl);
 
 	CDouble trans = CDouble(cpu_operator_cost) *
-					CDouble(nAggs + nArgOps + nGroupCols) * input_rows;
+					CDouble(aggs.n_trans + aggs.n_arg_ops + nGroupCols) *
+					input_rows;
 	CDouble final_per_tuple =
-		CDouble(cpu_operator_cost) * CDouble(nAggs) * output_rows;
+		CDouble(cpu_operator_cost) * CDouble(aggs.final_ops) * output_rows;
 	CDouble emit = CDouble(cpu_tuple_cost) * output_rows;
 
 	CDouble subqueryscan = CDouble(0.0);
@@ -628,12 +679,12 @@ CCostModelPG::CostStreamAgg(CMemoryPool *,	// mp
 //
 //	Port of PG cost_agg AGG_HASHED branch.  In the in-memory regime the
 //	per-tuple shape matches the sorted branch:
-//	  local = cpu_operator_cost × (nAggs + nGroupCols) × input_rows
-//        + cpu_operator_cost × nAggs × output_rows   (finalCost.per_tuple)
+//	  local = cpu_operator_cost × (numTrans + arg ops + nGroupCols) × input_rows
+//        + finalCost.per_tuple × output_rows
 //        + cpu_tuple_cost × output_rows
 //
-//	When numGroups × hashentrysize exceeds work_mem × hash_mem_multiplier,
-//	add the spill IO penalty (seq_page_cost × 2 × pages × depth).
+//	plus the PG18 spill cost (HashAggSpillCost) when the hash table is
+//	expected to exceed hash_mem.
 //---------------------------------------------------------------------------
 CCost
 CCostModelPG::CostHashAgg(CMemoryPool *,  // mp
@@ -649,17 +700,17 @@ CCostModelPG::CostHashAgg(CMemoryPool *,  // mp
 	// PG `clamp_row_est` floors output row estimates at 1 (selfuncs.c) so
 	// the emit/final terms charge ≥1 tuple's work even on `WHERE 1=2` paths.
 	const DOUBLE output_rows = std::max(1.0, pci->Rows());
-	ULONG nAggs = 0, nArgOps = 0;
-	DedupAggsByTransfn(exprhdl, &nAggs, &nArgOps);
+	const SAggCostInputs aggs = AggCostInputs(exprhdl);
 	const ULONG nGroupCols = NumDistinctGroupCols(exprhdl);
 
 	CDouble trans = CDouble(cpu_operator_cost) *
-					CDouble(nAggs + nArgOps + nGroupCols) * input_rows;
+					CDouble(aggs.n_trans + aggs.n_arg_ops + nGroupCols) *
+					input_rows;
 	CDouble final_per_tuple =
-		CDouble(cpu_operator_cost) * CDouble(nAggs) * output_rows;
+		CDouble(cpu_operator_cost) * CDouble(aggs.final_ops) * output_rows;
 	CDouble emit = CDouble(cpu_tuple_cost) * output_rows;
-	CDouble spill =
-		HashAggSpillCost(input_rows, input_width, output_rows, nAggs);
+	CDouble spill = HashAggSpillCost(input_rows, input_width, output_rows,
+									 aggs.n_trans, aggs.transition_space);
 
 	CDouble subqueryscan = CDouble(0.0);
 	COperator *child = exprhdl.Pop(0);

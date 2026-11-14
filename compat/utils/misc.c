@@ -33,6 +33,7 @@
 #include "catalog/pg_operator.h"
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
+#include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
@@ -1058,6 +1059,75 @@ get_agg_transfn(Oid aggid)
 	if (isnull)
 		return InvalidOid;
 	return result;
+}
+
+/*
+ * get_agg_cost_info
+ *		Per-aggregate inputs to PG's get_agg_clause_costs (prepagg.c) that the
+ *		ORCA cost model needs but cannot derive from the aggregate's MD object:
+ *
+ *		*transspace   - bytes the transition state adds to a hash table entry
+ *		                (AggClauseCosts.transitionSpace contribution): 0 for a
+ *		                pass-by-value state, aggtransspace or
+ *		                ALLOCSET_DEFAULT_INITSIZE for INTERNAL, otherwise
+ *		                MAXALIGN(avg width) + 2 pointers of palloc overhead.
+ *		*finalfn_cost - procost of aggfinalfn, 0 when there is none.
+ *
+ *		Polymorphic transition types are costed with their declared type; PG
+ *		resolves them against the actual argument types first, which only
+ *		changes the width estimate.
+ */
+void
+get_agg_cost_info(Oid aggid, int32 *transspace, double *finalfn_cost)
+{
+	HeapTuple	aggTuple;
+	Form_pg_aggregate aggform;
+	int16		typlen;
+	bool		typbyval;
+
+	*transspace = 0;
+	*finalfn_cost = 0.0;
+
+	aggTuple = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggid));
+	if (!HeapTupleIsValid(aggTuple))
+		return;
+	aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+
+	get_typlenbyval(aggform->aggtranstype, &typlen, &typbyval);
+	if (!typbyval)
+	{
+		int32		avgwidth;
+
+		if (aggform->aggtransspace > 0)
+			avgwidth = aggform->aggtransspace;
+		else if (aggform->aggtransfn == F_ARRAY_APPEND)
+			avgwidth = ALLOCSET_SMALL_INITSIZE;
+		else
+			avgwidth = get_typavgwidth(aggform->aggtranstype, -1);
+		*transspace = MAXALIGN(avgwidth) + 2 * sizeof(void *);
+	}
+	else if (aggform->aggtranstype == INTERNALOID)
+	{
+		*transspace = (aggform->aggtransspace > 0) ? aggform->aggtransspace
+												   : ALLOCSET_DEFAULT_INITSIZE;
+	}
+
+	if (OidIsValid(aggform->aggfinalfn))
+	{
+		/* pg_proc.procost, as add_function_cost() charges it */
+		HeapTuple	procTuple = SearchSysCache1(PROCOID,
+												ObjectIdGetDatum(aggform->aggfinalfn));
+
+		if (HeapTupleIsValid(procTuple))
+		{
+			*finalfn_cost = ((Form_pg_proc) GETSTRUCT(procTuple))->procost;
+			ReleaseSysCache(procTuple);
+		}
+		else
+			*finalfn_cost = 1.0;
+	}
+
+	ReleaseSysCache(aggTuple);
 }
 
 bool

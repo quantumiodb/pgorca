@@ -75,6 +75,23 @@ public:
 	{
 		return nullptr;
 	}
+
+	// bytes the transition state adds to a hash aggregate entry (PG's
+	// AggClauseCosts.transitionSpace contribution); 0 when unknown
+	virtual ULONG
+	GetTransitionSpace() const
+	{
+		return 0;
+	}
+
+	// procost of the final function, 0 when the aggregate has none.  A
+	// negative value means unknown (e.g. MD loaded from DXL): the cost model
+	// then assumes one cpu_operator_cost per group.
+	virtual DOUBLE
+	GetFinalfnCost() const
+	{
+		return -1.0;
+	}
 };
 }  // namespace gpmd
 

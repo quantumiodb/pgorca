@@ -73,6 +73,11 @@ class CMDAggregateGPDB : public IMDAggregate
 	// is the result independent of the order of the input
 	BOOL m_is_order_insensitive;
 
+	// transition-state space per hash entry and finalfn procost, see
+	// IMDAggregate::GetTransitionSpace / GetFinalfnCost
+	ULONG m_transition_space = 0;
+	DOUBLE m_finalfn_cost = -1.0;
+
 public:
 	CMDAggregateGPDB(const CMDAggregateGPDB &) = delete;
 
@@ -144,6 +149,26 @@ public:
 	IsOrderInsensitive() const override
 	{
 		return m_is_order_insensitive;
+	}
+
+	ULONG
+	GetTransitionSpace() const override
+	{
+		return m_transition_space;
+	}
+
+	DOUBLE
+	GetFinalfnCost() const override
+	{
+		return m_finalfn_cost;
+	}
+
+	// set the PG costing inputs read from pg_aggregate
+	void
+	SetCostInfo(ULONG transition_space, DOUBLE finalfn_cost)
+	{
+		m_transition_space = transition_space;
+		m_finalfn_cost = finalfn_cost;
 	}
 
 #ifdef GPOS_DEBUG
