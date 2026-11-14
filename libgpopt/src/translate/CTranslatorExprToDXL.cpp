@@ -1318,7 +1318,7 @@ CTranslatorExprToDXL::PdxlnAppendTableScan(
 	//   than the root partition.
 	CDXLNode *pdxlnAppend = GPOS_NEW(m_mp)
 		CDXLNode(m_mp, GPOS_NEW(m_mp) CDXLPhysicalAppend(m_mp, false, false));
-	pdxlnAppend->SetProperties(pdxlpropATS);
+	// the properties are set below, once the costs of the children are known
 	pdxlnAppend->AddChild(pdxlnPrLAppend);
 	pdxlnAppend->AddChild(PdxlnFilter(nullptr));
 
@@ -1447,6 +1447,7 @@ CTranslatorExprToDXL::PdxlnAppendTableScan(
 			GPOS_NEW(m_mp) CDXLPhysicalProperties(append_dxl_cost);
 		pdxlnAppend->SetProperties(append_prop);
 	}
+	pdxlpropATS->Release();
 
 	CDistributionSpec *pds = pexprATS->GetDrvdPropPlan()->Pds();
 	pds->AddRef();

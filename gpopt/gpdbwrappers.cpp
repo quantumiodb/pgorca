@@ -3415,4 +3415,26 @@ gpdb::GetPartitionParent(Oid relid)
 	return InvalidOid;
 }
 
+List *
+gpdb::MapPartitionVarattnos(List *expr, int varno, Oid to_relid,
+							Oid from_relid)
+{
+	GP_WRAP_START;
+	{
+		// both relations are locked already: the ancestor by the parser or
+		// the rewriter, the partition by the scan being translated
+		Relation to_rel = table_open(to_relid, NoLock);
+		Relation from_rel = table_open(from_relid, NoLock);
+
+		List *result = map_partition_varattnos(expr, varno, to_rel, from_rel);
+
+		table_close(from_rel, NoLock);
+		table_close(to_rel, NoLock);
+
+		return result;
+	}
+	GP_WRAP_END;
+	return NIL;
+}
+
 // EOF
