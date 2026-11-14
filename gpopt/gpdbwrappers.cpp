@@ -1011,6 +1011,20 @@ gpdb::GetAggTransfn(Oid aggid)
 	return InvalidOid;
 }
 
+void
+gpdb::GetAggCostInfo(Oid aggid, int32 *transspace, double *finalfn_cost)
+{
+	*transspace = 0;
+	*finalfn_cost = 0.0;
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_aggregate, pg_type, pg_proc */
+		get_agg_cost_info(aggid, transspace, finalfn_cost);
+		return;
+	}
+	GP_WRAP_END;
+}
+
 bool
 gpdb::IsAggPartialCapable(Oid aggid)
 {

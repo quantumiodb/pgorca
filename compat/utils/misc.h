@@ -81,6 +81,10 @@ Oid     get_agg_transfn(Oid aggid);
 /* get_aggregate (from lsyscache.c) */
 Oid     get_aggregate(const char *aggname, Oid oidType);
 
+/* get_agg_cost_info: transition-space / finalfn cost inputs of
+ * get_agg_clause_costs (prepagg.c) for one aggregate */
+void    get_agg_cost_info(Oid aggid, int32 *transspace, double *finalfn_cost);
+
 /* is_agg_repsafe (from lsyscache.c) */
 bool    is_agg_repsafe(Oid aggid);
 

@@ -1585,6 +1585,14 @@ CTranslatorRelcacheToDXL::RetrieveAgg(CMemoryPool *mp, IMDId *mdid)
 		mp, mdid, mdname, result_type_mdid, intermediate_result_type_mdid,
 		is_ordered, is_splittable, is_hash_agg_capable, is_repsafe,
 		transfn_mdid, gpdb::IsAggOrderInsensitive(agg_oid));
+
+	// Hash-entry transition space and finalfn procost, used by CCostModelPG
+	// to mirror get_agg_clause_costs (prepagg.c).
+	int32 transspace = 0;
+	double finalfn_cost = 0.0;
+	gpdb::GetAggCostInfo(agg_oid, &transspace, &finalfn_cost);
+	pmdagg->SetCostInfo(static_cast<ULONG>(std::max<int32>(0, transspace)),
+						finalfn_cost);
 	return pmdagg;
 }
 

@@ -221,6 +221,9 @@ bool IsRepSafeAgg(Oid aggid);
 // aggtransfn OID from pg_aggregate, or InvalidOid on lookup failure
 Oid GetAggTransfn(Oid aggid);
 
+// transition-state hash entry space and finalfn procost of an aggregate
+void GetAggCostInfo(Oid aggid, int32 *transspace, double *finalfn_cost);
+
 // does aggregate have a combine function (and serial/deserial functions, if needed)
 bool IsAggPartialCapable(Oid aggid);
 
