@@ -40,6 +40,7 @@
 #include "naucrates/md/IMDAggregate.h"
 #include "gpopt/operators/CScalarBitmapBoolOp.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
+#include "gpopt/operators/CScalarBoolOp.h"
 #include "gpopt/operators/CScalarConst.h"
 #include "gpopt/operators/CScalarIdent.h"
 #include "gpopt/operators/CPredicateUtils.h"
@@ -397,6 +398,48 @@ CountSAOPScans(CExpression *pexprIdxCond)
 	// child expressions.  Count direct children if they're all scalars.
 	const ULONG n = array->Arity();
 	return std::max(1u, n);
+}
+
+// num_sa_scans for a whole index condition: the product of the array
+// lengths of every ScalarArrayOp conjunct, as btcostestimate multiplies
+// estimate_array_length() over the SAOP index-bound quals (selfuncs.c).
+// CountSAOPScans alone only looks at a top-level SAOP, so
+// `a IN (1,2,3) AND b IN (4,5)` used to count 1 descent instead of 6.
+// Callers apply the btree clamp (BtreeClampSAScans).
+static DOUBLE
+CountSAOPScansAll(CExpression *pexprIdxCond)
+{
+	if (nullptr == pexprIdxCond)
+	{
+		return 1.0;
+	}
+	const COperator::EOperatorId eop = pexprIdxCond->Pop()->Eopid();
+	if (COperator::EopScalarArrayCmp == eop)
+	{
+		return static_cast<DOUBLE>(CountSAOPScans(pexprIdxCond));
+	}
+	if (COperator::EopScalarBoolOp == eop &&
+		CScalarBoolOp::EboolopAnd ==
+			CScalarBoolOp::PopConvert(pexprIdxCond->Pop())->Eboolop())
+	{
+		DOUBLE n = 1.0;
+		for (ULONG i = 0; i < pexprIdxCond->Arity(); i++)
+		{
+			n *= CountSAOPScansAll((*pexprIdxCond)[i]);
+		}
+		return n;
+	}
+	return 1.0;
+}
+
+// PG17+ btcostestimate: "Clamp the number of descents to at most 1/3 the
+// number of index pages", since btree merges array-key primitive scans that
+// land on the same leaf page.
+static DOUBLE
+BtreeClampSAScans(DOUBLE num_sa_scans, DOUBLE index_pages)
+{
+	num_sa_scans = std::min(num_sa_scans, std::ceil(index_pages * 0.3333333));
+	return std::max(num_sa_scans, 1.0);
 }
 
 // Count "operator-like" scalar nodes (CScalarCmp / CScalarOp / CScalarFunc)
@@ -1715,6 +1758,11 @@ AmortizeIndexScanIO(DOUBLE per_exec, COperator *inner_op,
 		const IMDColStats *col_stats = mda->Pmdcolstats(colstats_mdid);
 		correlation = col_stats->Correlation().Get();
 		colstats_mdid->Release();
+		// btcost_correlation: C × 0.75 for a multi-column btree
+		if (IMDIndex::EmdindBtree == index->IndexType() && index->Keys() > 1)
+		{
+			correlation *= 0.75;
+		}
 	}
 
 	const DOUBLE io_at_1 = IndexScanIOAtLoopCount(
@@ -1834,6 +1882,74 @@ IndexCondCoversLeadingKey(CExpression *expr, INT leading_attno,
 	return false;
 }
 
+// PG18 btree skip scan (btcostestimate, selfuncs.c).  When the index
+// condition does not constrain the leading key, nbtree adds a skip array on
+// every leading column that lacks an '=' qual, and does one descent per
+// distinct value of those columns (+1 for the initial -inf/+inf probe, since
+// the skipped columns here carry no quals at all).  PG gives up on skipping
+// — and walks the whole index — when the descents would exceed the index's
+// page count, or when a skipped column has only a default ndistinct.
+//
+// Returns the number of descents for the skipped prefix, or 0 when the scan
+// cannot skip (full index walk).  `first_constrained` receives the 0-based
+// key position of the first column the condition references.
+static DOUBLE
+BtreeSkipScanDescents(CMemoryPool *mp, CMDAccessor *mda, const IMDIndex *index,
+					  CTableDescriptor *ptabdesc, CExpression *pexprIdxCond,
+					  DOUBLE index_pages)
+{
+	if (nullptr == pexprIdxCond || nullptr == index ||
+		CUtils::FScalarConstTrue(pexprIdxCond))
+	{
+		return 0.0;
+	}
+	const CColumnDescriptorArray *pdrgpcd = ptabdesc->Pdrgpcoldesc();
+	if (nullptr == pdrgpcd)
+	{
+		return 0.0;
+	}
+	DOUBLE descents = 1.0;
+	for (ULONG i = 0; i < index->Keys(); i++)
+	{
+		const ULONG pos = index->KeyAt(i);
+		if (pos >= pdrgpcd->Size())
+		{
+			return 0.0;
+		}
+		const INT attno = (*pdrgpcd)[pos]->AttrNum();
+		if (IndexCondCoversLeadingKey(pexprIdxCond, attno, ptabdesc->MDId()))
+		{
+			return (i == 0) ? 0.0 : descents;
+		}
+
+		IMDId *rel_mdid = ptabdesc->MDId();
+		rel_mdid->AddRef();
+		CMDIdColStats *colstats_mdid =
+			GPOS_NEW(mp) CMDIdColStats(CMDIdGPDB::CastMdid(rel_mdid), pos);
+		const IMDColStats *col_stats = mda->Pmdcolstats(colstats_mdid);
+		colstats_mdid->Release();
+		if (nullptr == col_stats || col_stats->IsColStatsMissing())
+		{
+			return 0.0;	 // default ndistinct: assume no skipping
+		}
+		DOUBLE ndistinct = col_stats->GetDistinctRemain().Get();
+		for (ULONG b = 0; b < col_stats->Buckets(); b++)
+		{
+			ndistinct += col_stats->GetDXLBucketAt(b)->GetNumDistinct().Get();
+		}
+		if (ndistinct < 1.0)
+		{
+			return 0.0;
+		}
+		descents *= std::rint(ndistinct) + 1.0;
+		if (index_pages < descents)
+		{
+			return 0.0;
+		}
+	}
+	return 0.0;	 // no key column referenced
+}
+
 //---------------------------------------------------------------------------
 //	CCostModelPG::CostIndexScan
 //
@@ -1924,9 +2040,11 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	BOOL leading_key_used = true;  // assume covered if no index metadata
 	BOOL is_btree = true;  // descent_cost only applies to btree AMs
 	INT tree_height_from_md = -1;
+	const IMDIndex *index_md = nullptr;
 	if (nullptr != index_mdid)
 	{
 		const IMDIndex *index = mda->RetrieveIndex(index_mdid);
+		index_md = index;
 		is_btree = (IMDIndex::EmdindBtree == index->IndexType());
 		tree_height_from_md = index->TreeHeight();
 		if (index->Keys() > 0)
@@ -1954,6 +2072,12 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 			const IMDColStats *col_stats = mda->Pmdcolstats(colstats_mdid);
 			correlation = col_stats->Correlation().Get();
 			colstats_mdid->Release();
+			// btcost_correlation: "multiple columns dilute the importance of
+			// the first column's ordering" — C × 0.75 for a multi-column btree.
+			if (is_btree && index->Keys() > 1)
+			{
+				correlation *= 0.75;
+			}
 
 			// Check whether the index condition actually references the
 			// leading key column.  PG's btcostestimate only credits
@@ -2065,12 +2189,43 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// for opaque arrays.
 	CExpression *pexprIdxCond = exprhdl.PexprScalarRepChild(0);
 	const ULONG n_index_qual_ops = CountQualOps(pexprIdxCond);
-	const DOUBLE num_sa_scans =
-		static_cast<DOUBLE>(CountSAOPScans(pexprIdxCond));
+
+	// Index descents (num_sa_scans): SAOP array elements times, for a btree
+	// whose leading key is unconstrained, the PG18 skip-scan descents of the
+	// skipped prefix.  full_index_walk is the case where PG cannot skip and
+	// has no boundary quals: every index tuple is visited.
+	DOUBLE skip_descents = 0.0;
+	if (!leading_key_used && is_btree && nullptr != index_md &&
+		index_md->Keys() > 1)
+	{
+		skip_descents = BtreeSkipScanDescents(mp, mda, index_md,
+											  pscan->Ptabdesc(), pexprIdxCond,
+											  index_pages);
+	}
+	const BOOL full_index_walk = !leading_key_used && skip_descents <= 0.0;
+	DOUBLE num_sa_scans = CountSAOPScansAll(pexprIdxCond);
+	if (full_index_walk)
+	{
+		num_sa_scans = 1.0;	 // SAOPs on non-boundary columns don't descend
+	}
+	else if (skip_descents > 0.0)
+	{
+		num_sa_scans *= skip_descents;
+	}
+	if (is_btree)
+	{
+		num_sa_scans = BtreeClampSAScans(num_sa_scans, index_pages);
+	}
+
+	// genericcostestimate: numIndexTuples is per descent (rounded, >= 1);
+	// CPU is charged on numIndexTuples × num_sa_scans.
+	const DOUBLE index_tuples_per_scan =
+		full_index_walk ? std::max(1.0, N)
+						: std::max(1.0, std::rint(tuples_fetched / num_sa_scans));
 	const DOUBLE index_cpu =
 		(cpu_index_tuple_cost +
 		 cpu_operator_cost * static_cast<DOUBLE>(n_index_qual_ops)) *
-		tuples_fetched;
+		index_tuples_per_scan * num_sa_scans;
 
 	// Btree descent (PG btcostestimate, selfuncs.c:7780-7798):
 	//   ceil(log2(index->tuples)) × cpu_operator_cost
@@ -2222,33 +2377,29 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 		}
 	}
 
+	// genericcostestimate: numIndexPages = ceil(numIndexTuples × pages /
+	// tuples) per descent.  A full index walk reads every page.
 	DOUBLE index_pages_per_scan;
 	if (skip_index_pages_for_null_test)
 	{
 		index_pages_per_scan = 0.0;
 	}
-	else if (!leading_key_used)
+	else if (full_index_walk)
 	{
 		index_pages_per_scan = index_pages;
 	}
+	else if (index_pages > 1.0 && N > 1.0)
+	{
+		index_pages_per_scan =
+			std::ceil(index_tuples_per_scan * index_pages / N);
+	}
 	else
 	{
-		index_pages_per_scan = std::ceil(selectivity * index_pages);
+		index_pages_per_scan = 1.0;
 	}
 	if (!skip_index_pages_for_null_test && index_pages_per_scan < 1.0)
 	{
 		index_pages_per_scan = 1.0;
-	}
-	DOUBLE index_io;
-	if (loop_count > 1.0)
-	{
-		const DOUBLE index_pages_total = IndexPagesFetched(
-			index_pages_per_scan * loop_count, index_pages, index_pages);
-		index_io = (index_pages_total * random_page_cost) / loop_count;
-	}
-	else
-	{
-		index_io = index_pages_per_scan * random_page_cost;
 	}
 
 	// Heap-side per-tuple CPU: cpu_tuple_cost only (qpquals are usually
@@ -2268,35 +2419,24 @@ CCostModelPG::CostIndexScan(CMemoryPool *mp,
 	// requires either threading outer_rows through the NL context or a
 	// post-pass re-cost in CostNLJoin; neither is in scope here.
 	//
-	// SAOP scaling: PG charges descent once per array element (added
-	// num_sa_scans times to indexTotalCost) but index IO is amortized
-	// across SAOP scans via Mackert-Lohman in genericcostestimate
-	// (selfuncs.c:7196-7218: pages_fetched = index_pages_fetched(
-	// numIndexPages × num_sa_scans × num_outer_scans, ...) /
-	// num_outer_scans).  Multiplying index_io by num_sa_scans without
-	// amortization (the old formula here) over-billed by one
-	// random_page_cost per SAOP element on selective IN-list queries
-	// (cost_align #212: unique1 IN(10 vals) yielded 47.02 vs PG 43.03).
-	// index_cpu is NOT multiplied because tuples_fetched already counts
-	// matches across all elements (PG divides numIndexTuples by
-	// num_sa_scans, then multiplies back when accumulating into
-	// indexTotalCost — net effect: per-element charge stays the same).
-	// Heap IO and heap CPU also stay one-shot.
-	DOUBLE saop_index_io;
-	if (num_sa_scans > 1.0)
+	// genericcostestimate index IO: with num_scans = num_sa_scans ×
+	// loop_count > 1, run Mackert-Lohman over all descents (N = T = index
+	// pages) and pro-rate per outer scan only — SAOP / skip descents are
+	// internal to one index scan.
+	const DOUBLE num_scans = num_sa_scans * loop_count;
+	DOUBLE index_io;
+	if (num_scans > 1.0)
 	{
-		const DOUBLE total_index_pages =
-			IndexPagesFetched(index_pages_per_scan * num_sa_scans,
-							  index_pages, index_pages);
-		saop_index_io = total_index_pages * random_page_cost;
+		const DOUBLE index_pages_total = IndexPagesFetched(
+			index_pages_per_scan * num_scans, index_pages, index_pages);
+		index_io = (index_pages_total * random_page_cost) / loop_count;
 	}
 	else
 	{
-		saop_index_io = index_io;
+		index_io = index_pages_per_scan * random_page_cost;
 	}
-	return CCost(loop_count *
-				 (num_sa_scans * descent_cost + saop_index_io + index_cpu +
-				  io_cost + heap_cpu));
+	return CCost(loop_count * (num_sa_scans * descent_cost + index_io +
+							   index_cpu + io_cost + heap_cpu));
 }
 
 //---------------------------------------------------------------------------
@@ -2623,8 +2763,7 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 				if (h > tree_height_max) tree_height_max = h;
 				if (e->Arity() > 0 && num_index_probes == 1)
 				{
-					num_sa_scans = static_cast<DOUBLE>(
-						CountSAOPScans((*e)[0]));
+					num_sa_scans = CountSAOPScansAll((*e)[0]);
 				}
 				return;
 			}
@@ -2642,6 +2781,10 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 		(index_pages_real > 0.0)
 			? index_pages_real
 			: std::max(1.0, std::ceil(N * kIndexEntrySize / static_cast<DOUBLE>(BLCKSZ)));
+	if (all_probes_btree)
+	{
+		num_sa_scans = BtreeClampSAScans(num_sa_scans, index_pages);
+	}
 	// Btree descent matches CostIndexScan (PG btcostestimate); see the
 	// detailed comment block there.  Use index->tuples ≈ N (not table
 	// pages) for log2(...), and tree_height from the real metapage when
