@@ -16,6 +16,21 @@ GRANT ALL ON SCHEMA public TO regress_rls_owner;
 
 SET ROLE regress_rls_owner;
 
+CREATE TABLE rls_secrets (id int, tenant text, payload text);
+INSERT INTO rls_secrets VALUES
+    (1, 'regress_rls_alice', 'alice row'),
+    (2, 'regress_rls_bob', 'bob row'),
+    (3, 'regress_rls_carol', 'carol row');
+ALTER TABLE rls_secrets ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON rls_secrets USING (tenant = current_user);
+
+-- The owner of the table bypasses row level security, so the scan of the
+-- table in this view has no security quals.
+CREATE VIEW rls_secrets_cnt AS SELECT count(*) AS n FROM rls_secrets;
+
+CREATE FUNCTION rls_leak(text) RETURNS bool LANGUAGE plpgsql COST 0.0000001
+    AS $$ BEGIN RAISE WARNING 'rls_leak: %', $1; RETURN true; END $$;
+
 -- A partition that has the columns of its parent at other attribute numbers.
 -- (ORCA falls back on multi-level partitioned tables, so no sub-partitions.)
 CREATE TABLE rls_part (id int, tenant text, payload text) PARTITION BY RANGE (id);
@@ -41,14 +56,42 @@ INSERT INTO rls_lvl VALUES (1, 1, 'lvl1 visible'), (2, 5, 'lvl1 hidden'),
 ALTER TABLE rls_lvl ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON rls_lvl USING (lvl < 3);
 
+GRANT SELECT ON rls_secrets, rls_secrets_cnt TO regress_rls_alice;
+GRANT EXECUTE ON FUNCTION rls_leak(text) TO regress_rls_alice;
 GRANT SELECT ON rls_part, rls_part1, rls_part2 TO regress_rls_alice;
 GRANT SELECT ON rls_lvl, rls_lvl1, rls_lvl2 TO regress_rls_alice;
 
 RESET ROLE;
+ANALYZE rls_secrets;
 ANALYZE rls_part;
 ANALYZE rls_lvl;
 
 SET ROLE regress_rls_alice;
+
+-- A single reference, and references with the same security quals, are
+-- planned by ORCA.
+EXPLAIN (COSTS OFF) SELECT * FROM rls_secrets;
+SELECT * FROM rls_secrets;
+
+EXPLAIN (COSTS OFF) SELECT * FROM rls_secrets a JOIN rls_secrets b USING (id);
+SELECT * FROM rls_secrets a JOIN rls_secrets b USING (id);
+
+-- The table is referenced with and without security quals: the direct
+-- reference returns the rows of regress_rls_alice only, the view counts all
+-- of them. Whichever comes first in the query, each scan gets the security
+-- quals of its own range table entry.
+EXPLAIN (COSTS OFF) SELECT s.*, c.n FROM rls_secrets_cnt c, rls_secrets s;
+SELECT s.*, c.n FROM rls_secrets_cnt c, rls_secrets s;
+EXPLAIN (COSTS OFF) SELECT s.*, c.n FROM rls_secrets s, rls_secrets_cnt c;
+SELECT s.*, c.n FROM rls_secrets s, rls_secrets_cnt c;
+SELECT s.* FROM rls_secrets s WHERE EXISTS (SELECT 1 FROM rls_secrets_cnt);
+SELECT s.*, (SELECT n FROM rls_secrets_cnt) FROM rls_secrets s;
+WITH c AS (SELECT * FROM rls_secrets_cnt) SELECT s.*, c.n FROM c, rls_secrets s;
+
+-- A leaky function only sees the rows the policies let through.
+EXPLAIN (COSTS OFF)
+SELECT s.*, c.n FROM rls_secrets_cnt c, rls_secrets s WHERE rls_leak(s.payload);
+SELECT s.*, c.n FROM rls_secrets_cnt c, rls_secrets s WHERE rls_leak(s.payload);
 
 -- The security quals of the partitioned table refer to the attribute numbers
 -- of the partitioned table, not to those of the partition.
@@ -61,10 +104,18 @@ SELECT * FROM rls_part ORDER BY id;
 SELECT * FROM rls_part WHERE id > 100 ORDER BY id;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_lvl;
 SELECT * FROM rls_lvl ORDER BY id;
+
+-- The partition has no security quals of its own when it is referenced
+-- directly: its direct scan returns all of its rows.
+EXPLAIN (COSTS OFF) SELECT count(*) FROM rls_part, rls_part2;
+SELECT count(*) FROM rls_part, rls_part2;
 RESET pg_orca.enable_dynamic_tablescan;
+SELECT count(*) FROM rls_part, rls_part2;
 
 RESET ROLE;
-DROP TABLE rls_part, rls_lvl;
+DROP VIEW rls_secrets_cnt;
+DROP TABLE rls_secrets, rls_part, rls_lvl;
+DROP FUNCTION rls_leak(text);
 REVOKE ALL ON SCHEMA public FROM regress_rls_owner;
 DROP ROLE regress_rls_owner;
 DROP ROLE regress_rls_alice;
