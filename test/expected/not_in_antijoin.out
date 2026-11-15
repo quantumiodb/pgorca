@@ -1,0 +1,218 @@
+-- NOT IN (subquery) as a plain anti-join
+--
+-- An uncorrelated NOT IN in a WHERE clause is unnested into a null-aware
+-- anti-join (LeftAntiSemiJoinNotIn), which the PostgreSQL executor cannot
+-- run, so ORCA falls back to the standard planner.  When neither the outer
+-- key nor the subquery's output can be NULL, and the operator cannot return
+-- NULL for non-null inputs, the null-aware join is equivalent to a plain one
+-- and ORCA plans it as an ordinary anti-join (TPC-H Q16 has this shape).
+-- Every other case must keep falling back, and must keep its NULL semantics.
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET pg_orca.trace_fallback = on;
+SET client_min_messages = warning;
+create table nia_outer (k int not null, n int, t text not null);
+create table nia_inner (k int not null, n int, big bigint not null,
+                        vc varchar(10) not null, flag bool not null);
+insert into nia_outer
+  select i, case when i % 5 = 0 then null else i end, 'v' || i
+  from generate_series(1, 20) i;
+insert into nia_inner
+  select i, case when i % 7 = 0 then null else i end, i, 'v' || i, i % 2 = 0
+  from generate_series(1, 20, 3) i;
+analyze nia_outer;
+analyze nia_inner;
+-- both sides NOT NULL: plain anti-join
+explain (costs off)
+select k from nia_outer where k not in (select k from nia_inner);
+                QUERY PLAN                
+------------------------------------------
+ Hash Anti Join
+   Hash Cond: (nia_outer.k = nia_inner.k)
+   ->  Seq Scan on nia_outer
+   ->  Hash
+         ->  Seq Scan on nia_inner
+ Optimizer: pg_orca
+(6 rows)
+
+select k from nia_outer where k not in (select k from nia_inner) order by k;
+ k  
+----
+  2
+  3
+  5
+  6
+  8
+  9
+ 11
+ 12
+ 14
+ 15
+ 17
+ 18
+ 20
+(13 rows)
+
+-- a filter on the inner side, as in TPC-H Q16
+explain (costs off)
+select k from nia_outer where k not in (select k from nia_inner where flag);
+                QUERY PLAN                
+------------------------------------------
+ Hash Anti Join
+   Hash Cond: (nia_outer.k = nia_inner.k)
+   ->  Seq Scan on nia_outer
+   ->  Hash
+         ->  Seq Scan on nia_inner
+               Filter: flag
+ Optimizer: pg_orca
+(7 rows)
+
+select k from nia_outer where k not in (select k from nia_inner where flag)
+order by k;
+ k  
+----
+  1
+  2
+  3
+  5
+  6
+  7
+  8
+  9
+ 11
+ 12
+ 13
+ 14
+ 15
+ 17
+ 18
+ 19
+ 20
+(17 rows)
+
+-- "<> ALL" is the same thing
+select count(*) from nia_outer where k <> all (select k from nia_inner);
+ count 
+-------
+    13
+(1 row)
+
+-- cross-type operator (int4 = int8) and a binary-coercible cast
+-- (varchar -> text)
+explain (costs off)
+select k from nia_outer where k not in (select big from nia_inner);
+                      QUERY PLAN                      
+------------------------------------------------------
+ Hash Right Anti Join
+   Hash Cond: (nia_inner.big = (nia_outer.k)::bigint)
+   ->  Seq Scan on nia_inner
+   ->  Hash
+         ->  Seq Scan on nia_outer
+ Optimizer: pg_orca
+(6 rows)
+
+select count(*) from nia_outer where k not in (select big from nia_inner);
+ count 
+-------
+    13
+(1 row)
+
+explain (costs off)
+select k from nia_outer where t not in (select vc from nia_inner);
+                    QUERY PLAN                     
+---------------------------------------------------
+ Hash Anti Join
+   Hash Cond: (nia_outer.t = (nia_inner.vc)::text)
+   ->  Seq Scan on nia_outer
+   ->  Hash
+         ->  Seq Scan on nia_inner
+ Optimizer: pg_orca
+(6 rows)
+
+select count(*) from nia_outer where t not in (select vc from nia_inner);
+ count 
+-------
+    13
+(1 row)
+
+-- empty subquery: every outer row qualifies
+select count(*) from nia_outer where k not in (select k from nia_inner where k < 0);
+ count 
+-------
+    20
+(1 row)
+
+-- nullable subquery output: null-aware, falls back.  The inner side has a
+-- NULL, so no outer row qualifies.
+explain (costs off)
+select k from nia_outer where k not in (select n from nia_inner);
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: LeftAntiSemiJoinNotIn (NOT IN with NULLs) not supported in PG18
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Seq Scan on nia_outer
+   Filter: (NOT (ANY (k = (hashed SubPlan 1).col1)))
+   SubPlan 1
+     ->  Seq Scan on nia_inner
+(4 rows)
+
+select count(*) from nia_outer where k not in (select n from nia_inner);
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: LeftAntiSemiJoinNotIn (NOT IN with NULLs) not supported in PG18
+ count 
+-------
+     0
+(1 row)
+
+-- nullable outer key: null-aware, falls back.  Rows whose key is NULL do
+-- not qualify.
+select count(*) from nia_outer where n not in (select k from nia_inner);
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: LeftAntiSemiJoinNotIn (NOT IN with NULLs) not supported in PG18
+ count 
+-------
+    10
+(1 row)
+
+-- a NOT NULL column that the outer side's outer join null-extends
+select count(*) from nia_outer o left join nia_inner i on o.k = i.k
+where i.k not in (select k from nia_inner where flag);
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: LeftAntiSemiJoinNotIn (NOT IN with NULLs) not supported in PG18
+ count 
+-------
+     4
+(1 row)
+
+-- a NOT NULL column that the subquery's outer join null-extends
+select count(*) from nia_outer
+where k not in (select i.k from nia_outer o left join nia_inner i on o.k = i.k);
+INFO:  pg_orca: falling back to standard planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: LeftAntiSemiJoinNotIn (NOT IN with NULLs) not supported in PG18
+ count 
+-------
+     0
+(1 row)
+
+-- an ALL subquery over an ordering operator is not unnested into an
+-- anti-join at all; it stays a SubPlan
+explain (costs off)
+select count(*) from nia_outer where k > all (select k from nia_inner);
+                  QUERY PLAN                  
+----------------------------------------------
+ Aggregate
+   ->  Seq Scan on nia_outer
+         Filter: (ALL (k > (SubPlan 1).col1))
+         SubPlan 1
+           ->  Seq Scan on nia_inner
+ Optimizer: pg_orca
+(6 rows)
+
+select count(*) from nia_outer where k > all (select k from nia_inner);
+ count 
+-------
+     1
+(1 row)
+
+drop table nia_outer;
+drop table nia_inner;

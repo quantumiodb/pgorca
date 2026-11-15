@@ -42,6 +42,7 @@
 #include "gpopt/operators/CLogicalLeftSemiCorrelatedApplyIn.h"
 #include "gpopt/operators/CLogicalMaxOneRow.h"
 #include "gpopt/operators/CScalarBooleanTest.h"
+#include "gpopt/operators/CScalarCast.h"
 #include "gpopt/operators/CScalarCmp.h"
 #include "gpopt/operators/CScalarCoalesce.h"
 #include "gpopt/operators/CScalarIdent.h"
@@ -1718,6 +1719,88 @@ CSubqueryHandler::PexprIsNotNull(
 }
 
 
+// Is the comparison operand provably non-null?  We accept a non-null
+// constant, or a column in pcrsNotNull, either of them optionally under a
+// binary-coercible cast (which cannot turn a non-null value into a null).
+static BOOL
+FNonNullableCmpOperand(CExpression *pexpr, CColRefSet *pcrsNotNull)
+{
+	COperator *pop = pexpr->Pop();
+	if (COperator::EopScalarCast == pop->Eopid() &&
+		CScalarCast::PopConvert(pop)->IsBinaryCoercible())
+	{
+		pexpr = (*pexpr)[0];
+		pop = pexpr->Pop();
+	}
+
+	switch (pop->Eopid())
+	{
+		case COperator::EopScalarIdent:
+			return pcrsNotNull->FMember(CScalarIdent::PopConvert(pop)->Pcr());
+
+		case COperator::EopScalarConst:
+			return !CScalarConst::PopConvert(pop)->GetDatum()->IsNull();
+
+		default:
+			return false;
+	}
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		FAllSubqueryIsNullSafe
+//
+//	@doc:
+//		An ALL subquery (NOT IN being "<> ALL") is not, in general, the
+//		anti-join of the outer and inner inputs on the inverse predicate:
+//		when the inverse predicate is NULL for some inner row, ALL yields
+//		NULL and rejects the outer row, whereas an anti-join treats the inner
+//		row as a non-match and keeps the outer row. This is why the subquery
+//		is unnested into a LeftAntiSemiApplyNotIn, whose null-aware join has
+//		no PostgreSQL executor counterpart.
+//
+//		The two are equivalent when the inverse predicate can never be NULL,
+//		which holds when both operands are provably non-null and the
+//		operator returns a non-null boolean for non-null inputs. For the
+//		latter we require the equality member of a hash opfamily, a subset
+//		of what PostgreSQL's own planner accepts before turning NOT IN into
+//		an anti-join (sublink_testexpr_is_not_nullable). A volatile operator
+//		is rejected because the anti-join evaluates it differently.
+//
+//---------------------------------------------------------------------------
+static BOOL
+FAllSubqueryIsNullSafe(CMemoryPool *mp, CExpression *pexprOuter,
+					   CExpression *pexprInner, CExpression *pexprInversePred)
+{
+	if (COperator::EopScalarCmp != pexprInversePred->Pop()->Eopid())
+	{
+		return false;
+	}
+
+	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
+	const IMDScalarOp *pmdOp = md_accessor->RetrieveScOp(
+		CScalarCmp::PopConvert(pexprInversePred->Pop())->MdIdOp());
+	if (nullptr == pmdOp->HashOpfamilyMdid() ||
+		IMDFunction::EfsVolatile ==
+			md_accessor->RetrieveFunc(pmdOp->FuncMdId())->GetFuncStability())
+	{
+		return false;
+	}
+
+	CColRefSet *pcrsNotNull = GPOS_NEW(mp) CColRefSet(mp);
+	pcrsNotNull->Include(pexprOuter->DeriveNotNullColumns());
+	pcrsNotNull->Include(pexprInner->DeriveNotNullColumns());
+
+	BOOL fNullSafe =
+		FNonNullableCmpOperand((*pexprInversePred)[0], pcrsNotNull) &&
+		FNonNullableCmpOperand((*pexprInversePred)[1], pcrsNotNull);
+	pcrsNotNull->Release();
+
+	return fNullSafe;
+}
+
+
 //---------------------------------------------------------------------------
 //	@function:
 //		CSubqueryHandler::FRemoveAllSubquery
@@ -1855,9 +1938,22 @@ CSubqueryHandler::FRemoveAllSubquery(CExpression *pexprOuter,
 		GPOS_ASSERT(EsqctxtFilter == esqctxt);
 
 		*ppexprResidualScalar = CUtils::PexprScalarConstBool(mp, true);
-		*ppexprNewOuter =
-			CUtils::PexprLogicalApply<CLogicalLeftAntiSemiApplyNotIn>(
-				mp, pexprOuter, pexprInner, colref, eopidSubq, pexprPredicate);
+		if (FAllSubqueryIsNullSafe(mp, pexprOuter, pexprInner, pexprPredicate))
+		{
+			// no NULL can reach the comparison, so the null-aware anti-join
+			// degenerates into a plain one
+			*ppexprNewOuter =
+				CUtils::PexprLogicalApply<CLogicalLeftAntiSemiApply>(
+					mp, pexprOuter, pexprInner, colref, eopidSubq,
+					pexprPredicate);
+		}
+		else
+		{
+			*ppexprNewOuter =
+				CUtils::PexprLogicalApply<CLogicalLeftAntiSemiApplyNotIn>(
+					mp, pexprOuter, pexprInner, colref, eopidSubq,
+					pexprPredicate);
+		}
 	}
 
 	return fSuccess;
