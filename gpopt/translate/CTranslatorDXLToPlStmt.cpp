@@ -1765,10 +1765,14 @@ CTranslatorDXLToPlStmt::TranslateDXLHashJoin(
 	// (Hash node) must be fully built before DTS starts scanning so that
 	// PartitionSelectorCS can finalize the approved partition set.
 	// Prevent PG's "early probe" optimization (which probes outer before
-	// building hash) by ensuring DTS startup_cost >= Hash total_cost.
+	// building hash) by ensuring DTS startup_cost >= Hash total_cost.  Both
+	// dynamic scans carry their DPE param (-1 without a selector) third in
+	// custom_private.
 	if (IsA(left_plan, CustomScan) &&
 		(((CustomScan *) left_plan)->methods == &DynamicTableScanCS_methods ||
-		 ((CustomScan *) left_plan)->methods == &DynamicBitmapScanCS_methods))
+		 ((CustomScan *) left_plan)->methods == &DynamicBitmapScanCS_methods) &&
+		intVal(gpdb::ListNth(((CustomScan *) left_plan)->custom_private, 2)) >=
+			0)
 	{
 		if (left_plan->startup_cost < right_plan->total_cost)
 			left_plan->startup_cost = right_plan->total_cost;
@@ -4937,6 +4941,36 @@ CTranslatorDXLToPlStmt::TranslateDXLSequence(
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CTranslatorDXLToPlStmt::GetDPEParamId
+//
+//	@doc:
+//		The PARAM_EXEC slot a DynamicTableScanCS / DynamicBitmapScanCS reads
+//		its approved partitions from.  The slot is keyed on scan_id, which
+//		the PartitionSelectorCS of the same scan shares.  ORCA's copies of
+//		a DynamicGet keep its scan_id (CXformPushJoinBelowUnionAll copies
+//		the join's other side into every branch), so a scan no selector
+//		serves gets no slot: it must not prune with the set that another
+//		copy's selector built.
+//
+//---------------------------------------------------------------------------
+int
+CTranslatorDXLToPlStmt::GetDPEParamId(ULONG scan_id,
+									  const ULongPtrArray *selector_ids)
+{
+	if (nullptr == selector_ids || 0 == selector_ids->Size())
+	{
+		return -1;
+	}
+
+	OID oid_type =
+		CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
+			->Oid();
+	return (int) m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type,
+															  scan_id);
+}
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CTranslatorDXLToPlStmt::TranslateDXLDynTblScan
 //
 //	@doc:
@@ -4967,12 +5001,9 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 
 	// DPE param_id is keyed on scan_id so DTS and PartitionSelectorCS
 	// share the same PARAM_EXEC slot (selector_id keys would diverge).
-	OID oid_type =
-		CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
-			->Oid();
 	ULONG scan_id = dyn_tbl_scan_dxlop->ScanId();
 	int param_id =
-		(int) m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
+		GetDPEParamId(scan_id, dyn_tbl_scan_dxlop->GetSelectorIds());
 
 	// Build DynamicTableScanCS CustomScan
 	CustomScan *cs = makeNode(CustomScan);
@@ -4985,6 +5016,9 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 		makeInteger(index));	// RTE index used by scan quals for static pruning
 	cs->custom_exprs = NIL;
 	cs->custom_plans = NIL;
+	// The root RTE the scan's Vars reference.  EXPLAIN names (and so
+	// qualifies columns of) only the RTEs some plan node claims to scan.
+	cs->custom_relids = gpdb::BmsAddMember(nullptr, (int) index);
 
 	Plan *plan = &cs->scan.plan;
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
@@ -7012,12 +7046,8 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 		CDXLPhysicalDynamicBitmapTableScan::Cast(dxl_operator);
 
 	// DPE param slot keyed on scan_id, shared with the PartitionSelectorCS.
-	OID oid_type =
-		CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
-			->Oid();
 	ULONG scan_id = dyn_dxlop->ScanId();
-	int param_id =
-		(int) m_dxl_to_plstmt_context->GetParamIdForScanId(oid_type, scan_id);
+	int param_id = GetDPEParamId(scan_id, dyn_dxlop->GetSelectorIds());
 
 	// Statically selected leaf partitions; the parser locked only the root.
 	List *part_oids = NIL;
@@ -7037,6 +7067,8 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 				   makeInteger(param_id), makeInteger(index), part_oids);
 	cs->custom_plans = list_make1(bitmap_tbl_scan);
 	cs->custom_exprs = NIL;
+	// See TranslateDXLDynTblScan: EXPLAIN needs the root RTE named.
+	cs->custom_relids = gpdb::BmsAddMember(nullptr, (int) index);
 
 	// The CustomScan returns the per-partition scans' tuples unchanged.  Its
 	// scan tuple is described by custom_scan_tlist (the template's output,
@@ -7166,7 +7198,6 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapBoolOp(
 //
 //	@doc:
 //		Translate CDXLScalarBitmapIndexProbe into a BitmapIndexScan
-//		or a DynamicBitmapIndexScan
 //
 //---------------------------------------------------------------------------
 Plan *
@@ -7182,20 +7213,9 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapIndexProbe(
 		CDXLScalarBitmapIndexProbe::Cast(
 			bitmap_index_probe_dxlnode->GetOperator());
 
-	BitmapIndexScan *bitmap_idx_scan;
-	DynamicBitmapIndexScan *dyn_bitmap_idx_scan;
-
-	if (IsA(bitmap_tbl_scan, DynamicBitmapHeapScan))
-	{
-		/* It's a Dynamic Bitmap Index Scan */
-		dyn_bitmap_idx_scan = MakeNode(DynamicBitmapIndexScan);
-		bitmap_idx_scan = &(dyn_bitmap_idx_scan->biscan);
-	}
-	else
-	{
-		dyn_bitmap_idx_scan = nullptr;
-		bitmap_idx_scan = MakeNode(BitmapIndexScan);
-	}
+	// A dynamic bitmap scan's probes are plain BitmapIndexScans too: they
+	// belong to the template the DynamicBitmapScan instantiates per partition.
+	BitmapIndexScan *bitmap_idx_scan = MakeNode(BitmapIndexScan);
 	bitmap_idx_scan->scan.scanrelid = bitmap_tbl_scan->scan.scanrelid;
 
 	CMDIdGPDB *mdid_index = CMDIdGPDB::CastMdid(

@@ -10,11 +10,15 @@
  *   partitions approved by the PartitionSelector.
  *
  * DynamicBitmapScanCS: ORCA's DynamicBitmapTableScan.  The translator builds
- *   one ordinary BitmapHeapScan per statically selected partition (on the
- *   partition's own RTE and leaf indexes) into custom_plans; at execution
- *   only the children of partitions the PartitionSelector approved run.
+ *   one BitmapHeapScan of the partitioned root, over its partitioned
+ *   indexes, as a template in custom_plans; the template is never
+ *   initialized.  For each statically selected partition the
+ *   PartitionSelector approved, the executor copies the template, remaps
+ *   its Vars to the partition's column layout, points its index scans at
+ *   the partition's leaf indexes and runs the copy on the partition.
  *
- * Communication is via a shared state pointer stored in PARAM_EXEC.
+ * Communication is via a shared state pointer stored in PARAM_EXEC.  A
+ * dynamic scan no PartitionSelector serves has no slot (param_id -1).
  */
 #ifndef COMPAT_DYN_SCAN_H
 #define COMPAT_DYN_SCAN_H

@@ -42,7 +42,7 @@ ORDER BY t.a;
  Sort
    Sort Key: t.a
    ->  Hash Join
-         Hash Cond: (a = t.a)
+         Hash Cond: (p.a = t.a)
          ->  Custom Scan (DynamicTableScan)
                Root Table: p
          ->  Hash
@@ -77,7 +77,7 @@ ORDER BY t.a;
  Sort
    Sort Key: t.a
    ->  Hash Join
-         Hash Cond: (a = t.a)
+         Hash Cond: (p.a = t.a)
          ->  Custom Scan (DynamicTableScan)
                Filter: ((a >= 501) AND (a <= 1000))
                Root Table: p
@@ -110,8 +110,8 @@ FROM   p p1 JOIN p p2 ON p1.a = p2.a
 WHERE  p1.a BETWEEN 1001 AND 1500
 ORDER BY p1.a
 LIMIT  5;
-                        QUERY PLAN                         
------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Limit
    ->  Sort
          Sort Key: p1.a
@@ -154,8 +154,8 @@ FROM   p JOIN q ON p.a = q.a
 WHERE  p.a BETWEEN 1 AND 500
 ORDER BY p.a
 LIMIT  5;
-                      QUERY PLAN                       
--------------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Limit
    ->  Sort
          Sort Key: p.a
@@ -236,12 +236,12 @@ ORDER BY s.x;
                  QUERY PLAN                 
 --------------------------------------------
  Merge Join
-   Merge Cond: (s.x = x)
+   Merge Cond: (s.x = r.x)
    ->  Sort
          Sort Key: s.x
          ->  Seq Scan on s
    ->  Sort
-         Sort Key: x
+         Sort Key: r.x
          ->  Custom Scan (DynamicTableScan)
                Root Table: r
  Optimizer: pg_orca
@@ -336,12 +336,12 @@ FROM (          SELECT eqp_id, evt_dtm, val FROM band_t1
       UNION ALL SELECT eqp_id, evt_dtm, val FROM band_t9
       UNION ALL SELECT eqp_id, evt_dtm, val FROM band_t10) t
 JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
-                                               QUERY PLAN                                                
----------------------------------------------------------------------------------------------------------
+                         QUERY PLAN                         
+------------------------------------------------------------
  Aggregate
    ->  Append
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap.from_dt)
+               Hash Cond: (band_t1.evt_dtm = ap.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t1
                ->  Hash
@@ -349,7 +349,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t1
                            ->  Seq Scan on band_drv ap
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_1.from_dt)
+               Hash Cond: (band_t2.evt_dtm = ap_1.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t2
                ->  Hash
@@ -357,7 +357,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t2
                            ->  Seq Scan on band_drv ap_1
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_2.from_dt)
+               Hash Cond: (band_t3.evt_dtm = ap_2.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t3
                ->  Hash
@@ -365,7 +365,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t3
                            ->  Seq Scan on band_drv ap_2
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_3.from_dt)
+               Hash Cond: (band_t4.evt_dtm = ap_3.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t4
                ->  Hash
@@ -373,7 +373,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t4
                            ->  Seq Scan on band_drv ap_3
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_4.from_dt)
+               Hash Cond: (band_t5.evt_dtm = ap_4.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t5
                ->  Hash
@@ -381,7 +381,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t5
                            ->  Seq Scan on band_drv ap_4
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_5.from_dt)
+               Hash Cond: (band_t6.evt_dtm = ap_5.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t6
                ->  Hash
@@ -389,7 +389,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t6
                            ->  Seq Scan on band_drv ap_5
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_6.from_dt)
+               Hash Cond: (band_t7.evt_dtm = ap_6.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t7
                ->  Hash
@@ -397,7 +397,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t7
                            ->  Seq Scan on band_drv ap_6
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_7.from_dt)
+               Hash Cond: (band_t8.evt_dtm = ap_7.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t8
                ->  Hash
@@ -405,7 +405,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t8
                            ->  Seq Scan on band_drv ap_7
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_8.from_dt)
+               Hash Cond: (band_t9.evt_dtm = ap_8.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t9
                ->  Hash
@@ -413,7 +413,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                            Root Table: band_t9
                            ->  Seq Scan on band_drv ap_8
          ->  Hash Join
-               Hash Cond: (evt_dtm = ap_9.from_dt)
+               Hash Cond: (band_t10.evt_dtm = ap_9.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t10
                ->  Hash

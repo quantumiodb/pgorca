@@ -355,6 +355,10 @@ private:
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
 
+	// PARAM_EXEC slot through which a dynamic scan reads its partition
+	// selectors' result, or -1 when no selector serves the scan
+	int GetDPEParamId(ULONG scan_id, const ULongPtrArray *selector_ids);
+
 	// translate a dynamic table scan operator
 	Plan *TranslateDXLDynTblScan(
 		const CDXLNode *dyn_tbl_scan_dxlnode,

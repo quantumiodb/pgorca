@@ -50,8 +50,9 @@
  *
  *   custom_private = list_make4(makeInteger(scan_id),
  *                               makeInteger(root_oid),
- *                               makeInteger(param_id),
+ *                               makeInteger(param_id),    -- -1 without a selector
  *                               makeInteger(scan_relid))  -- RTE index for static pruning
+ *   custom_relids  = {scan_relid}
  *
  *   custom_exprs   = NIL
  *   custom_plans   = NIL
@@ -110,9 +111,10 @@ typedef struct DTSState
  *
  *   custom_private = list_make5(makeInteger(scan_id),
  *                               makeInteger(root_oid),
- *                               makeInteger(param_id),
+ *                               makeInteger(param_id),  -- -1 without a selector
  *                               makeInteger(root_rti),  -- the root's RTE
  *                               list of makeInteger(leaf partition oid))
+ *   custom_relids     = {root_rti}
  *
  *   custom_plans      = list_make1(template BitmapHeapScan of the root)
  *   custom_scan_tlist = the template's targetlist (Vars of root_rti);
@@ -246,6 +248,30 @@ find_partition_for_value(PartitionKey key, PartitionBoundInfo boundinfo,
 	return part_index;
 }
 
+/*
+ * The DPE state a PartitionSelector shares with the dynamic scan it serves,
+ * through PARAM_EXEC slot param_id.  Whichever node initializes first
+ * allocates it: palloc0 zero-initializes ParamExecData, so value == 0 means
+ * "not allocated yet" (isnull is false after palloc0, so it can't be used).
+ * A dynamic scan no selector serves has param_id -1 and gets NULL.
+ */
+static DynScanSharedState *
+dyn_shared_state(EState *estate, int param_id)
+{
+	ParamExecData *param;
+
+	if (param_id < 0)
+		return NULL;
+	param = &estate->es_param_exec_vals[param_id];
+	if (DatumGetPointer(param->value) == NULL)
+	{
+		param->value = PointerGetDatum(MemoryContextAllocZero(estate->es_query_cxt,
+															  sizeof(DynScanSharedState)));
+		param->isnull = false;
+	}
+	return (DynScanSharedState *) DatumGetPointer(param->value);
+}
+
 
 /* ================================================================
  * PartitionSelectorCS implementation
@@ -269,19 +295,7 @@ ps_begin(CustomScanState *node, EState *estate, int eflags)
 	/* Extract custom_private: scan_id, param_id, root_oid */
 	state->param_id = intVal(lsecond(cscan->custom_private));
 	state->root_oid = intVal(lthird(cscan->custom_private));
-
-	/* Get or create shared state via PARAM_EXEC.
-	 * palloc0 zero-initializes ParamExecData, so value==0 is the sentinel
-	 * for "not yet allocated" (isnull is 'false' after palloc0, unusable). */
-	ParamExecData *param = &estate->es_param_exec_vals[state->param_id];
-	if (DatumGetPointer(param->value) == NULL)
-	{
-		DynScanSharedState *ss = (DynScanSharedState *)
-			MemoryContextAllocZero(estate->es_query_cxt, sizeof(DynScanSharedState));
-		param->value = PointerGetDatum(ss);
-		param->isnull = false;
-	}
-	state->shared = (DynScanSharedState *) DatumGetPointer(param->value);
+	state->shared = dyn_shared_state(estate, state->param_id);
 
 	/* Open root relation for PartitionKey/PartitionDesc */
 	state->root_rel = table_open(state->root_oid, AccessShareLock);
@@ -518,20 +532,8 @@ dts_begin(CustomScanState *node, EState *estate, int eflags)
 	Index		scan_relid = (list_length(cscan->custom_private) >= 4)
 		? (Index) intVal(lfourth(cscan->custom_private)) : 0;
 
-	/* Get or create shared state via PARAM_EXEC.
-	 * palloc0 zero-initializes ParamExecData, so value==0 is the sentinel
-	 * for "not yet allocated" (isnull is 'false' after palloc0, unusable).
-	 * dts_begin runs before ps_begin (outer inits before inner in HashJoin),
-	 * so DTS always allocates the state first; PS finds it already present. */
-	ParamExecData *param = &estate->es_param_exec_vals[state->param_id];
-	if (DatumGetPointer(param->value) == NULL)
-	{
-		DynScanSharedState *ss = (DynScanSharedState *)
-			MemoryContextAllocZero(estate->es_query_cxt, sizeof(DynScanSharedState));
-		param->value = PointerGetDatum(ss);
-		param->isnull = false;
-	}
-	state->shared = (DynScanSharedState *) DatumGetPointer(param->value);
+	/* Shared DPE state; NULL when no PartitionSelector serves this scan */
+	state->shared = dyn_shared_state(estate, state->param_id);
 
 	/* Open root relation */
 	state->root_rel = table_open(state->root_oid, AccessShareLock);
@@ -1007,7 +1009,6 @@ typedef struct DBSState
 	Index		root_rti;
 	BitmapHeapScan *template_scan;	/* custom_plans[0] */
 	TupleDesc	root_desc;
-	Oid			root_reltype;
 
 	int			nparts;
 	Oid		   *part_oids;		/* statically selected leaf partitions */
@@ -1054,25 +1055,12 @@ dbs_begin(CustomScanState *node, EState *estate, int eflags)
 	part_list = (List *) list_nth(cscan->custom_private, 4);
 	state->template_scan = (BitmapHeapScan *) linitial(cscan->custom_plans);
 
-	/* Shared DPE state, as in dts_begin */
-	{
-		ParamExecData *param = &estate->es_param_exec_vals[state->param_id];
-
-		if (DatumGetPointer(param->value) == NULL)
-		{
-			DynScanSharedState *ss = (DynScanSharedState *)
-				MemoryContextAllocZero(estate->es_query_cxt, sizeof(DynScanSharedState));
-
-			param->value = PointerGetDatum(ss);
-			param->isnull = false;
-		}
-		state->shared = (DynScanSharedState *) DatumGetPointer(param->value);
-	}
+	/* Shared DPE state; NULL when no PartitionSelector serves this scan */
+	state->shared = dyn_shared_state(estate, state->param_id);
 
 	/* The root stays locked by the query; keep its descriptor for remapping */
 	root_rel = table_open(state->root_oid, AccessShareLock);
 	state->root_desc = CreateTupleDescCopy(RelationGetDescr(root_rel));
-	state->root_reltype = root_rel->rd_rel->reltype;
 	pdesc = RelationGetPartitionDesc(root_rel, false);
 
 	state->nparts = list_length(part_list);
@@ -1268,11 +1256,20 @@ dbs_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	DBSState   *state = (DBSState *) node;
 	BitmapHeapScan *tmpl = state->template_scan;
 	List	   *context;
+	List	   *tmpl_ancestors;
 	List	   *indexes = NIL;
 	List	   *pending = list_make1(outerPlan(&tmpl->scan.plan));
 	StringInfoData buf;
 
-	context = set_deparse_context_plan(es->deparse_cxt, (Plan *) tmpl, ancestors);
+	/*
+	 * Deparse the template's quals as a child of this node, so that a Param
+	 * a parent NestLoop passes to us is shown as the outer expression it
+	 * stands for (find_param_referent matches the NestLoop's inner child).
+	 * Build a new list: lcons would modify the caller's ancestors in place.
+	 */
+	tmpl_ancestors = list_concat(list_make1(node->ss.ps.plan), ancestors);
+	context = set_deparse_context_plan(es->deparse_cxt, (Plan *) tmpl,
+									   tmpl_ancestors);
 	if (tmpl->bitmapqualorig)
 		ExplainPropertyText("Recheck Cond",
 							deparse_expression((Node *) make_ands_explicit(tmpl->bitmapqualorig),
@@ -1281,6 +1278,7 @@ dbs_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Filter",
 							deparse_expression((Node *) make_ands_explicit(tmpl->scan.plan.qual),
 											   context, es->verbose, false), es);
+	list_free(tmpl_ancestors);
 
 	/* The partitioned indexes the per-partition scans use */
 	while (pending != NIL)
