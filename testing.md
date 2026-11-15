@@ -14,6 +14,25 @@ export PG_REGRESS_SQL=/Users/jianghua/code/postgresql/src/test/regress
 
 If either variable is unset, `test/test.sh` will abort with an explicit error message.
 
+### `PG_REGRESS_SQL` must match the server's version
+
+The expected outputs change between PostgreSQL versions. For example, PG 19 splits many `HINT` lines into `DETAIL` + `HINT`. Pointing `PG_REGRESS_SQL` at a tree on `master` (19devel/19beta) while the server is PG 18 makes about 90 of the PG tests fail for reasons that have nothing to do with pg_orca. Check which branch the tree is on:
+
+```bash
+git -C /Users/jianghua/code/postgresql describe --tags   # e.g. REL_18_3, or REL_19_BETA1-... on master
+"$PG_CONFIG" --version                                   # e.g. PostgreSQL 18.3
+```
+
+If they don't match, you can export the matching tag's test files without switching the checkout. Use the tag that `pg_config --version` reports:
+
+```bash
+mkdir -p /tmp/pg18_regress
+git -C /Users/jianghua/code/postgresql archive REL_18_3 src/test/regress | tar -x -C /tmp/pg18_regress
+export PG_REGRESS_SQL=/tmp/pg18_regress/src/test/regress
+```
+
+The tests' C helpers (`regress.so`) are loaded from the installation's library directory, so only the SQL and expected files come from this directory.
+
 ## Build First
 
 Tests require the extension to be built and installed:
@@ -107,7 +126,12 @@ Test output lands in `build/test_parallel/`. On failure, `pg_regress` prints a d
 
 ## Known Failures (`--pg-tests --ignore-plans`)
 
-Running `test/test.sh --pg-tests --ignore-plans` leaves 7 tests failing. All are inherent incompatibilities between ORCA and the specific behaviour these tests rely on — they are **not regressions** introduced by pg_orca code changes.
+Running `test/test.sh --pg-tests --ignore-plans` with the PG 18.3 test files leaves 7 of 223 tests failing (checked 2026-11-15):
+
+- `subselect`, `aggregates`, `join_hash`, `select_parallel`, `window`, `stats` (1–6 below) are inherent incompatibilities between ORCA and the specific behaviour these tests rely on.
+- `alter_table` (7) fails the same way with pg_orca not loaded at all. It is a property of the local PostgreSQL build, not of ORCA.
+
+None of them is a regression introduced by pg_orca code changes. When checking a change, compare the per-test diffs in `build/test_parallel/regression.diffs` against a run of the previous build, not just the count.
 
 ### 1. `subselect` — missing `One-Time Filter` optimisation for constant quals above SRF
 
@@ -157,6 +181,18 @@ The `stats` test calls `check_estimated_rows(text)`, a helper function defined e
 
 **Root cause:** A transaction/savepoint boundary or error earlier in the `stats` test leaves the session in a state where the helper function created by a prior `CREATE FUNCTION` is not visible. Likely ORCA rejects a query that the standard planner accepts, causing an unexpected error that aborts the defining transaction.
 
+### 7. `alter_table` — extra lock on the referenced primary-key index (not ORCA)
+
+After this statement, in a transaction, the test lists the relation locks the transaction holds (`my_locks`):
+
+```sql
+ALTER TABLE alterlock2 ADD CONSTRAINT alterlock2nv FOREIGN KEY (f1) REFERENCES alterlock (f1) NOT VALID;
+```
+
+The expected output lists two locks: `ShareRowExclusiveLock` on `alterlock` and on `alterlock2`. The local server additionally holds `AccessShareLock` on `alterlock_pkey`.
+
+The lock is taken by the `ALTER TABLE` itself, whichever planner plans the `my_locks` query. Running the PG 18.3 `parallel_schedule` with plain `pg_regress` and pg_orca not loaded fails only `alter_table`, with the identical diff. The REL_18_3 and REL_18_4 expected files both show two locks, so this server build behaves differently from the tagged sources. The cause has not been tracked down.
+
 ---
 
-These 6 failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.
+These 7 failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.
