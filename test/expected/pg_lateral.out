@@ -1097,33 +1097,35 @@ select * from
   lateral (select f1 from int4_tbl
            where f1 = any (select unique1 from tenk1
                            where unique2 = v.x offset 0)) ss;
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  Falling back to Postgres-based planner because no plan has been computed for required properties in GPORCA
-                            QUERY PLAN                            
-------------------------------------------------------------------
- Nested Loop
-   Output: "*VALUES*".column1, "*VALUES*".column2, int4_tbl.f1
-   ->  Values Scan on "*VALUES*"
-         Output: "*VALUES*".column1, "*VALUES*".column2
-   ->  Nested Loop Semi Join
-         Output: int4_tbl.f1
-         Join Filter: (int4_tbl.f1 = tenk1.unique1)
-         ->  Seq Scan on public.int4_tbl
-               Output: int4_tbl.f1
-         ->  Materialize
-               Output: tenk1.unique1
-               ->  Seq Scan on public.tenk1
-                     Output: tenk1.unique1
-                     Filter: (tenk1.unique2 = "*VALUES*".column2)
-(14 rows)
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Hash Join
+   Output: "Values".column1, "Values".column2, int4_tbl.f1
+   Hash Cond: ("Values".column2 = tenk1.unique2)
+   ->  Values Scan on "Values"
+         Output: "Values".column1, "Values".column2
+   ->  Hash
+         Output: int4_tbl.f1, tenk1.unique2, int4_tbl.ctid
+         ->  HashAggregate
+               Output: int4_tbl.f1, tenk1.unique2, int4_tbl.ctid
+               Group Key: int4_tbl.f1, int4_tbl.ctid, tenk1.unique2
+               ->  Hash Join
+                     Output: int4_tbl.f1, int4_tbl.ctid, tenk1.unique2
+                     Hash Cond: (int4_tbl.f1 = tenk1.unique1)
+                     ->  Seq Scan on public.int4_tbl
+                           Output: int4_tbl.f1, int4_tbl.ctid
+                     ->  Hash
+                           Output: tenk1.unique1, tenk1.unique2
+                           ->  Seq Scan on public.tenk1
+                                 Output: tenk1.unique1, tenk1.unique2
+ Optimizer: pg_orca
+(20 rows)
 
 select * from
   (values (0,9998), (1,1000)) v(id,x),
   lateral (select f1 from int4_tbl
            where f1 = any (select unique1 from tenk1
                            where unique2 = v.x offset 0)) ss;
-INFO:  pg_orca: falling back to standard planner
-DETAIL:  Falling back to Postgres-based planner because no plan has been computed for required properties in GPORCA
  id |  x   | f1 
 ----+------+----
   0 | 9998 |  0
