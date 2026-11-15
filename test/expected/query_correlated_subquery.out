@@ -452,7 +452,7 @@ explain (costs off) select * from t1 where t1.x >ALL (select t2.x from t2 where 
                              ->  Result
                                    Filter: (abs((t2.y + t1.y)) > 2)
                                    ->  Seq Scan on t2
-                                         Filter: ((y > 20) AND ((abs((y)::double precision) - (10)::double precision) > (100.0)::double precision))
+                                         Filter: ((y > 20) AND ((abs((y)::double precision) - '10'::double precision) > '100'::double precision))
  Optimizer: pg_orca
 (13 rows)
 
@@ -2259,13 +2259,15 @@ INSERT INTO t1 VALUES (1);
 \echo '-- force_explain'
 -- force_explain
 explain (costs off) SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
-         QUERY PLAN         
-----------------------------
- Nested Loop Semi Join
-   ->  Seq Scan on t1
-   ->  Function Scan on f
-         Filter: (t1.a = f)
-(4 rows)
+         QUERY PLAN          
+-----------------------------
+ Seq Scan on t1
+   Filter: (a = (SubPlan 1))
+   SubPlan 1
+     ->  Result
+           ->  Result
+ Optimizer: pg_orca
+(6 rows)
 
 SELECT * FROM t1 WHERE a IN (SELECT * FROM f(t1.a));
  a 
@@ -2281,8 +2283,10 @@ explain (costs off) SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
  Seq Scan on t1
    Filter: EXISTS(SubPlan 1)
    SubPlan 1
-     ->  Function Scan on f
-(4 rows)
+     ->  Result
+           ->  Result
+ Optimizer: pg_orca
+(6 rows)
 
 SELECT * FROM t1 WHERE exists (SELECT * FROM f(t1.a));
  a 
@@ -2296,10 +2300,12 @@ explain (costs off) SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
                   QUERY PLAN                  
 ----------------------------------------------
  Seq Scan on t1
-   Filter: (NOT (ANY (a = (SubPlan 1).col1)))
+   Filter: (a <> (SubPlan 1))
    SubPlan 1
-     ->  Function Scan on f
-(4 rows)
+     ->  Result
+           ->  Result
+ Optimizer: pg_orca
+(6 rows)
 
 SELECT * FROM t1 where a not in (SELECT f FROM f(t1.a));
  a 

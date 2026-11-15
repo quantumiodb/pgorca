@@ -518,6 +518,28 @@ expand_virtual_generated_columns_for_orca(Query *query, bool *fallback_needed)
  * eval_const_expressions on each expression sub-tree.
  * ---------------------------------------------------------------- */
 extern "C" {
+static Node *fold_query_constants_mutator(Node *node, void *context);
+
+/*
+ * eval_const_expressions stops at Query nodes: a SubLink's subselect and a
+ * CommonTableExpr's ctequery come back unfolded.  PG folds them when it
+ * plans the subquery (subquery_planner -> preprocess_expression), so fold
+ * every Query reachable from an expression first.  TPC-H Q15 references
+ * its view a second time inside "(select max(total_revenue) from
+ * revenue0)"; left unfolded, "date '1994-02-01' + interval '3' month"
+ * there got a default selectivity and no index, and ORCA seq-scanned
+ * lineitem for that branch.
+ */
+static Node *
+fold_nested_queries_mutator(Node *node, void *context)
+{
+    if (node == NULL)
+        return NULL;
+    if (IsA(node, Query))
+        return fold_query_constants_mutator(node, context);
+    return expression_tree_mutator(node, fold_nested_queries_mutator, context);
+}
+
 static Node *
 fold_query_constants_mutator(Node *node, void *context)
 {
@@ -527,8 +549,9 @@ fold_query_constants_mutator(Node *node, void *context)
         return (Node *) query_tree_mutator((Query *) node,
                                            fold_query_constants_mutator,
                                            context, 0);
-    /* Hand off any expression node to eval_const_expressions, which handles
-     * the full sub-tree recursively. */
+    /* Fold the queries nested in the expression, then hand the expression
+     * to eval_const_expressions, which handles the rest of the sub-tree. */
+    node = fold_nested_queries_mutator(node, context);
     return eval_const_expressions(NULL, node);
 }
 } /* extern "C" */
