@@ -175,14 +175,12 @@ explain (costs off) select * from mpp23383_partitioned where '2'> b order by a l
  Limit
    ->  Sort
          Sort Key: a
-         ->  Custom Scan (DynamicBitmapScan)
-               Recheck Cond: ((b)::text < '2'::text)
+         ->  Custom Scan (DynamicTableScan)
                Filter: ((b)::text < '2'::text)
-               Bitmap Indexes: idx_b
                Root Table: mpp23383_partitioned
                Partitions Selected: 2
  Optimizer: pg_orca
-(10 rows)
+(8 rows)
 
 select * from mpp23383_partitioned where '2'> b order by a limit 10;
  a  | b  | c  | d  
@@ -336,14 +334,12 @@ explain (costs off) select * from mpp23383_partitioned where '2'> b order by a l
  Limit
    ->  Sort
          Sort Key: a
-         ->  Custom Scan (DynamicBitmapScan)
-               Recheck Cond: ((b)::text < '2'::text)
+         ->  Custom Scan (DynamicTableScan)
                Filter: ((b)::text < '2'::text)
-               Bitmap Indexes: idx_b
                Root Table: mpp23383_partitioned
                Partitions Selected: 2
  Optimizer: pg_orca
-(10 rows)
+(8 rows)
 
 select * from mpp23383_partitioned where '2'> b order by a limit 10;
  a  | b  | c  | d  

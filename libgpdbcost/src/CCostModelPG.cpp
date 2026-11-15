@@ -243,6 +243,24 @@ class CBitmapProbeSelCache
 public:
 	std::unordered_map<CExpression *, DOUBLE> m_sel;
 
+	// A dynamic bitmap scan is priced per partition, from the partition's
+	// pg_class statistics and its leaf index of each partitioned index the
+	// bitmap tree probes.  Both are looked up for every costing of the scan.
+	struct SPartStats
+	{
+		DOUBLE rows;
+		DOUBLE pages;
+		BOOL valid;
+	};
+	struct SLeafIndexStats
+	{
+		DOUBLE pages;  // 0 when unknown
+		INT height;	   // -1 when unknown
+	};
+	std::unordered_map<OID, SPartStats> m_part;	 // by partition oid
+	// by (partitioned index oid << 32 | partition oid)
+	std::unordered_map<gpos::ULLONG, SLeafIndexStats> m_leaf_index;
+
 	~CBitmapProbeSelCache()
 	{
 		for (auto &kv : m_sel)
@@ -3085,17 +3103,67 @@ static SBitmapTreeCost BitmapTreeCost(CMemoryPool *mp,
 									  CBitmapProbeSelCache *sel_cache,
 									  CExpression *e, CPhysicalScan *pscan,
 									  DOUBLE N, DOUBLE path_rows,
-									  DOUBLE loop_count);
+									  DOUBLE loop_count, IMDId *part_mdid);
+
+// Size of the leaf index of partitioned index `index` on partition
+// `part_mdid`: the index of the partition that is one of `index`'s child
+// indexes.  Unknown (pages 0, height -1) when there is none, e.g. for a
+// partition that is itself partitioned.
+static const CBitmapProbeSelCache::SLeafIndexStats &
+LeafIndexStats(CMDAccessor *mda, CBitmapProbeSelCache *cache,
+			   const IMDIndex *index, IMDId *part_mdid)
+{
+	const gpos::ULLONG key =
+		(static_cast<gpos::ULLONG>(CMDIdGPDB::CastMdid(index->MDId())->Oid())
+		 << 32) |
+		CMDIdGPDB::CastMdid(part_mdid)->Oid();
+	auto hit = cache->m_leaf_index.find(key);
+	if (hit != cache->m_leaf_index.end())
+	{
+		return hit->second;
+	}
+
+	CBitmapProbeSelCache::SLeafIndexStats res{0.0, -1};
+	IMdIdArray *children = index->ChildIndexMdids();
+	const IMDRelation *part = mda->RetrieveRel(part_mdid);
+	for (ULONG i = 0; nullptr != children && i < part->IndexCount(); i++)
+	{
+		IMDId *leaf_mdid = part->IndexMDidAt(i);
+		for (ULONG j = 0; j < children->Size(); j++)
+		{
+			if (leaf_mdid->Equals((*children)[j]))
+			{
+				const IMDIndex *leaf = mda->RetrieveIndex(leaf_mdid);
+				res.pages = static_cast<DOUBLE>(leaf->IndexPages());
+				res.height = leaf->TreeHeight();
+				i = part->IndexCount();
+				break;
+			}
+		}
+	}
+	return cache->m_leaf_index.emplace(key, res).first->second;
+}
 
 static SBitmapTreeCost
 BitmapIndexProbeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 					 CExpression *e, CPhysicalScan *pscan, DOUBLE N,
-					 DOUBLE path_rows, DOUBLE loop_count)
+					 DOUBLE path_rows, DOUBLE loop_count, IMDId *part_mdid)
 {
 	SBitmapTreeCost res;
 	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
 	const IMDIndex *index = mda->RetrieveIndex(
 		CScalarBitmapIndexProbe::PopConvert(e->Pop())->Pindexdesc()->MDId());
+	// A partitioned index has no storage (relpages 0, no tree height); on a
+	// partition, PG's Bitmap Index Scan reads the partition's leaf index.
+	DOUBLE md_index_pages = static_cast<DOUBLE>(index->IndexPages());
+	INT md_tree_height = index->TreeHeight();
+	if (nullptr != part_mdid)
+	{
+		const CBitmapProbeSelCache::SLeafIndexStats &leaf =
+			LeafIndexStats(mda, sel_cache, index, part_mdid);
+		md_index_pages = leaf.pages;
+		md_tree_height = leaf.height;
+	}
 	CExpression *cond = (e->Arity() > 0) ? (*e)[0] : nullptr;
 	if (nullptr == cond)
 	{
@@ -3129,8 +3197,8 @@ BitmapIndexProbeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 	const BOOL is_btree = (IMDIndex::EmdindBtree == index->IndexType());
 	constexpr DOUBLE kIndexEntrySize = 24.0;
 	const DOUBLE index_pages =
-		(index->IndexPages() > 0)
-			? static_cast<DOUBLE>(index->IndexPages())
+		(md_index_pages > 0.0)
+			? md_index_pages
 			: std::max(1.0, std::ceil(N * kIndexEntrySize /
 									  static_cast<DOUBLE>(BLCKSZ)));
 
@@ -3163,7 +3231,7 @@ BitmapIndexProbeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 	if (is_btree)
 	{
 		constexpr DOUBLE kPageCpuMultiplier = 50.0;
-		const INT h = index->TreeHeight();
+		const INT h = md_tree_height;
 		const DOUBLE tree_height =
 			(h >= 0) ? static_cast<DOUBLE>(h)
 					 : ((index_pages > 1.0)
@@ -3186,7 +3254,7 @@ BitmapIndexProbeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 static SBitmapTreeCost
 BitmapTreeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 			   CExpression *e, CPhysicalScan *pscan, DOUBLE N,
-			   DOUBLE path_rows, DOUBLE loop_count)
+			   DOUBLE path_rows, DOUBLE loop_count, IMDId *part_mdid)
 {
 	SBitmapTreeCost res;
 	if (nullptr == e)
@@ -3198,7 +3266,7 @@ BitmapTreeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 	if (COperator::EopScalarBitmapIndexProbe == op)
 	{
 		return BitmapIndexProbeCost(mp, sel_cache, e, pscan, N, path_rows,
-									loop_count);
+									loop_count, part_mdid);
 	}
 	if (COperator::EopScalarBitmapBoolOp != op)
 	{
@@ -3230,8 +3298,9 @@ BitmapTreeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 	res.selec = is_and ? 1.0 : 0.0;
 	for (size_t i = 0; i < children.size(); i++)
 	{
-		const SBitmapTreeCost sub = BitmapTreeCost(
-			mp, sel_cache, children[i], pscan, N, path_rows, loop_count);
+		const SBitmapTreeCost sub =
+			BitmapTreeCost(mp, sel_cache, children[i], pscan, N, path_rows,
+						   loop_count, part_mdid);
 		res.valid = res.valid && sub.valid;
 		res.cost += sub.cost;
 		res.index_pages += sub.index_pages;
@@ -3277,23 +3346,25 @@ BitmapTreeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 //	  - No lossy-bitmap branch (PG models when maxentries < heap_pages).
 //	  - If some node of the bitmap tree cannot be priced, fall back to the
 //	    scan's derived rows for the heap side.
+//
+//	N and T are the heap's tuples and pages.  part_mdid, when set, is the
+//	partition of a dynamic bitmap scan being priced: the probes then use
+//	its leaf indexes (BitmapIndexProbeCost).
 //---------------------------------------------------------------------------
 static DOUBLE
-BitmapScanCostPerLoop(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
-					  CPhysicalScan *pscan, CExpression *pexprBitmap,
-					  DOUBLE path_rows, DOUBLE loop_count)
+BitmapHeapScanCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
+				   CPhysicalScan *pscan, CExpression *pexprBitmap, DOUBLE N,
+				   DOUBLE T, DOUBLE path_rows, DOUBLE loop_count,
+				   IMDId *part_mdid)
 {
-	IStatistics *base_stats = pscan->PstatsBaseTable();
-	const DOUBLE N = std::max(1.0,
-							  CStatistics::CastStats(base_stats)->Rows().Get());
-	DOUBLE T = static_cast<DOUBLE>(
-		CStatistics::CastStats(base_stats)->RelPages());
+	N = std::max(1.0, N);
 	if (T <= 0.0) T = 1.0;
 	path_rows = std::max(1.0, path_rows);
 	loop_count = std::max(1.0, loop_count);
 
-	const SBitmapTreeCost tree = BitmapTreeCost(mp, sel_cache, pexprBitmap,
-												pscan, N, path_rows, loop_count);
+	const SBitmapTreeCost tree =
+		BitmapTreeCost(mp, sel_cache, pexprBitmap, pscan, N, path_rows,
+					   loop_count, part_mdid);
 	const DOUBLE tuples_fetched =
 		tree.valid ? std::max(1.0, std::rint(tree.selec * N)) : path_rows;
 	const DOUBLE index_pages = (tree.index_pages > 0.0) ? tree.index_pages : T;
@@ -3340,6 +3411,122 @@ BitmapScanCostPerLoop(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
 	const DOUBLE cpu_run = cpu_per_tuple * tuples_fetched;
 
 	return tree.cost + heap_io + cpu_run;
+}
+
+// pg_class statistics of a partition, as CostScan reads them.
+static const CBitmapProbeSelCache::SPartStats &
+PartStats(CMemoryPool *mp, CMDAccessor *mda, CBitmapProbeSelCache *cache,
+		  IMDId *part_mdid)
+{
+	const OID oid = CMDIdGPDB::CastMdid(part_mdid)->Oid();
+	auto hit = cache->m_part.find(oid);
+	if (hit != cache->m_part.end())
+	{
+		return hit->second;
+	}
+	CBitmapProbeSelCache::SPartStats res{0.0, 0.0, false};
+	part_mdid->AddRef();
+	CMDIdRelStats *rs_mdid =
+		GPOS_NEW(mp) CMDIdRelStats(CMDIdGPDB::CastMdid(part_mdid));
+	const IMDRelStats *rs = mda->Pmdrelstats(rs_mdid);
+	if (nullptr != rs)
+	{
+		res = {rs->Rows().Get(), static_cast<DOUBLE>(rs->RelPages()), true};
+	}
+	rs_mdid->Release();
+	return cache->m_part.emplace(oid, res).first->second;
+}
+
+//---------------------------------------------------------------------------
+//	DynamicBitmapScanCostPerLoop
+//
+//	A DynamicBitmapTableScan is PG's Append of one Bitmap Heap Scan per
+//	partition left after static pruning (cost_append, costsize.c), and the
+//	DynamicBitmapScan executor runs exactly those scans.  The root has no
+//	storage of its own -- relpages 0, and its partitioned indexes have no
+//	pages or tree height -- so pricing it as one heap charged every
+//	partition's pages whatever the pruning, and estimated the index sizes.
+//	Price each partition from its own pg_class statistics and leaf indexes:
+//
+//	  cost = Σ_i BitmapHeapScanCost(N_i, T_i, leaf indexes of i)
+//	         + APPEND_CPU_COST_MULTIPLIER × cpu_tuple_cost × rows
+//
+//	where the Append term is charged only for two or more partitions (PG
+//	drops a one-child Append and charges nothing for it).  The probes'
+//	selectivities stay those of the root's statistics, so partition i
+//	fetches sel × N_i tuples; PG uses the partition's own statistics.
+//	A partition's share of the scan's rows is N_i / Σ N.
+//
+//	Returns false, to price the root as one heap, when some partition has
+//	no statistics.
+//---------------------------------------------------------------------------
+static BOOL
+DynamicBitmapScanCostPerLoop(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
+							 CPhysicalScan *pscan, CExpression *pexprBitmap,
+							 DOUBLE path_rows, DOUBLE loop_count,
+							 DOUBLE *cost)
+{
+	IMdIdArray *parts =
+		CPhysicalDynamicScan::PopConvert(pscan)->GetPartitionMdids();
+	if (nullptr == parts || 0 == parts->Size())
+	{
+		return false;
+	}
+	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+	DOUBLE total_rows = 0.0;
+	for (ULONG i = 0; i < parts->Size(); i++)
+	{
+		const CBitmapProbeSelCache::SPartStats &ps =
+			PartStats(mp, mda, sel_cache, (*parts)[i]);
+		if (!ps.valid)
+		{
+			return false;
+		}
+		total_rows += std::max(0.0, ps.rows);
+	}
+
+	const ULONG nparts = parts->Size();
+	DOUBLE sum = 0.0;
+	for (ULONG i = 0; i < nparts; i++)
+	{
+		const CBitmapProbeSelCache::SPartStats &ps =
+			PartStats(mp, mda, sel_cache, (*parts)[i]);
+		const DOUBLE share = (total_rows > 0.0)
+								 ? std::max(0.0, ps.rows) / total_rows
+								 : 1.0 / static_cast<DOUBLE>(nparts);
+		sum += BitmapHeapScanCost(mp, sel_cache, pscan, pexprBitmap, ps.rows,
+								  ps.pages, path_rows * share, loop_count,
+								  (*parts)[i]);
+	}
+	if (nparts > 1)
+	{
+		constexpr DOUBLE kAppendCpuCostMultiplier = 0.5;
+		sum += kAppendCpuCostMultiplier * cpu_tuple_cost *
+			   std::max(1.0, path_rows);
+	}
+	*cost = sum;
+	return true;
+}
+
+static DOUBLE
+BitmapScanCostPerLoop(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
+					  CPhysicalScan *pscan, CExpression *pexprBitmap,
+					  DOUBLE path_rows, DOUBLE loop_count)
+{
+	DOUBLE cost;
+	if (COperator::EopPhysicalDynamicBitmapTableScan == pscan->Eopid() &&
+		DynamicBitmapScanCostPerLoop(mp, sel_cache, pscan, pexprBitmap,
+									 path_rows, loop_count, &cost))
+	{
+		return cost;
+	}
+
+	IStatistics *base_stats = pscan->PstatsBaseTable();
+	return BitmapHeapScanCost(
+		mp, sel_cache, pscan, pexprBitmap,
+		CStatistics::CastStats(base_stats)->Rows().Get(),
+		static_cast<DOUBLE>(CStatistics::CastStats(base_stats)->RelPages()),
+		path_rows, loop_count, nullptr);
 }
 
 CCost
