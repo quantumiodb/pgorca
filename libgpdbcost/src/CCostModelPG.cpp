@@ -43,6 +43,7 @@
 #include "gpopt/operators/CScalarBitmapBoolOp.h"
 #include "gpopt/operators/CScalarBitmapIndexProbe.h"
 #include "gpopt/operators/CScalarBoolOp.h"
+#include "gpopt/operators/CScalarCast.h"
 #include "gpopt/operators/CScalarConst.h"
 #include "gpopt/operators/CScalarIdent.h"
 #include "gpopt/operators/CPredicateUtils.h"
@@ -444,6 +445,17 @@ BtreeClampSAScans(DOUBLE num_sa_scans, DOUBLE index_pages)
 	return std::max(num_sa_scans, 1.0);
 }
 
+// A cast that PG evaluates as a function call (FuncExpr, 1 cpu_operator_cost).
+// A binary-coercible cast is a RelabelType in PG — e.g. the varchar -> text
+// relabel on every comparison against a varchar column — and
+// cost_qual_eval_walker charges nothing for it.
+static BOOL
+IsCostedCast(CExpression *expr)
+{
+	return COperator::EopScalarCast == expr->Pop()->Eopid() &&
+		   !CScalarCast::PopConvert(expr->Pop())->IsBinaryCoercible();
+}
+
 // Count "operator-like" scalar nodes (CScalarCmp / CScalarOp / CScalarFunc)
 // in an expression tree.  Used to approximate PG's qpqual_cost.per_tuple,
 // which charges one cpu_operator_cost per OpExpr/FuncExpr.  BoolOp /
@@ -454,7 +466,8 @@ BtreeClampSAScans(DOUBLE num_sa_scans, DOUBLE index_pages)
 // counterparts so agg argument expressions like `unique1::numeric` or
 // `CASE WHEN ten = 5 THEN unique1 ELSE 0 END` get the right per-tuple
 // charge — previously these collapsed to 0 ops and ORCA under-counted
-// per-row agg cost by 25-50 ms for 10k-row aggregations.
+// per-row agg cost by 25-50 ms for 10k-row aggregations.  Binary-coercible
+// casts are skipped (IsCostedCast).
 static ULONG
 CountQualOps(CExpression *expr)
 {
@@ -475,7 +488,7 @@ CountQualOps(CExpression *expr)
 	if (COperator::EopScalarCmp == eopid ||
 		COperator::EopScalarOp == eopid ||
 		COperator::EopScalarFunc == eopid ||
-		COperator::EopScalarCast == eopid ||
+		IsCostedCast(expr) ||
 		COperator::EopScalarCoerceToDomain == eopid ||
 		COperator::EopScalarCoerceViaIO == eopid ||
 		COperator::EopScalarArrayCoerceExpr == eopid ||
@@ -897,7 +910,7 @@ CountQualOpsForFilter(CExpression *expr)
 	if (COperator::EopScalarCmp == eop ||
 		COperator::EopScalarOp == eop ||
 		COperator::EopScalarFunc == eop ||
-		COperator::EopScalarCast == eop ||
+		IsCostedCast(expr) ||
 		COperator::EopScalarCoerceToDomain == eop ||
 		COperator::EopScalarCoerceViaIO == eop ||
 		COperator::EopScalarArrayCoerceExpr == eop ||
