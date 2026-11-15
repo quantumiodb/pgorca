@@ -9,6 +9,7 @@ SET client_min_messages = warning;
 create table mpp23383(a int, b varchar(20));
 insert into mpp23383 select g,g from generate_series(1,1000) g;
 create index mpp23383_b on mpp23383(b);
+analyze mpp23383;
 
 
 
@@ -50,6 +51,7 @@ create index idx_b on mpp23383_partitioned(b);
 -- heterogenous indexes
 create index idx_c on mpp23383_partitioned_p1(c);
 create index idx_cd on mpp23383_partitioned_p2(c,d);
+analyze mpp23383_partitioned;
 -- end_ignore
 
 explain (costs off) select * from mpp23383_partitioned where b='1';
@@ -93,6 +95,7 @@ create index idx_b on mpp23383_partitioned(b);
 -- heterogenous indexes
 create index idx_c on mpp23383_partitioned_p1(c);
 create index idx_cd on mpp23383_partitioned_p2(c,d);
+analyze mpp23383_partitioned;
 
 -- bfv_mpp23383_partitioned.sql
 
@@ -127,6 +130,7 @@ drop table if exists test;
 create table test (a integer, b integer);
 insert into test select a, a%25 from generate_series(1,100) a;
 create index test_b on test (b);
+analyze test;
 
 
 -- query01.sql
@@ -160,6 +164,7 @@ create table test (a integer, b integer);
 insert into test select a%10, a%25 from generate_series(1,100) a;
 
 create index t_ab on test (a,b);
+analyze test;
 
 
 -- query02.sql
