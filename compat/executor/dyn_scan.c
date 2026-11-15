@@ -6,6 +6,7 @@
  */
 #include "postgres.h"
 
+#include "access/attmap.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/tupconvert.h"
@@ -24,9 +25,12 @@
 #include "partitioning/partbounds.h"
 #include "partitioning/partdesc.h"
 #include "partitioning/partprune.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
+#include "utils/ruleutils.h"
 
 #include "compat/executor/dyn_scan.h"
 
@@ -101,6 +105,20 @@ typedef struct DTSState
 	Bitmapset  *static_parts;
 } DTSState;
 
+/* ----------------------------------------------------------------
+ * custom_private layout for DynamicBitmapScanCS
+ *
+ *   custom_private = list_make5(makeInteger(scan_id),
+ *                               makeInteger(root_oid),
+ *                               makeInteger(param_id),
+ *                               makeInteger(root_rti),  -- the root's RTE
+ *                               list of makeInteger(leaf partition oid))
+ *
+ *   custom_plans      = list_make1(template BitmapHeapScan of the root)
+ *   custom_scan_tlist = the template's targetlist (Vars of root_rti);
+ *                       targetlist references it through INDEX_VAR
+ * ---------------------------------------------------------------- */
+
 /* Forward declarations of all callbacks */
 static Node *ps_create_scan_state(CustomScan *cscan);
 static void ps_begin(CustomScanState *node, EState *estate, int eflags);
@@ -115,6 +133,13 @@ static TupleTableSlot *dts_exec(CustomScanState *node);
 static void dts_end(CustomScanState *node);
 static void dts_rescan(CustomScanState *node);
 static void dts_explain(CustomScanState *node, List *ancestors, ExplainState *es);
+
+static Node *dbs_create_scan_state(CustomScan *cscan);
+static void dbs_begin(CustomScanState *node, EState *estate, int eflags);
+static TupleTableSlot *dbs_exec(CustomScanState *node);
+static void dbs_end(CustomScanState *node);
+static void dbs_rescan(CustomScanState *node);
+static void dbs_explain(CustomScanState *node, List *ancestors, ExplainState *es);
 
 /* ================================================================
  * CustomExecMethods and CustomScanMethods (must precede create_state)
@@ -146,6 +171,20 @@ const CustomScanMethods DynamicTableScanCS_methods = {
 const CustomScanMethods PartitionSelectorCS_methods = {
 	.CustomName = "PartitionSelector",
 	.CreateCustomScanState = ps_create_scan_state,
+};
+
+static const CustomExecMethods dbs_exec_methods = {
+	.CustomName = "DynamicBitmapScan",
+	.BeginCustomScan = dbs_begin,
+	.ExecCustomScan = dbs_exec,
+	.EndCustomScan = dbs_end,
+	.ReScanCustomScan = dbs_rescan,
+	.ExplainCustomScan = dbs_explain,
+};
+
+const CustomScanMethods DynamicBitmapScanCS_methods = {
+	.CustomName = "DynamicBitmapScan",
+	.CreateCustomScanState = dbs_create_scan_state,
 };
 
 
@@ -814,6 +853,465 @@ dts_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 
 
 /* ================================================================
+ * DynamicBitmapScanCS
+ *
+ * The PG18 counterpart of Cloudberry's DynamicBitmapHeapScan +
+ * DynamicBitmapIndexScan (nodeDynamicBitmapHeapscan.c,
+ * nodeDynamicBitmapIndexscan.c).  custom_plans holds one BitmapHeapScan
+ * of the partitioned root over BitmapIndexScans of the root's partitioned
+ * indexes -- a template that is never initialized itself.  For each
+ * partition to scan we copy it, remap its Vars to the partition's column
+ * layout, point every BitmapIndexScan at the partition's leaf index, and
+ * run it as a "sidecar" BitmapHeapScanState on the partition.
+ *
+ * Cloudberry initializes the sidecar with ExecInitBitmapHeapScanForPartition
+ * and passes the partition down in EState.partitionOid; PG18 has neither.
+ * ExecInitBitmapHeapScan opens its relation through es_relations[scanrelid],
+ * so the partition's Relation is installed there for the duration of the
+ * sidecar's initialization; BitmapIndexScan only uses the RTE for its lock
+ * mode and opens node->indexid.
+ * ================================================================ */
+
+/* Index of leaf_oid's top-level ancestor in the root's PartitionDesc */
+static int
+top_level_partition_index(PartitionDesc pdesc, Oid root_oid, Oid leaf_oid)
+{
+	Oid			top = leaf_oid;
+	List	   *ancestors = get_partition_ancestors(leaf_oid);
+	ListCell   *lc;
+
+	/* ancestors run from the immediate parent up to the root */
+	foreach(lc, ancestors)
+	{
+		Oid			anc = lfirst_oid(lc);
+
+		if (anc == root_oid)
+			break;
+		top = anc;
+	}
+	list_free(ancestors);
+
+	for (int i = 0; i < pdesc->nparts; i++)
+	{
+		if (pdesc->oids[i] == top)
+			return i;
+	}
+	return -1;
+}
+
+/*
+ * The index of partrel that descends from the partitioned index root_index.
+ * index_get_partition only matches a direct child; a leaf of a multi-level
+ * partition tree hangs below an intermediate partitioned index.
+ */
+static Oid
+leaf_index_for(Relation partrel, Oid root_index)
+{
+	Oid			result = index_get_partition(partrel, root_index);
+	List	   *indexes;
+	ListCell   *lc;
+
+	if (OidIsValid(result))
+		return result;
+
+	indexes = RelationGetIndexList(partrel);
+	foreach(lc, indexes)
+	{
+		Oid			ix = lfirst_oid(lc);
+		List	   *ancestors = get_partition_ancestors(ix);
+		bool		found = list_member_oid(ancestors, root_index);
+
+		list_free(ancestors);
+		if (found)
+		{
+			result = ix;
+			break;
+		}
+	}
+	list_free(indexes);
+	return result;
+}
+
+/* Point every BitmapIndexScan of a (copied) bitmap tree at partrel's index */
+static void
+dbs_point_at_partition(Plan *plan, Relation partrel)
+{
+	ListCell   *lc;
+
+	switch (nodeTag(plan))
+	{
+		case T_BitmapIndexScan:
+			{
+				BitmapIndexScan *bis = (BitmapIndexScan *) plan;
+				Oid			leaf = leaf_index_for(partrel, bis->indexid);
+
+				if (!OidIsValid(leaf))
+					elog(ERROR, "partition \"%s\" has no index for partitioned index \"%s\"",
+						 RelationGetRelationName(partrel),
+						 get_rel_name(bis->indexid));
+				bis->indexid = leaf;
+				break;
+			}
+		case T_BitmapAnd:
+			foreach(lc, ((BitmapAnd *) plan)->bitmapplans)
+				dbs_point_at_partition((Plan *) lfirst(lc), partrel);
+			break;
+		case T_BitmapOr:
+			foreach(lc, ((BitmapOr *) plan)->bitmapplans)
+				dbs_point_at_partition((Plan *) lfirst(lc), partrel);
+			break;
+		default:
+			elog(ERROR, "unexpected node type %d in dynamic bitmap scan",
+				 (int) nodeTag(plan));
+	}
+}
+
+/*
+ * ExprContexts live in es_query_cxt and stay registered in es_exprcontexts
+ * until the query ends; free the ones a finished sidecar created so a
+ * rescanned inner side doesn't accumulate one set per partition and probe.
+ */
+static void
+dbs_free_exprcontexts(PlanState *ps)
+{
+	if (ps == NULL)
+		return;
+	switch (nodeTag(ps))
+	{
+		case T_BitmapIndexScanState:
+			if (((BitmapIndexScanState *) ps)->biss_RuntimeContext)
+				FreeExprContext(((BitmapIndexScanState *) ps)->biss_RuntimeContext, true);
+			break;
+		case T_BitmapAndState:
+			for (int i = 0; i < ((BitmapAndState *) ps)->nplans; i++)
+				dbs_free_exprcontexts(((BitmapAndState *) ps)->bitmapplans[i]);
+			break;
+		case T_BitmapOrState:
+			for (int i = 0; i < ((BitmapOrState *) ps)->nplans; i++)
+				dbs_free_exprcontexts(((BitmapOrState *) ps)->bitmapplans[i]);
+			break;
+		default:
+			break;
+	}
+	dbs_free_exprcontexts(outerPlanState(ps));
+	if (ps->ps_ExprContext)
+		FreeExprContext(ps->ps_ExprContext, true);
+}
+
+typedef struct DBSState
+{
+	CustomScanState css;
+	DynScanSharedState *shared;
+	int			param_id;
+	Oid			root_oid;
+	Index		root_rti;
+	BitmapHeapScan *template_scan;	/* custom_plans[0] */
+	TupleDesc	root_desc;
+	Oid			root_reltype;
+
+	int			nparts;
+	Oid		   *part_oids;		/* statically selected leaf partitions */
+	int		   *part_index;		/* top-level index in the root's PartitionDesc */
+
+	/* current scan */
+	bool		scan_started;
+	bool	   *active;			/* partitions this scan runs (after DPE) */
+	int			cur;			/* partition being scanned, -1 before first */
+	int			nscanned;
+	Relation	cur_rel;
+	PlanState  *sidecar;		/* BitmapHeapScanState for cur_rel */
+	List	   *sidecar_tuptable;	/* slots the sidecar created */
+	MemoryContext part_cxt;		/* reset after each partition */
+} DBSState;
+
+static Node *
+dbs_create_scan_state(CustomScan *cscan)
+{
+	DBSState   *state = (DBSState *) palloc0(sizeof(DBSState));
+
+	state->css.ss.ps.type = T_CustomScanState;
+	state->css.methods = &dbs_exec_methods;
+	return (Node *) state;
+}
+
+static void
+dbs_begin(CustomScanState *node, EState *estate, int eflags)
+{
+	DBSState   *state = (DBSState *) node;
+	CustomScan *cscan = (CustomScan *) node->ss.ps.plan;
+	List	   *part_list;
+	Relation	root_rel;
+	PartitionDesc pdesc;
+	ListCell   *lc;
+	int			i;
+
+	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
+
+	/* custom_private: scan_id, root_oid, param_id, root_rti, part oids */
+	state->root_oid = (Oid) intVal(lsecond(cscan->custom_private));
+	state->param_id = intVal(lthird(cscan->custom_private));
+	state->root_rti = (Index) intVal(lfourth(cscan->custom_private));
+	part_list = (List *) list_nth(cscan->custom_private, 4);
+	state->template_scan = (BitmapHeapScan *) linitial(cscan->custom_plans);
+
+	/* Shared DPE state, as in dts_begin */
+	{
+		ParamExecData *param = &estate->es_param_exec_vals[state->param_id];
+
+		if (DatumGetPointer(param->value) == NULL)
+		{
+			DynScanSharedState *ss = (DynScanSharedState *)
+				MemoryContextAllocZero(estate->es_query_cxt, sizeof(DynScanSharedState));
+
+			param->value = PointerGetDatum(ss);
+			param->isnull = false;
+		}
+		state->shared = (DynScanSharedState *) DatumGetPointer(param->value);
+	}
+
+	/* The root stays locked by the query; keep its descriptor for remapping */
+	root_rel = table_open(state->root_oid, AccessShareLock);
+	state->root_desc = CreateTupleDescCopy(RelationGetDescr(root_rel));
+	state->root_reltype = root_rel->rd_rel->reltype;
+	pdesc = RelationGetPartitionDesc(root_rel, false);
+
+	state->nparts = list_length(part_list);
+	state->part_oids = palloc(sizeof(Oid) * Max(state->nparts, 1));
+	state->part_index = palloc(sizeof(int) * Max(state->nparts, 1));
+	state->active = palloc0(sizeof(bool) * Max(state->nparts, 1));
+	i = 0;
+	foreach(lc, part_list)
+	{
+		state->part_oids[i] = (Oid) intVal(lfirst(lc));
+		state->part_index[i] = top_level_partition_index(pdesc, state->root_oid,
+														 state->part_oids[i]);
+		i++;
+	}
+	table_close(root_rel, NoLock);
+
+	state->part_cxt = AllocSetContextCreate(CurrentMemoryContext,
+											"DynamicBitmapScanPerPartition",
+											ALLOCSET_DEFAULT_SIZES);
+	state->scan_started = false;
+	state->cur = -1;
+
+	/*
+	 * dbs_exec returns the sidecar's slot: a projected virtual slot, or the
+	 * partition's undeformed heap slot when the targetlist needs no
+	 * projection.  ExecInitCustomScan declared a fixed virtual result slot,
+	 * which lets parents compile their expressions without FETCHSOME steps
+	 * and read tts_values that a heap slot never filled.  Parents initialize
+	 * after us, so declare the result slot type unknown.
+	 */
+	node->ss.ps.resultopsset = true;
+	node->ss.ps.resultopsfixed = false;
+}
+
+/* Initialize the sidecar BitmapHeapScan for partition state->cur */
+static void
+dbs_begin_partition(DBSState *state)
+{
+	EState	   *estate = state->css.ss.ps.state;
+	Relation	partrel;
+	BitmapHeapScan *scan;
+	AttrMap    *attmap;
+	MemoryContext oldcxt;
+	List	   *save_tuptable;
+	Relation	save_rel;
+
+	partrel = table_open(state->part_oids[state->cur], AccessShareLock);
+	if (partrel->rd_rel->relkind != RELKIND_RELATION)
+		elog(ERROR, "unexpected relkind '%c' of partition \"%s\" in dynamic bitmap scan",
+			 partrel->rd_rel->relkind, RelationGetRelationName(partrel));
+	state->cur_rel = partrel;
+
+	oldcxt = MemoryContextSwitchTo(state->part_cxt);
+
+	scan = (BitmapHeapScan *) copyObject(state->template_scan);
+
+	/* The template's Vars use the root's attnos; remap if the layout differs */
+	attmap = build_attrmap_by_name_if_req(RelationGetDescr(partrel),
+										  state->root_desc, false);
+	if (attmap)
+	{
+		bool		whole_row = false;
+
+		scan->scan.plan.qual = (List *)
+			map_variable_attnos((Node *) scan->scan.plan.qual, state->root_rti, 0,
+								attmap, partrel->rd_rel->reltype, &whole_row);
+		scan->scan.plan.targetlist = (List *)
+			map_variable_attnos((Node *) scan->scan.plan.targetlist, state->root_rti, 0,
+								attmap, partrel->rd_rel->reltype, &whole_row);
+		scan->bitmapqualorig = (List *)
+			map_variable_attnos((Node *) scan->bitmapqualorig, state->root_rti, 0,
+								attmap, partrel->rd_rel->reltype, &whole_row);
+		if (whole_row)
+			elog(ERROR, "whole-row reference in dynamic bitmap scan of a partition with a different column layout");
+		free_attrmap(attmap);
+	}
+
+	/* Index quals reference index columns (INDEX_VAR), the same in every leaf */
+	dbs_point_at_partition(outerPlan(&scan->scan.plan), partrel);
+
+	/* Keep the sidecar's slots on a list of their own, as Cloudberry does */
+	save_tuptable = estate->es_tupleTable;
+	estate->es_tupleTable = NIL;
+	save_rel = estate->es_relations[state->root_rti - 1];
+	estate->es_relations[state->root_rti - 1] = partrel;
+	PG_TRY();
+	{
+		state->sidecar = ExecInitNode((Plan *) scan, estate, 0);
+	}
+	PG_FINALLY();
+	{
+		estate->es_relations[state->root_rti - 1] = save_rel;
+		state->sidecar_tuptable = estate->es_tupleTable;
+		estate->es_tupleTable = save_tuptable;
+	}
+	PG_END_TRY();
+
+	MemoryContextSwitchTo(oldcxt);
+	state->nscanned++;
+}
+
+static void
+dbs_end_partition(DBSState *state)
+{
+	if (state->sidecar)
+	{
+		ExecEndNode(state->sidecar);
+		dbs_free_exprcontexts(state->sidecar);
+		state->sidecar = NULL;
+	}
+	if (state->sidecar_tuptable)
+	{
+		ExecResetTupleTable(state->sidecar_tuptable, true);
+		state->sidecar_tuptable = NIL;
+	}
+	if (state->cur_rel)
+	{
+		table_close(state->cur_rel, NoLock);
+		state->cur_rel = NULL;
+	}
+	MemoryContextReset(state->part_cxt);
+}
+
+static TupleTableSlot *
+dbs_exec(CustomScanState *node)
+{
+	DBSState   *state = (DBSState *) node;
+
+	if (!state->scan_started)
+	{
+		/* DPE: run only the partitions the PartitionSelector approved */
+		bool		use_dpe = state->shared && state->shared->finalized;
+
+		for (int i = 0; i < state->nparts; i++)
+			state->active[i] = !use_dpe || state->part_index[i] < 0 ||
+				bms_is_member(state->part_index[i],
+							  state->shared->approved_partitions);
+		state->cur = -1;
+		state->nscanned = 0;
+		state->scan_started = true;
+	}
+
+	for (;;)
+	{
+		if (state->sidecar)
+		{
+			TupleTableSlot *slot = ExecProcNode(state->sidecar);
+
+			if (!TupIsNull(slot))
+				return slot;
+			dbs_end_partition(state);
+		}
+
+		do
+			state->cur++;
+		while (state->cur < state->nparts && !state->active[state->cur]);
+		if (state->cur >= state->nparts)
+			return NULL;
+		dbs_begin_partition(state);
+	}
+}
+
+static void
+dbs_end(CustomScanState *node)
+{
+	DBSState   *state = (DBSState *) node;
+
+	dbs_end_partition(state);
+	if (state->part_cxt)
+	{
+		MemoryContextDelete(state->part_cxt);
+		state->part_cxt = NULL;
+	}
+}
+
+static void
+dbs_rescan(CustomScanState *node)
+{
+	DBSState   *state = (DBSState *) node;
+
+	/*
+	 * Each partition's sidecar is built afresh when it is reached, so it
+	 * reads the current values of any parameters; just drop the open one.
+	 */
+	dbs_end_partition(state);
+	state->scan_started = false;
+	state->cur = -1;
+}
+
+static void
+dbs_explain(CustomScanState *node, List *ancestors, ExplainState *es)
+{
+	DBSState   *state = (DBSState *) node;
+	BitmapHeapScan *tmpl = state->template_scan;
+	List	   *context;
+	List	   *indexes = NIL;
+	List	   *pending = list_make1(outerPlan(&tmpl->scan.plan));
+	StringInfoData buf;
+
+	context = set_deparse_context_plan(es->deparse_cxt, (Plan *) tmpl, ancestors);
+	if (tmpl->bitmapqualorig)
+		ExplainPropertyText("Recheck Cond",
+							deparse_expression((Node *) make_ands_explicit(tmpl->bitmapqualorig),
+											   context, es->verbose, false), es);
+	if (tmpl->scan.plan.qual)
+		ExplainPropertyText("Filter",
+							deparse_expression((Node *) make_ands_explicit(tmpl->scan.plan.qual),
+											   context, es->verbose, false), es);
+
+	/* The partitioned indexes the per-partition scans use */
+	while (pending != NIL)
+	{
+		Plan	   *p = (Plan *) linitial(pending);
+
+		pending = list_delete_first(pending);
+		if (IsA(p, BitmapIndexScan))
+			indexes = lappend(indexes, get_rel_name(((BitmapIndexScan *) p)->indexid));
+		else if (IsA(p, BitmapAnd))
+			pending = list_concat(pending, list_copy(((BitmapAnd *) p)->bitmapplans));
+		else if (IsA(p, BitmapOr))
+			pending = list_concat(pending, list_copy(((BitmapOr *) p)->bitmapplans));
+	}
+	initStringInfo(&buf);
+	{
+		ListCell   *lc;
+
+		foreach(lc, indexes)
+			appendStringInfo(&buf, "%s%s", buf.len ? ", " : "", (char *) lfirst(lc));
+	}
+	ExplainPropertyText("Bitmap Indexes", buf.data, es);
+
+	ExplainPropertyText("Root Table", get_rel_name(state->root_oid), es);
+	ExplainPropertyInteger("Partitions Selected", NULL, state->nparts, es);
+	if (state->scan_started)
+		ExplainPropertyInteger("Partitions Scanned", NULL, state->nscanned, es);
+}
+
+
+/* ================================================================
  * Registration
  * ================================================================ */
 
@@ -822,4 +1320,5 @@ RegisterDynScanCustomScanMethods(void)
 {
 	RegisterCustomScanMethods(&DynamicTableScanCS_methods);
 	RegisterCustomScanMethods(&PartitionSelectorCS_methods);
+	RegisterCustomScanMethods(&DynamicBitmapScanCS_methods);
 }

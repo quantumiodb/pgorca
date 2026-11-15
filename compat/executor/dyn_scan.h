@@ -9,6 +9,11 @@
  * DynamicTableScanCS: sits on the outer (probe) side, scans only the
  *   partitions approved by the PartitionSelector.
  *
+ * DynamicBitmapScanCS: ORCA's DynamicBitmapTableScan.  The translator builds
+ *   one ordinary BitmapHeapScan per statically selected partition (on the
+ *   partition's own RTE and leaf indexes) into custom_plans; at execution
+ *   only the children of partitions the PartitionSelector approved run.
+ *
  * Communication is via a shared state pointer stored in PARAM_EXEC.
  */
 #ifndef COMPAT_DYN_SCAN_H
@@ -27,11 +32,12 @@ typedef struct DynScanSharedState
 	bool		finalized;				/* true after hash build completes */
 } DynScanSharedState;
 
-/* Register both CustomScan providers — call from _PG_init */
+/* Register the CustomScan providers — call from _PG_init */
 extern void RegisterDynScanCustomScanMethods(void);
 
 /* CustomScanMethods pointers (needed by translation layer) */
 extern const CustomScanMethods DynamicTableScanCS_methods;
 extern const CustomScanMethods PartitionSelectorCS_methods;
+extern const CustomScanMethods DynamicBitmapScanCS_methods;
 
 #endif /* COMPAT_DYN_SCAN_H */

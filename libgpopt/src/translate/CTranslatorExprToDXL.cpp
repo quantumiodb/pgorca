@@ -1692,7 +1692,7 @@ CTranslatorExprToDXL::PdxlnDynamicBitmapTableScan(
 
 	CDXLPhysicalDynamicBitmapTableScan *pdxlopScan =
 		GPOS_NEW(m_mp) CDXLPhysicalDynamicBitmapTableScan(
-			m_mp, table_descr, part_mdids, selector_ids);
+			m_mp, table_descr, part_mdids, selector_ids, pop->ScanId());
 
 	CDXLNode *pdxlnScan = GPOS_NEW(m_mp) CDXLNode(m_mp, pdxlopScan);
 

@@ -39,6 +39,11 @@ private:
 
 	ULongPtrArray *m_selector_ids = nullptr;
 
+	// ORCA scan_id -- matches CDXLPhysicalPartitionSelector::ScanId() of a
+	// paired PartitionSelector; keys the DPE param slot, as for
+	// CDXLPhysicalDynamicTableScan
+	ULONG m_scan_id;
+
 public:
 	CDXLPhysicalDynamicBitmapTableScan(
 		const CDXLPhysicalDynamicBitmapTableScan &) = delete;
@@ -47,12 +52,20 @@ public:
 	CDXLPhysicalDynamicBitmapTableScan(CMemoryPool *mp,
 									   CDXLTableDescr *table_descr,
 									   IMdIdArray *part_mdids,
-									   ULongPtrArray *selector_ids)
+									   ULongPtrArray *selector_ids,
+									   ULONG scan_id = 0)
 		: CDXLPhysicalAbstractBitmapScan(mp, table_descr),
 		  m_part_mdids(part_mdids),
-		  m_selector_ids(selector_ids)
+		  m_selector_ids(selector_ids),
+		  m_scan_id(scan_id)
 	{
 		GPOS_ASSERT(nullptr != table_descr);
+	}
+
+	ULONG
+	ScanId() const
+	{
+		return m_scan_id;
 	}
 
 	// dtor
