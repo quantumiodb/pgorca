@@ -1,0 +1,175 @@
+-- pg_orca DynamicBitmapScan: ORCA's DynamicBitmapTableScan on a partitioned
+-- table, run per partition by the DynamicBitmapScan CustomScan
+-- (compat/executor/dyn_scan.c).
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+DROP TABLE IF EXISTS dbs_het, dbs_dim CASCADE;
+-- dbs_het_p2 has its own column order and a dropped column, so the
+-- per-partition copy of the scan must remap the root's attribute numbers.
+CREATE TABLE dbs_het (a int, b int, c text) PARTITION BY RANGE (a);
+CREATE TABLE dbs_het_p1 PARTITION OF dbs_het FOR VALUES FROM (0) TO (1000);
+CREATE TABLE dbs_het_p2 (c text, junk int, b int, a int);
+ALTER TABLE dbs_het_p2 DROP COLUMN junk;
+ALTER TABLE dbs_het ATTACH PARTITION dbs_het_p2 FOR VALUES FROM (1000) TO (2000);
+CREATE TABLE dbs_het_p3 PARTITION OF dbs_het FOR VALUES FROM (2000) TO (3000);
+INSERT INTO dbs_het SELECT g, g % 97, 'v' || g FROM generate_series(0, 2999) g;
+CREATE INDEX dbs_het_b ON dbs_het (b);
+CREATE INDEX dbs_het_c ON dbs_het (c);
+CREATE TABLE dbs_dim (k int, a int);
+INSERT INTO dbs_dim SELECT g, g * 10 FROM generate_series(1, 20) g;
+ANALYZE dbs_het;
+ANALYZE dbs_dim;
+-- ===================================================================
+-- One partitioned index, every partition
+-- ===================================================================
+EXPLAIN (COSTS OFF)
+SELECT count(*), sum(a), min(c), max(c) FROM dbs_het WHERE b = 5;
+              QUERY PLAN               
+---------------------------------------
+ Aggregate
+   ->  Custom Scan (DynamicBitmapScan)
+         Recheck Cond: (b = 5)
+         Filter: (b = 5)
+         Bitmap Indexes: dbs_het_b
+         Root Table: dbs_het
+         Partitions Selected: 3
+ Optimizer: pg_orca
+(8 rows)
+
+SELECT count(*), sum(a), min(c), max(c) FROM dbs_het WHERE b = 5;
+ count |  sum  | min  | max  
+-------+-------+------+------
+    31 | 45260 | v102 | v975
+(1 row)
+
+-- Static pruning down to the partition with the other column layout
+EXPLAIN (COSTS OFF)
+SELECT a, b, c FROM dbs_het WHERE b = 5 AND a BETWEEN 1000 AND 1500 ORDER BY a;
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Sort
+   Sort Key: a
+   ->  Custom Scan (DynamicBitmapScan)
+         Recheck Cond: (b = 5)
+         Filter: ((b = 5) AND (a >= 1000) AND (a <= 1500))
+         Bitmap Indexes: dbs_het_b
+         Root Table: dbs_het
+         Partitions Selected: 1
+ Optimizer: pg_orca
+(9 rows)
+
+SELECT a, b, c FROM dbs_het WHERE b = 5 AND a BETWEEN 1000 AND 1500 ORDER BY a;
+  a   | b |   c   
+------+---+-------
+ 1072 | 5 | v1072
+ 1169 | 5 | v1169
+ 1266 | 5 | v1266
+ 1363 | 5 | v1363
+ 1460 | 5 | v1460
+(5 rows)
+
+-- BitmapOr of two partitioned indexes
+EXPLAIN (COSTS OFF)
+SELECT count(*), sum(a) FROM dbs_het WHERE b = 5 OR c = 'v1234';
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Custom Scan (DynamicBitmapScan)
+         Recheck Cond: ((b = 5) OR (c = 'v1234'::text))
+         Filter: ((b = 5) OR (c = 'v1234'::text))
+         Bitmap Indexes: dbs_het_b, dbs_het_c
+         Root Table: dbs_het
+         Partitions Selected: 3
+ Optimizer: pg_orca
+(8 rows)
+
+SELECT count(*), sum(a) FROM dbs_het WHERE b = 5 OR c = 'v1234';
+ count |  sum  
+-------+-------
+    32 | 46494
+(1 row)
+
+-- ===================================================================
+-- Outer side of a Hash Join.  The scan returns its partitions' heap slots,
+-- which the join must deform (this used to crash in heap_compute_data_size).
+-- VERBOSE output names the root table's columns with its alias.
+-- ===================================================================
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT d.k, h.a, h.c FROM dbs_dim d JOIN dbs_het h ON h.b = d.k WHERE d.k < 4;
+                QUERY PLAN                
+------------------------------------------
+ Hash Join
+   Output: d.k, h.a, h.c
+   Hash Cond: (h.b = d.k)
+   ->  Custom Scan (DynamicBitmapScan)
+         Output: h.a, h.b, h.c
+         Recheck Cond: (h.b < 4)
+         Filter: (h.b < 4)
+         Bitmap Indexes: dbs_het_b
+         Root Table: dbs_het
+         Partitions Selected: 3
+   ->  Hash
+         Output: d.k
+         ->  Seq Scan on public.dbs_dim d
+               Output: d.k
+               Filter: (d.k < 4)
+ Optimizer: pg_orca
+(16 rows)
+
+SELECT d.k, count(*), sum(h.a), max(h.c)
+FROM dbs_dim d JOIN dbs_het h ON h.b = d.k WHERE d.k < 4
+GROUP BY d.k ORDER BY d.k;
+ k | count |  sum  | max  
+---+-------+-------+------
+ 1 |    31 | 45136 | v98
+ 2 |    31 | 45167 | v99
+ 3 |    31 | 45198 | v973
+(3 rows)
+
+-- ===================================================================
+-- Inner side of a Nested Loop: rescanned once per outer row with a new
+-- parameter value, which EXPLAIN shows as the outer column (d.k).
+-- ===================================================================
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT count(*), sum(h.a) FROM dbs_dim d JOIN dbs_het h ON h.b = d.k WHERE d.k < 4;
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Aggregate (actual rows=1.00 loops=1)
+   ->  Nested Loop (actual rows=93.00 loops=1)
+         Join Filter: true
+         ->  Seq Scan on dbs_dim d (actual rows=3.00 loops=1)
+               Filter: (k < 4)
+               Rows Removed by Filter: 17
+         ->  Custom Scan (DynamicBitmapScan) (actual rows=31.00 loops=3)
+               Recheck Cond: ((b = d.k) AND (b < 4))
+               Filter: ((b = d.k) AND (b < 4))
+               Bitmap Indexes: dbs_het_b
+               Root Table: dbs_het
+               Partitions Selected: 3
+               Partitions Scanned: 3
+ Optimizer: pg_orca
+(14 rows)
+
+SELECT count(*), sum(h.a) FROM dbs_dim d JOIN dbs_het h ON h.b = d.k WHERE d.k < 4;
+ count |  sum   
+-------+--------
+    93 | 135501
+(1 row)
+
+-- A SubPlan correlated to both sides of the join, above the rescanned scan
+SELECT count(*), sum(h.a)
+FROM dbs_dim d JOIN dbs_het h ON h.b = d.k
+WHERE d.k < 4
+  AND (h.c = 'zz' OR EXISTS (SELECT 1 FROM dbs_dim d2
+                             WHERE d2.k = h.a % 7 AND d2.a > d.a));
+ count |  sum  
+-------+-------
+    49 | 72451
+(1 row)
+
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+DROP TABLE dbs_het, dbs_dim;
