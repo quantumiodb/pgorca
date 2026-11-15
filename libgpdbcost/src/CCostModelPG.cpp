@@ -386,9 +386,13 @@ CCostModelPG::CostScan(CMemoryPool *mp,
 				const CDouble cpu = total_rows * CDouble(cpu_tuple_cost);
 				// Append overhead: APPEND_CPU_COST_MULTIPLIER × cpu_tuple
 				// × output_rows (costsize.c cost_append); pci->Rows()
-				// reflects the post-filter selectivity.
+				// reflects the post-filter selectivity.  PG charges nothing
+				// for a one-child Append, which setrefs.c removes
+				// (create_append_path copies the child's cost).
 				const CDouble append =
-					CDouble(0.5) * CDouble(cpu_tuple_cost) * pci->Rows();
+					(part_mdids->Size() > 1)
+						? CDouble(0.5) * CDouble(cpu_tuple_cost) * pci->Rows()
+						: CDouble(0.0);
 				return CCost(pci->NumRebinds() *
 							 (io + cpu + append).Get());
 			}
