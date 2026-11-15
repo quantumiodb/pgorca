@@ -30,6 +30,9 @@ using namespace gpos;
 using namespace gpopt;
 using namespace gpmd;
 
+// per-optimization cache of bitmap index probe selectivities (CCostModelPG.cpp)
+class CBitmapProbeSelCache;
+
 class CCostModelPG : public ICostModel
 {
 private:
@@ -38,6 +41,10 @@ private:
 	ULONG m_num_of_segments;
 
 	CCostModelParamsPG *m_cost_model_params;
+
+	// one cost model is built per optimization, so this cache lives exactly
+	// as long as the memo whose scalar expressions it is keyed by
+	CBitmapProbeSelCache *m_bitmap_sel_cache;
 
 	// sum of children costs
 	static CCost CostChildren(CMemoryPool *mp, CExpressionHandle &exprhdl,
@@ -61,7 +68,8 @@ private:
 							const SCostingInfo *pci);
 
 	static CCost CostNLJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
-							const SCostingInfo *pci);
+							const SCostingInfo *pci,
+							CBitmapProbeSelCache *sel_cache);
 
 	static CCost CostHashJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 							  const SCostingInfo *pci);
@@ -80,7 +88,8 @@ private:
 
 	static CCost CostBitmapTableScan(CMemoryPool *mp,
 									 CExpressionHandle &exprhdl,
-									 const SCostingInfo *pci);
+									 const SCostingInfo *pci,
+									 CBitmapProbeSelCache *sel_cache);
 
 	static CCost CostMergeJoin(CMemoryPool *mp, CExpressionHandle &exprhdl,
 							   const SCostingInfo *pci);

@@ -60,7 +60,10 @@
 #include "naucrates/statistics/CBucket.h"
 #include "naucrates/statistics/CHistogram.h"
 #include "naucrates/statistics/CPoint.h"
+#include "naucrates/statistics/CFilterStatsProcessor.h"
 #include "naucrates/statistics/CStatistics.h"
+#include <unordered_map>
+#include <vector>
 
 // PG cost-tuning GUCs.  Defined as globals in src/backend/optimizer/path/costsize.c
 // and exposed via optimizer/cost.h; we re-declare here to avoid pulling the full
@@ -225,9 +228,34 @@ using namespace gpopt;
 using namespace gpdbcost;
 using namespace gpnaucrates;
 
+namespace gpdbcost
+{
+// Selectivity of each bitmap index probe condition, computed once per
+// optimization: CFilterStatsProcessor::SelectivityOfPredicate rebuilds the
+// table's column statistics from the metadata cache on every call, and the
+// same probe is priced for every optimization context of its bitmap scan and
+// again, twice, by every NL join that amortizes it.  Keys are AddRef'd so an
+// address cannot be freed and reused while it is cached.
+class CBitmapProbeSelCache
+{
+public:
+	std::unordered_map<CExpression *, DOUBLE> m_sel;
+
+	~CBitmapProbeSelCache()
+	{
+		for (auto &kv : m_sel)
+		{
+			kv.first->Release();
+		}
+	}
+};
+}  // namespace gpdbcost
+
 CCostModelPG::CCostModelPG(CMemoryPool *mp, ULONG ulSegments,
 						   CCostModelParamsPG *pcp)
-	: m_mp(mp), m_num_of_segments(ulSegments)
+	: m_mp(mp),
+	  m_num_of_segments(ulSegments),
+	  m_bitmap_sel_cache(GPOS_NEW(mp) CBitmapProbeSelCache())
 {
 	GPOS_ASSERT(0 < ulSegments);
 
@@ -243,6 +271,7 @@ CCostModelPG::CCostModelPG(CMemoryPool *mp, ULONG ulSegments,
 
 CCostModelPG::~CCostModelPG()
 {
+	GPOS_DELETE(m_bitmap_sel_cache);
 	m_cost_model_params->Release();
 }
 
@@ -964,6 +993,13 @@ CCostModelPG::CostFilter(CMemoryPool *,	 // mp
 //
 static DOUBLE AmortizeIndexScanIO(DOUBLE per_exec, COperator *inner_op,
 								  DOUBLE tuples_per_probe, DOUBLE outer_rows);
+static CGroupExpression *FindBitmapScanInGroup(CGroup *group, ULONG max_depth,
+											   COperator *prefer);
+static DOUBLE AmortizeBitmapScanIO(CMemoryPool *mp,
+								   CBitmapProbeSelCache *sel_cache,
+								   DOUBLE per_exec,
+								   CGroupExpression *bitmap_gexpr,
+								   DOUBLE tuples_per_probe, DOUBLE outer_rows);
 
 // Recursively walk a CGroup's expressions looking for an IndexScan or
 // IndexOnlyScan operator.  Returns the first one found within `max_depth`
@@ -1142,7 +1178,8 @@ EquiJoinInnerSelectivity(CMemoryPool *mp, const ICostModel::SCostingInfo *pci,
 CCost
 CCostModelPG::CostNLJoin(CMemoryPool *mp,
 						 CExpressionHandle &exprhdl,
-						 const SCostingInfo *pci)
+						 const SCostingInfo *pci,
+						 CBitmapProbeSelCache *sel_cache)
 {
 	GPOS_ASSERT(CUtils::FNLJoin(exprhdl.Pop()));
 
@@ -1198,6 +1235,31 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 			COperator *found =
 				FindIndexScanInGroup(inner_group, 5 /* max_depth */);
 			if (nullptr != found) inner_op = found;
+		}
+	}
+
+	// Bitmap heap scan inner (directly, or under the same wrappers) that was
+	// costed for a single execution: amortize its IO over the outer rows
+	// below, like the IndexScan case.  An inner already costed with
+	// NumRebinds = outer rows (correlated NL) amortized itself.
+	CGroupExpression *inner_bitmap_gexpr = nullptr;
+	{
+		const BOOL inner_is_bitmap =
+			(nullptr != inner_op &&
+			 (COperator::EopPhysicalBitmapTableScan == inner_op->Eopid() ||
+			  COperator::EopPhysicalDynamicBitmapTableScan ==
+				  inner_op->Eopid()));
+		const BOOL inner_is_index =
+			(nullptr != inner_op &&
+			 (COperator::EopPhysicalIndexScan == inner_op->Eopid() ||
+			  COperator::EopPhysicalIndexOnlyScan == inner_op->Eopid()));
+		if (inner_rebinds <= 1.0 && !inner_is_index &&
+			(inner_is_bitmap || (inner_is_wrapper_or_null && is_index_nl_op)) &&
+			nullptr != exprhdl.Pgexpr() && exprhdl.Pgexpr()->Arity() > 1)
+		{
+			inner_bitmap_gexpr =
+				FindBitmapScanInGroup((*exprhdl.Pgexpr())[1], 5 /* max_depth */,
+									  inner_is_bitmap ? inner_op : nullptr);
 		}
 	}
 
@@ -1349,7 +1411,12 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 		// keeps inner-side rebinds at the default), so the inner_total_cost
 		// stored in pci->PdCost()[1] is a single-shot value.
 		per_exec =
-			AmortizeIndexScanIO(per_exec, inner_op, inner_rows, outer_rows);
+			(nullptr != inner_bitmap_gexpr)
+				? AmortizeBitmapScanIO(mp, sel_cache, per_exec,
+									   inner_bitmap_gexpr, inner_rows,
+									   outer_rows)
+				: AmortizeIndexScanIO(per_exec, inner_op, inner_rows,
+									  outer_rows);
 
 		if (has_indexed_join_quals)
 		{
@@ -1387,8 +1454,12 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 		{
 			DOUBLE per_exec = inner_total_cost / inner_rebinds;
 			// IO amortization: see SEMI branch comment.
-			per_exec = AmortizeIndexScanIO(per_exec, inner_op, inner_rows,
-										   outer_rows);
+			per_exec = (nullptr != inner_bitmap_gexpr)
+						   ? AmortizeBitmapScanIO(mp, sel_cache, per_exec,
+												  inner_bitmap_gexpr,
+												  inner_rows, outer_rows)
+						   : AmortizeIndexScanIO(per_exec, inner_op,
+												 inner_rows, outer_rows);
 			extra_rescan = n_extra * per_exec;
 		}
 	}
@@ -2821,59 +2892,268 @@ CCostModelPG::CostUnionAll(CMemoryPool *,  // mp
 }
 
 //---------------------------------------------------------------------------
-//	CCostModelPG::CostBitmapTableScan
+//	Bitmap index tree costing: PG cost_bitmap_tree_node / cost_bitmap_and_node
+//	/ cost_bitmap_or_node (costsize.c:1115-1230).
+//
+//	Every Bitmap Index Scan is priced on its OWN index condition, as PG
+//	prices each IndexPath of a BitmapAnd/Or with its own indexselectivity:
+//
+//	  sel       = selectivity of the probe's index condition alone
+//	              (col = <outer ref> -> 1/ndistinct, like var_eq_non_const)
+//	  tuples    = max(1, rint(sel × N / num_sa_scans))       per descent
+//	  pages     = ceil(tuples × index_pages / N)             per descent
+//	  index_io  = pages × random_page_cost, or Mackert-Lohman over
+//	              num_sa_scans × loop_count descents, pro-rated per loop
+//	  index_cpu = tuples × num_sa_scans × (cpu_index_tuple_cost + qual_ops)
+//	  descent   = btree only: num_sa_scans × (ceil(log2 N) + (h+1)×50) × cpu_op
+//	  node      = descent + index_io + index_cpu + 0.1 × cpu_op × path rows
+//
+//	BitmapAnd: selec = Π selec_i, cost = Σ cost_i + 100 × cpu_op per child
+//	after the first.  BitmapOr: selec = min(1, Σ selec_i), cost = Σ cost_i
+//	+ 100 × cpu_op per non-IndexPath child after the first.  ORCA builds
+//	binary left-deep BoolOp trees; nested BoolOps of the same kind are
+//	flattened so the shape matches PG's flat bitmapquals lists.
+//
+//	Previously every probe was charged on the scan's final output rows, so
+//	in a BitmapAnd an unselective probe (TPC-H Q20's one-year l_shipdate
+//	range, ~15% of lineitem, AND-ed with two equality probes) cost about
+//	the same as a one-row lookup and the planner kept it in the AND.
+//---------------------------------------------------------------------------
+struct SBitmapTreeCost
+{
+	DOUBLE cost = 0.0;		   // cost_bitmap_tree_node cost
+	DOUBLE selec = 1.0;		   // bitmapselectivity
+	DOUBLE index_pages = 0.0;  // get_indexpath_pages: Σ index pages
+	BOOL valid = true;		   // false if some node could not be priced
+};
+
+static SBitmapTreeCost BitmapTreeCost(CMemoryPool *mp,
+									  CBitmapProbeSelCache *sel_cache,
+									  CExpression *e, CPhysicalScan *pscan,
+									  DOUBLE N, DOUBLE path_rows,
+									  DOUBLE loop_count);
+
+static SBitmapTreeCost
+BitmapIndexProbeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
+					 CExpression *e, CPhysicalScan *pscan, DOUBLE N,
+					 DOUBLE path_rows, DOUBLE loop_count)
+{
+	SBitmapTreeCost res;
+	CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
+	const IMDIndex *index = mda->RetrieveIndex(
+		CScalarBitmapIndexProbe::PopConvert(e->Pop())->Pindexdesc()->MDId());
+	CExpression *cond = (e->Arity() > 0) ? (*e)[0] : nullptr;
+	if (nullptr == cond)
+	{
+		res.valid = false;
+		return res;
+	}
+
+	// Selectivity of this probe's condition on the base table.  Columns
+	// not produced by the scan are outer references (parameters).
+	DOUBLE sel;
+	auto hit = sel_cache->m_sel.find(cond);
+	if (hit != sel_cache->m_sel.end())
+	{
+		sel = hit->second;
+	}
+	else
+	{
+		CColRefSet *outer_refs =
+			GPOS_NEW(mp) CColRefSet(mp, *cond->DeriveUsedColumns());
+		outer_refs->Exclude(pscan->PdrgpcrOutput());
+		sel = CFilterStatsProcessor::SelectivityOfPredicate(
+				  mp, cond, pscan->Ptabdesc(),
+				  outer_refs->Size() > 0 ? outer_refs : nullptr)
+				  .Get();
+		outer_refs->Release();
+		sel = std::min(1.0, std::max(0.0, sel));
+		cond->AddRef();
+		sel_cache->m_sel.emplace(cond, sel);
+	}
+
+	const BOOL is_btree = (IMDIndex::EmdindBtree == index->IndexType());
+	constexpr DOUBLE kIndexEntrySize = 24.0;
+	const DOUBLE index_pages =
+		(index->IndexPages() > 0)
+			? static_cast<DOUBLE>(index->IndexPages())
+			: std::max(1.0, std::ceil(N * kIndexEntrySize /
+									  static_cast<DOUBLE>(BLCKSZ)));
+
+	DOUBLE num_sa_scans = CountSAOPScansAll(cond);
+	if (is_btree)
+	{
+		num_sa_scans = BtreeClampSAScans(num_sa_scans, index_pages);
+	}
+
+	// genericcostestimate: per-descent index tuples and pages.
+	DOUBLE index_tuples = std::rint(sel * N / num_sa_scans);
+	index_tuples = std::max(1.0, std::min(index_tuples, N));
+	const DOUBLE pages_per_scan =
+		(index_pages > 1.0 && N > 1.0)
+			? std::max(1.0, std::ceil(index_tuples * index_pages / N))
+			: 1.0;
+	const DOUBLE num_scans = num_sa_scans * loop_count;
+	const DOUBLE index_io =
+		(num_scans > 1.0)
+			? IndexPagesFetched(pages_per_scan * num_scans, index_pages,
+								index_pages) *
+				  random_page_cost / loop_count
+			: pages_per_scan * random_page_cost;
+	const DOUBLE index_cpu =
+		(cpu_index_tuple_cost +
+		 cpu_operator_cost * static_cast<DOUBLE>(CountQualOps(cond))) *
+		index_tuples * num_sa_scans;
+
+	DOUBLE descent = 0.0;
+	if (is_btree)
+	{
+		constexpr DOUBLE kPageCpuMultiplier = 50.0;
+		const INT h = index->TreeHeight();
+		const DOUBLE tree_height =
+			(h >= 0) ? static_cast<DOUBLE>(h)
+					 : ((index_pages > 1.0)
+							? std::max(1.0, std::floor(std::log(index_pages) /
+													   std::log(100.0)))
+							: 0.0);
+		descent = num_sa_scans *
+				  (std::ceil(std::log2(std::max(N, 1.0))) +
+				   (tree_height + 1.0) * kPageCpuMultiplier) *
+				  cpu_operator_cost;
+	}
+
+	res.cost = descent + index_io + index_cpu +
+			   0.1 * cpu_operator_cost * path_rows;
+	res.selec = sel;
+	res.index_pages = index_pages;
+	return res;
+}
+
+static SBitmapTreeCost
+BitmapTreeCost(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
+			   CExpression *e, CPhysicalScan *pscan, DOUBLE N,
+			   DOUBLE path_rows, DOUBLE loop_count)
+{
+	SBitmapTreeCost res;
+	if (nullptr == e)
+	{
+		res.valid = false;
+		return res;
+	}
+	const COperator::EOperatorId op = e->Pop()->Eopid();
+	if (COperator::EopScalarBitmapIndexProbe == op)
+	{
+		return BitmapIndexProbeCost(mp, sel_cache, e, pscan, N, path_rows,
+									loop_count);
+	}
+	if (COperator::EopScalarBitmapBoolOp != op)
+	{
+		res.valid = false;
+		return res;
+	}
+
+	const CScalarBitmapBoolOp::EBitmapBoolOp kind =
+		CScalarBitmapBoolOp::PopConvert(e->Pop())->Ebitmapboolop();
+	const BOOL is_and = (CScalarBitmapBoolOp::EbitmapboolAnd == kind);
+
+	// Flatten nested BoolOps of the same kind into one child list.
+	std::vector<CExpression *> children;
+	std::function<void(CExpression *)> flatten = [&](CExpression *node) {
+		if (COperator::EopScalarBitmapBoolOp == node->Pop()->Eopid() &&
+			CScalarBitmapBoolOp::PopConvert(node->Pop())->Ebitmapboolop() ==
+				kind)
+		{
+			for (ULONG i = 0; i < node->Arity(); i++)
+			{
+				flatten((*node)[i]);
+			}
+			return;
+		}
+		children.push_back(node);
+	};
+	flatten(e);
+
+	res.selec = is_and ? 1.0 : 0.0;
+	for (size_t i = 0; i < children.size(); i++)
+	{
+		const SBitmapTreeCost sub = BitmapTreeCost(
+			mp, sel_cache, children[i], pscan, N, path_rows, loop_count);
+		res.valid = res.valid && sub.valid;
+		res.cost += sub.cost;
+		res.index_pages += sub.index_pages;
+		const BOOL is_probe = COperator::EopScalarBitmapIndexProbe ==
+							  children[i]->Pop()->Eopid();
+		if (is_and)
+		{
+			res.selec *= sub.selec;
+			if (i > 0)
+			{
+				res.cost += 100.0 * cpu_operator_cost;
+			}
+		}
+		else
+		{
+			res.selec += sub.selec;
+			if (i > 0 && !is_probe)
+			{
+				res.cost += 100.0 * cpu_operator_cost;
+			}
+		}
+	}
+	res.selec = std::min(1.0, res.selec);
+	return res;
+}
+
+//---------------------------------------------------------------------------
+//	BitmapScanCostPerLoop
 //
 //	Port of PG cost_bitmap_heap_scan (costsize.c:1023) for ORCA's
 //	combined CPhysicalBitmapTableScan operator (which folds PG's separate
-//	Bitmap Heap Scan + Bitmap Index Scan into one node).  Composes:
+//	Bitmap Heap Scan + Bitmap Index Scan nodes into one).  Cost of one
+//	execution at the given loop_count:
 //
+//	  index     = BitmapTreeCost (cost_bitmap_tree_node over the tree)
+//	  tuples    = clamp_row_est(bitmapselectivity × N)   (compute_bitmap_pages)
 //	  heap_io   = pages_fetched × cost_per_page
 //	  cost_per_page = random − (random − seq) × sqrt(pages_fetched / T)
 //	                  when pages_fetched ≥ 2, else random
-//	  cpu_run   = (cpu_tuple_cost + qpqual.per_tuple) × tuples_fetched
-//	  index     = btcostestimate-style descent + index_io + index_cpu
-//	             + 0.1 × cpu_operator_cost × tuples_fetched   (bitmap-tree
-//	                                                            manipulation)
+//	  cpu_run   = (cpu_tuple_cost + qpqual.per_tuple) × tuples
 //
 //	Simplifications:
 //	  - No lossy-bitmap branch (PG models when maxentries < heap_pages).
-//	  - indexTotalCost computed locally instead of received from a child;
-//	    matches PG's compute_bitmap_pages call to cost_bitmap_tree_node.
-//	  - index_pages approximated as ceil(reltuples / 200).
+//	  - If some node of the bitmap tree cannot be priced, fall back to the
+//	    scan's derived rows for the heap side.
 //---------------------------------------------------------------------------
-CCost
-CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
-								  CExpressionHandle &exprhdl,
-								  const SCostingInfo *pci)
+static DOUBLE
+BitmapScanCostPerLoop(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
+					  CPhysicalScan *pscan, CExpression *pexprBitmap,
+					  DOUBLE path_rows, DOUBLE loop_count)
 {
-	GPOS_ASSERT(COperator::EopPhysicalBitmapTableScan ==
-					exprhdl.Pop()->Eopid() ||
-				COperator::EopPhysicalDynamicBitmapTableScan ==
-					exprhdl.Pop()->Eopid());
-
-	COperator *pop = exprhdl.Pop();
-	const DOUBLE tuples_fetched = std::max(1.0, pci->Rows());
-	const DOUBLE loop_count = pci->NumRebinds();
-
-	CPhysicalScan *pscan = CPhysicalScan::PopConvert(pop);
 	IStatistics *base_stats = pscan->PstatsBaseTable();
 	const DOUBLE N = std::max(1.0,
 							  CStatistics::CastStats(base_stats)->Rows().Get());
 	DOUBLE T = static_cast<DOUBLE>(
 		CStatistics::CastStats(base_stats)->RelPages());
 	if (T <= 0.0) T = 1.0;
+	path_rows = std::max(1.0, path_rows);
+	loop_count = std::max(1.0, loop_count);
+
+	const SBitmapTreeCost tree = BitmapTreeCost(mp, sel_cache, pexprBitmap,
+												pscan, N, path_rows, loop_count);
+	const DOUBLE tuples_fetched =
+		tree.valid ? std::max(1.0, std::rint(tree.selec * N)) : path_rows;
+	const DOUBLE index_pages = (tree.index_pages > 0.0) ? tree.index_pages : T;
 
 	// pages_fetched: single-scan Mackert-Lohman (PG compute_bitmap_pages),
-	// then capped at T.  For repeated scans pro-rate via index_pages_fetched.
+	// then capped at T.  For repeated scans run index_pages_fetched over
+	// tuples × loop_count and pro-rate per loop.
 	DOUBLE pages_fetched =
 		(2.0 * T * tuples_fetched) / (2.0 * T + tuples_fetched);
 	if (loop_count > 1.0)
 	{
-		// PG: scale tuples × loop, run through index_pages_fetched(table side),
-		// then divide pages by loop_count.  Approximate index_pages with T.
-		const DOUBLE total = IndexPagesFetched(
-			tuples_fetched * loop_count, T, /*index_pages_in=*/T);
-		pages_fetched = total / loop_count;
+		pages_fetched =
+			IndexPagesFetched(tuples_fetched * loop_count, T, index_pages) /
+			loop_count;
 	}
 	if (pages_fetched >= T)
 	{
@@ -2899,120 +3179,111 @@ CCostModelPG::CostBitmapTableScan(CMemoryPool *,  // mp
 	const DOUBLE heap_io = pages_fetched * cost_per_page;
 
 	// Bitmap recheck always runs the qpqual (PG: "for the moment, just
-	// assume they will be rechecked always").  child 1 holds the bitmap
-	// qual expression.
-	const ULONG n_qual_ops =
-		CountQualOps(exprhdl.PexprScalarRepChild(1));
+	// assume they will be rechecked always").
+	const ULONG n_qual_ops = CountQualOps(pexprBitmap);
 	const DOUBLE cpu_per_tuple =
 		cpu_tuple_cost + cpu_operator_cost * static_cast<DOUBLE>(n_qual_ops);
 	const DOUBLE cpu_run = cpu_per_tuple * tuples_fetched;
 
-	// Index access cost (PG's compute_bitmap_pages → cost_bitmap_tree_node
-	// → indextotalcost), modelled like CostIndexScan but only the index
-	// side — heap IO is already in heap_io above.  Walks BitmapAnd/Or
-	// trees: index_pages summed over all probes; descent + IO charged
-	// per-probe via num_index_probes.
-	DOUBLE index_pages_real = 0.0;
-	DOUBLE num_sa_scans = 1.0;
-	ULONG num_index_probes = 0;
-	BOOL all_probes_btree = true;
-	INT tree_height_max = -1;	// max real tree_height across probes, -1 unknown
-	{
-		CMDAccessor *mda_b = COptCtxt::PoctxtFromTLS()->Pmda();
-		std::function<void(CExpression *)> walk = [&](CExpression *e) {
-			if (nullptr == e) return;
-			const COperator::EOperatorId op = e->Pop()->Eopid();
-			if (COperator::EopScalarBitmapIndexProbe == op)
-			{
-				IMDId *idx_mdid =
-					CScalarBitmapIndexProbe::PopConvert(e->Pop())
-						->Pindexdesc()->MDId();
-				const IMDIndex *index = mda_b->RetrieveIndex(idx_mdid);
-				index_pages_real +=
-					static_cast<DOUBLE>(index->IndexPages());
-				num_index_probes += 1;
-				if (IMDIndex::EmdindBtree != index->IndexType())
-				{
-					all_probes_btree = false;
-				}
-				const INT h = index->TreeHeight();
-				if (h > tree_height_max) tree_height_max = h;
-				if (e->Arity() > 0 && num_index_probes == 1)
-				{
-					num_sa_scans = CountSAOPScansAll((*e)[0]);
-				}
-				return;
-			}
-			if (COperator::EopScalarBitmapBoolOp == op)
-			{
-				for (ULONG i = 0; i < e->Arity(); i++)
-					walk((*e)[i]);
-			}
-		};
-		walk(exprhdl.PexprScalarRepChild(1));
-		if (0 == num_index_probes) num_index_probes = 1;
-	}
-	constexpr DOUBLE kIndexEntrySize = 24.0;
-	const DOUBLE index_pages =
-		(index_pages_real > 0.0)
-			? index_pages_real
-			: std::max(1.0, std::ceil(N * kIndexEntrySize / static_cast<DOUBLE>(BLCKSZ)));
-	if (all_probes_btree)
-	{
-		num_sa_scans = BtreeClampSAScans(num_sa_scans, index_pages);
-	}
-	// Btree descent matches CostIndexScan (PG btcostestimate); see the
-	// detailed comment block there.  Use index->tuples ≈ N (not table
-	// pages) for log2(...), and tree_height from the real metapage when
-	// available — fall back to floor(log_100(index_pages)).
-	constexpr DOUBLE kPageCpuMultiplier = 50.0;
-	const DOUBLE tree_height =
-		(tree_height_max >= 0)
-			? static_cast<DOUBLE>(tree_height_max)
-			: ((index_pages > 1.0)
-				   ? std::max(1.0,
-							  std::floor(std::log(index_pages) / std::log(100.0)))
-				   : 0.0);
-	// Hash/gist/bitmap AMs don't pay the btree-style descent (matches
-	// CostIndexScan / 9feb33d): PG hashcostestimate / gistcostestimate
-	// return indexTotalCost without a log_2(tuples) + (h+1)×50 term.
-	// For BitmapAnd/Or trees mixing AMs (rare), conservatively skip
-	// descent when any probe is non-btree.
-	const DOUBLE descent =
-		all_probes_btree
-			? (std::ceil(std::log2(std::max(N, 1.0))) +
-			   (tree_height + 1.0) * kPageCpuMultiplier) *
-				  cpu_operator_cost
-			: 0.0;
-	const DOUBLE index_cpu =
-		(cpu_index_tuple_cost + cpu_operator_cost) * tuples_fetched;
-	const DOUBLE selectivity = std::min(1.0, tuples_fetched / N);
-	const DOUBLE index_pages_read =
-		std::max(1.0, std::ceil(selectivity * index_pages));
-	const DOUBLE index_io =
-		(loop_count > 1.0)
-			? (IndexPagesFetched(index_pages_read * loop_count, index_pages,
-								 index_pages) *
-			   random_page_cost) /
-				  loop_count
-			: index_pages_read * random_page_cost;
-	// cost_bitmap_tree_node adds 0.1 × cpu_operator_cost × tuples for the
-	// IndexPath case (manipulating the in-memory bitmap).
-	const DOUBLE bitmap_tree_cpu =
-		0.1 * cpu_operator_cost * tuples_fetched;
-	// PG btcostestimate for SAOP: descent and index_io are charged once
-	// per array element; index_cpu and bitmap_tree_cpu already account
-	// for the total tuples fetched and stay one-shot.
-	//
-	// For BitmapAnd/Or the descent + index_io fire once per probe child;
-	// scale by num_index_probes to account for the OR / AND tree.
-	const DOUBLE per_probe_index_cost =
-		num_sa_scans * (descent + index_io);
-	const DOUBLE index_total =
-		static_cast<DOUBLE>(num_index_probes) * per_probe_index_cost +
-		index_cpu + bitmap_tree_cpu;
+	return tree.cost + heap_io + cpu_run;
+}
 
-	return CCost(loop_count * (index_total + heap_io + cpu_run));
+CCost
+CCostModelPG::CostBitmapTableScan(CMemoryPool *mp,
+								  CExpressionHandle &exprhdl,
+								  const SCostingInfo *pci,
+								  CBitmapProbeSelCache *sel_cache)
+{
+	GPOS_ASSERT(COperator::EopPhysicalBitmapTableScan ==
+					exprhdl.Pop()->Eopid() ||
+				COperator::EopPhysicalDynamicBitmapTableScan ==
+					exprhdl.Pop()->Eopid());
+
+	const DOUBLE loop_count = std::max(1.0, pci->NumRebinds());
+	// child 1 holds the bitmap index tree.
+	return CCost(loop_count *
+				 BitmapScanCostPerLoop(mp, sel_cache,
+									   CPhysicalScan::PopConvert(exprhdl.Pop()),
+									   exprhdl.PexprScalarRepChild(1),
+									   pci->Rows(), loop_count));
+}
+
+// Bitmap counterpart of FindIndexScanInGroup: the BitmapTableScan group
+// expression in `group` (preferring the one whose operator is `prefer`),
+// descending through the same wrappers.
+static CGroupExpression *
+FindBitmapScanInGroup(CGroup *group, ULONG max_depth, COperator *prefer)
+{
+	if (nullptr == group || max_depth == 0 || group->FScalar()) return nullptr;
+	CGroupExpression *first = nullptr;
+	CGroupExpression *wrapper_hit = nullptr;
+	CGroupProxy gp(group);
+	for (CGroupExpression *pgexpr = gp.PgexprFirst(); nullptr != pgexpr;
+		 pgexpr = gp.PgexprNext(pgexpr))
+	{
+		COperator *op = pgexpr->Pop();
+		if (nullptr == op) continue;
+		const COperator::EOperatorId eop = op->Eopid();
+		if (COperator::EopPhysicalBitmapTableScan == eop ||
+			COperator::EopPhysicalDynamicBitmapTableScan == eop)
+		{
+			if (op == prefer) return pgexpr;
+			if (nullptr == first) first = pgexpr;
+			continue;
+		}
+		const BOOL is_wrapper =
+			(COperator::EopPhysicalFilter == eop ||
+			 COperator::EopPhysicalHashAgg == eop ||
+			 COperator::EopPhysicalStreamAgg == eop ||
+			 COperator::EopPhysicalScalarAgg == eop ||
+			 COperator::EopPhysicalComputeScalar == eop ||
+			 COperator::EopLogicalSelect == eop ||
+			 COperator::EopLogicalGbAgg == eop ||
+			 COperator::EopLogicalProject == eop);
+		if (is_wrapper && nullptr == wrapper_hit && pgexpr->Arity() > 0)
+		{
+			wrapper_hit = FindBitmapScanInGroup((*pgexpr)[0], max_depth - 1,
+												prefer);
+		}
+	}
+	return (nullptr != first) ? first : wrapper_hit;
+}
+
+// Bitmap counterpart of AmortizeIndexScanIO.  When the inner of a NL is a
+// bitmap heap scan costed with loop_count = 1, PG would have built it with
+// loop_count = outer rows (create_bitmap_heap_path), amortizing both the
+// index-page and heap-page IO through index_pages_fetched.  Swap the
+// one-shot per-probe cost for the amortized one; the CPU terms are the same
+// at both loop counts and cancel.  Same lower-bound-safe scaling as
+// AmortizeIndexScanIO when per_exec is below the one-shot cost.
+static DOUBLE
+AmortizeBitmapScanIO(CMemoryPool *mp, CBitmapProbeSelCache *sel_cache,
+					 DOUBLE per_exec, CGroupExpression *bitmap_gexpr,
+					 DOUBLE tuples_per_probe, DOUBLE outer_rows)
+{
+	if (nullptr == bitmap_gexpr || outer_rows <= 1.0 ||
+		bitmap_gexpr->Arity() < 2 || !(*bitmap_gexpr)[1]->FScalar())
+	{
+		return per_exec;
+	}
+	CExpression *pexprBitmap = (*bitmap_gexpr)[1]->PexprScalarRep();
+	if (nullptr == pexprBitmap) return per_exec;
+	CPhysicalScan *pscan = CPhysicalScan::PopConvert(bitmap_gexpr->Pop());
+	if (nullptr == pscan->PstatsBaseTable()) return per_exec;
+
+	const DOUBLE c1 = BitmapScanCostPerLoop(mp, sel_cache, pscan, pexprBitmap,
+											tuples_per_probe, 1.0);
+	const DOUBLE cn = BitmapScanCostPerLoop(mp, sel_cache, pscan, pexprBitmap,
+											tuples_per_probe, outer_rows);
+	if (c1 <= 0.0 || cn >= c1)
+	{
+		return per_exec;
+	}
+	if (per_exec >= c1)
+	{
+		return per_exec - c1 + cn;
+	}
+	return per_exec * (cn / c1);
 }
 
 //---------------------------------------------------------------------------
@@ -3660,7 +3931,7 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 
 		case COperator::EopPhysicalBitmapTableScan:
 		case COperator::EopPhysicalDynamicBitmapTableScan:
-			local = CostBitmapTableScan(m_mp, exprhdl, pci);
+			local = CostBitmapTableScan(m_mp, exprhdl, pci, m_bitmap_sel_cache);
 			break;
 
 		case COperator::EopPhysicalInnerMergeJoin:
@@ -3719,7 +3990,7 @@ CCostModelPG::Cost(CExpressionHandle &exprhdl, const SCostingInfo *pci) const
 		case COperator::EopPhysicalLeftOuterIndexNLJoin:
 		case COperator::EopPhysicalLeftSemiIndexNLJoin:
 		case COperator::EopPhysicalLeftAntiSemiIndexNLJoin:
-			local = CostNLJoin(m_mp, exprhdl, pci);
+			local = CostNLJoin(m_mp, exprhdl, pci, m_bitmap_sel_cache);
 			break;
 
 		case COperator::EopPhysicalTVF:
