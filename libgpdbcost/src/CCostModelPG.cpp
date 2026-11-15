@@ -49,6 +49,8 @@
 #include "gpopt/operators/CPredicateUtils.h"
 #include "gpopt/base/CColRefTable.h"
 #include "gpopt/base/CColRefSet.h"
+#include "gpopt/base/CColRefSetIter.h"
+#include "gpopt/base/CDrvdPropRelational.h"
 #include "gpopt/base/CKeyCollection.h"
 #include <functional>
 #include <unordered_set>
@@ -1048,6 +1050,134 @@ FindIndexScanInGroup(CGroup *group, ULONG max_depth)
 	return nullptr;
 }
 
+// The IndexScan/IndexOnlyScan group expression in `group` or below the same
+// wrappers as FindIndexScanInGroup, preferring the one whose operator is
+// `prefer`.
+static CGroupExpression *
+FindIndexScanGexprInGroup(CGroup *group, ULONG max_depth, COperator *prefer)
+{
+	if (nullptr == group || max_depth == 0 || group->FScalar()) return nullptr;
+	CGroupExpression *first = nullptr;
+	CGroupExpression *wrapper_hit = nullptr;
+	CGroupProxy gp(group);
+	for (CGroupExpression *pgexpr = gp.PgexprFirst(); nullptr != pgexpr;
+		 pgexpr = gp.PgexprNext(pgexpr))
+	{
+		COperator *op = pgexpr->Pop();
+		if (nullptr == op) continue;
+		const COperator::EOperatorId eop = op->Eopid();
+		if (COperator::EopPhysicalIndexScan == eop ||
+			COperator::EopPhysicalIndexOnlyScan == eop)
+		{
+			if (op == prefer) return pgexpr;
+			if (nullptr == first) first = pgexpr;
+			continue;
+		}
+		const BOOL is_wrapper =
+			(COperator::EopPhysicalFilter == eop ||
+			 COperator::EopPhysicalHashAgg == eop ||
+			 COperator::EopPhysicalStreamAgg == eop ||
+			 COperator::EopPhysicalScalarAgg == eop ||
+			 COperator::EopPhysicalComputeScalar == eop ||
+			 COperator::EopLogicalSelect == eop ||
+			 COperator::EopLogicalGbAgg == eop ||
+			 COperator::EopLogicalProject == eop);
+		if (is_wrapper && nullptr == wrapper_hit && pgexpr->Arity() > 0)
+		{
+			wrapper_hit =
+				FindIndexScanGexprInGroup((*pgexpr)[0], max_depth - 1, prefer);
+		}
+	}
+	return (nullptr != first) ? first : wrapper_hit;
+}
+
+// Row estimate of the base relation that produces `colref` below `group`:
+// the topmost single-table group whose output contains the column, i.e. the
+// table with its own restrictions applied (a Get, Select(Get), or a
+// single-table subquery) -- PG's outer_rel->rows for that relation.
+// Returns a negative value when no such group or its statistics is found.
+static DOUBLE
+BaseRelRowsForColumn(CGroup *group, const CColRef *colref, ULONG max_depth)
+{
+	if (nullptr == group || group->FScalar() || 0 == max_depth ||
+		nullptr == group->Pdp())
+	{
+		return -1.0;
+	}
+	CDrvdPropRelational *pdp =
+		CDrvdPropRelational::GetRelationalProperties(group->Pdp());
+	if (nullptr == pdp->GetOutputColumns() ||
+		!pdp->GetOutputColumns()->FMember(colref))
+	{
+		return -1.0;
+	}
+	CTableDescriptorHashSet *tabdescs = pdp->GetTableDescriptor();
+	if (nullptr != tabdescs && 1 == tabdescs->Size())
+	{
+		IStatistics *stats = group->Pstats();
+		return (nullptr != stats) ? stats->Rows().Get() : -1.0;
+	}
+	// A multi-table (join) group: descend into the child of its first
+	// logical expression that produces the column.
+	CGroupProxy gp(group);
+	for (CGroupExpression *pgexpr = gp.PgexprFirst(); nullptr != pgexpr;
+		 pgexpr = gp.PgexprNext(pgexpr))
+	{
+		if (!pgexpr->Pop()->FLogical()) continue;
+		for (ULONG i = 0; i < pgexpr->Arity(); i++)
+		{
+			const DOUBLE rows =
+				BaseRelRowsForColumn((*pgexpr)[i], colref, max_depth - 1);
+			if (rows > 0.0) return rows;
+		}
+		break;
+	}
+	return -1.0;
+}
+
+// PG get_loop_count (indxpath.c) for an inner scan of a NL: the number of
+// times PG assumes a parameterized path is repeated when it prices the path
+// (create_index_path / create_bitmap_heap_path loop_count).  It is the
+// smallest row estimate among the outer base relations the scan's
+// condition references -- not the NL's outer row count.  For an index on a
+// fact table probed from a dimension table (TPC-H Q11/Q21: partsupp or
+// lineitem by s_suppkey) it is the dimension's full row count, so the
+// Mackert-Lohman cache model sees each heap page fetched about once over
+// all probes even when only a filtered subset of the dimension drives the
+// join.  `cond_child` is the scan's scalar child holding the condition.
+// Falls back to `fallback` when no outer column can be traced.
+static DOUBLE
+PgLoopCount(CMemoryPool *mp, CGroup *outer_group,
+			CGroupExpression *scan_gexpr, ULONG cond_child, DOUBLE fallback)
+{
+	if (nullptr == outer_group || nullptr == scan_gexpr ||
+		scan_gexpr->Arity() <= cond_child ||
+		!(*scan_gexpr)[cond_child]->FScalar())
+	{
+		return fallback;
+	}
+	CExpression *cond = (*scan_gexpr)[cond_child]->PexprScalarRep();
+	if (nullptr == cond) return fallback;
+	CPhysicalScan *pscan = CPhysicalScan::PopConvert(scan_gexpr->Pop());
+
+	CColRefSet *outer_refs =
+		GPOS_NEW(mp) CColRefSet(mp, *cond->DeriveUsedColumns());
+	outer_refs->Exclude(pscan->PdrgpcrOutput());
+	DOUBLE result = 0.0;
+	CColRefSetIter crsi(*outer_refs);
+	while (crsi.Advance())
+	{
+		const DOUBLE rows =
+			BaseRelRowsForColumn(outer_group, crsi.Pcr(), 32 /* max_depth */);
+		if (rows > 0.0 && (0.0 == result || rows < result))
+		{
+			result = rows;
+		}
+	}
+	outer_refs->Release();
+	return (result > 0.0) ? std::max(1.0, result) : fallback;
+}
+
 // Detect whether the inner side of an INNER NL is unique on the join keys —
 // the cost-model analogue of PG's `inner_unique` flag (final_cost_nestloop
 // costsize.c:3389).  When true, each outer row matches AT MOST one inner row,
@@ -1263,6 +1393,30 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 		}
 	}
 
+	// Loop count the inner scan's IO is amortized over: PG prices a
+	// parameterized inner path with get_loop_count (see PgLoopCount), and
+	// final_cost_nestloop then charges it once per actual outer row.  The
+	// number of executions below stays outer_rows.
+	DOUBLE amortize_loops = outer_rows;
+	if (nullptr != exprhdl.Pgexpr() && exprhdl.Pgexpr()->Arity() > 1)
+	{
+		CGroup *outer_group = (*exprhdl.Pgexpr())[0];
+		if (nullptr != inner_bitmap_gexpr)
+		{
+			amortize_loops = PgLoopCount(mp, outer_group, inner_bitmap_gexpr,
+										 1 /* bitmap tree */, outer_rows);
+		}
+		else if (nullptr != inner_op &&
+				 (COperator::EopPhysicalIndexScan == inner_op->Eopid() ||
+				  COperator::EopPhysicalIndexOnlyScan == inner_op->Eopid()))
+		{
+			CGroupExpression *index_gexpr = FindIndexScanGexprInGroup(
+				(*exprhdl.Pgexpr())[1], 5 /* max_depth */, inner_op);
+			amortize_loops = PgLoopCount(mp, outer_group, index_gexpr,
+										 0 /* index condition */, outer_rows);
+		}
+	}
+
 	const COperator::EOperatorId nl_op_id = exprhdl.Pop()->Eopid();
 	const BOOL is_semi =
 		(COperator::EopPhysicalLeftSemiNLJoin == nl_op_id ||
@@ -1414,9 +1568,9 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 			(nullptr != inner_bitmap_gexpr)
 				? AmortizeBitmapScanIO(mp, sel_cache, per_exec,
 									   inner_bitmap_gexpr, inner_rows,
-									   outer_rows)
+									   amortize_loops)
 				: AmortizeIndexScanIO(per_exec, inner_op, inner_rows,
-									  outer_rows);
+									  amortize_loops);
 
 		if (has_indexed_join_quals)
 		{
@@ -1457,9 +1611,9 @@ CCostModelPG::CostNLJoin(CMemoryPool *mp,
 			per_exec = (nullptr != inner_bitmap_gexpr)
 						   ? AmortizeBitmapScanIO(mp, sel_cache, per_exec,
 												  inner_bitmap_gexpr,
-												  inner_rows, outer_rows)
+												  inner_rows, amortize_loops)
 						   : AmortizeIndexScanIO(per_exec, inner_op,
-												 inner_rows, outer_rows);
+												 inner_rows, amortize_loops);
 			extra_rescan = n_extra * per_exec;
 		}
 	}
