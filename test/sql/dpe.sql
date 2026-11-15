@@ -215,8 +215,9 @@ ANALYZE band_drv;
 -- statement quickly instead of hanging the whole test run.
 SET statement_timeout = '60s';
 
--- The plan must keep one partition selector per UNION ALL branch, nested in
--- ascending scan-id order (band_t1 outermost).
+-- The plan must keep one partition selector per UNION ALL branch.  With
+-- statistics on the partitioned roots ORCA pushes the join below the UNION
+-- ALL, so each branch gets its own Hash Join and selector (no nesting).
 EXPLAIN (costs off)
 SELECT count(*), sum(t.val)
 FROM (          SELECT eqp_id, evt_dtm, val FROM band_t1
@@ -231,9 +232,7 @@ FROM (          SELECT eqp_id, evt_dtm, val FROM band_t1
       UNION ALL SELECT eqp_id, evt_dtm, val FROM band_t10) t
 JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
 
--- Run-time pruning: every branch but the first scans 2 of its 5 partitions.
--- (The first scan id is not pruned at run time; that is a separate
--- pre-existing pg_orca gap, unchanged by the canonical-order fix.)
+-- Run-time pruning: every branch scans 2 of its 5 partitions.
 -- Counted from EXPLAIN ANALYZE rather than diffed directly, so the Hash
 -- node's memory-usage line cannot make the test machine-dependent.
 CREATE FUNCTION band_plan_summary(q text)

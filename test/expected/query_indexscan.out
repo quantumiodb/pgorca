@@ -227,14 +227,12 @@ select * from mpp23383_partitioned where b between '1' and '2' order by a limit 
 
 -- predicates on both index and non-index key
 explain (costs off) select * from mpp23383_partitioned where b='1' and a='1';
-                   QUERY PLAN                    
--------------------------------------------------
- Custom Scan (DynamicTableScan)
-   Filter: (((b)::text = '1'::text) AND (a = 1))
-   Root Table: mpp23383_partitioned
-   Partitions Selected: 1
- Optimizer: pg_orca
-(5 rows)
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
+ Index Scan using mpp23383_partitioned_p1_b_idx on mpp23383_partitioned_p1 mpp23383_partitioned
+   Index Cond: ((b)::text = '1'::text)
+   Filter: (a = 1)
+(3 rows)
 
 select * from mpp23383_partitioned where b='1' and a='1';
  a | b | c | d 
@@ -382,14 +380,12 @@ select * from mpp23383_partitioned where b between '1' and '2' order by a limit 
 
 -- predicates on both index and non-index key
 explain (costs off) select * from mpp23383_partitioned where b='1' and a='1';
-                   QUERY PLAN                    
--------------------------------------------------
- Custom Scan (DynamicTableScan)
-   Filter: (((b)::text = '1'::text) AND (a = 1))
-   Root Table: mpp23383_partitioned
-   Partitions Selected: 1
- Optimizer: pg_orca
-(5 rows)
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
+ Index Scan using mpp23383_partitioned_p1_b_idx on mpp23383_partitioned_p1 mpp23383_partitioned
+   Index Cond: ((b)::text = '1'::text)
+   Filter: (a = 1)
+(3 rows)
 
 select * from mpp23383_partitioned where b='1' and a='1';
  a | b | c | d 

@@ -1090,11 +1090,20 @@ gpdb::GetAttStats(Oid relid, AttrNumber attnum)
 {
 	GP_WRAP_START;
 	{
-		/* catalog tables: pg_statistic */
+		/*
+		 * catalog tables: pg_statistic.  A partitioned table holds no rows of
+		 * its own, so ANALYZE stores only its inheritance statistics
+		 * (stainherit = true) -- the whole partition tree -- and PG's planner
+		 * reads exactly those for it (examine_variable passes rte->inh, true
+		 * for a partitioned table).  Plain tables and leaf partitions keep
+		 * their own (stainherit = false) row.
+		 */
+		const bool inh =
+			(get_rel_relkind(relid) == RELKIND_PARTITIONED_TABLE);
 		return SearchSysCache3(STATRELATTINH,
 							   ObjectIdGetDatum(relid),
 							   Int16GetDatum(attnum),
-							   BoolGetDatum(false));
+							   BoolGetDatum(inh));
 	}
 	GP_WRAP_END;
 	return nullptr;

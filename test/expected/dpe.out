@@ -37,19 +37,20 @@ EXPLAIN (costs off)
 SELECT t.a, p.b
 FROM   t JOIN p ON t.a = p.a
 ORDER BY t.a;
-                 QUERY PLAN                 
---------------------------------------------
- Merge Join
-   Merge Cond: (t.a = a)
-   ->  Sort
-         Sort Key: t.a
-         ->  Seq Scan on t
-   ->  Sort
-         Sort Key: a
+                    QUERY PLAN                     
+---------------------------------------------------
+ Sort
+   Sort Key: t.a
+   ->  Hash Join
+         Hash Cond: (a = t.a)
          ->  Custom Scan (DynamicTableScan)
                Root Table: p
+         ->  Hash
+               ->  Custom Scan (PartitionSelector)
+                     Root Table: p
+                     ->  Seq Scan on t
  Optimizer: pg_orca
-(10 rows)
+(11 rows)
 
 -- Verify correctness
 SELECT t.a, p.b
@@ -71,22 +72,23 @@ SELECT t.a, p.b
 FROM   t JOIN p ON t.a = p.a
 WHERE  p.a BETWEEN 501 AND 1000
 ORDER BY t.a;
-                     QUERY PLAN                     
-----------------------------------------------------
- Merge Join
-   Merge Cond: (t.a = a)
-   ->  Sort
-         Sort Key: t.a
-         ->  Seq Scan on t
-               Filter: ((a >= 501) AND (a <= 1000))
-   ->  Sort
-         Sort Key: a
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Sort
+   Sort Key: t.a
+   ->  Hash Join
+         Hash Cond: (a = t.a)
          ->  Custom Scan (DynamicTableScan)
                Filter: ((a >= 501) AND (a <= 1000))
                Root Table: p
                Partitions Selected: 1
+         ->  Hash
+               ->  Custom Scan (PartitionSelector)
+                     Root Table: p
+                     ->  Seq Scan on t
+                           Filter: ((a >= 501) AND (a <= 1000))
  Optimizer: pg_orca
-(13 rows)
+(14 rows)
 
 SELECT t.a, p.b
 FROM   t JOIN p ON t.a = p.a
@@ -111,22 +113,23 @@ LIMIT  5;
                         QUERY PLAN                         
 -----------------------------------------------------------
  Limit
-   ->  Merge Join
-         Merge Cond: (p1.a = p2.a)
-         ->  Sort
-               Sort Key: p1.a
+   ->  Sort
+         Sort Key: p1.a
+         ->  Hash Join
+               Hash Cond: (p1.a = p2.a)
                ->  Custom Scan (DynamicTableScan)
                      Filter: ((a >= 1001) AND (a <= 1500))
                      Root Table: p
                      Partitions Selected: 1
-         ->  Sort
-               Sort Key: p2.a
-               ->  Custom Scan (DynamicTableScan)
-                     Filter: ((a >= 1001) AND (a <= 1500))
-                     Root Table: p
-                     Partitions Selected: 1
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: p
+                           ->  Custom Scan (DynamicTableScan)
+                                 Filter: ((a >= 1001) AND (a <= 1500))
+                                 Root Table: p
+                                 Partitions Selected: 1
  Optimizer: pg_orca
-(16 rows)
+(17 rows)
 
 SELECT p1.a, p1.b
 FROM   p p1 JOIN p p2 ON p1.a = p2.a
@@ -154,22 +157,23 @@ LIMIT  5;
                       QUERY PLAN                       
 -------------------------------------------------------
  Limit
-   ->  Merge Join
-         Merge Cond: (p.a = q.a)
-         ->  Sort
-               Sort Key: p.a
+   ->  Sort
+         Sort Key: p.a
+         ->  Hash Join
+               Hash Cond: (p.a = q.a)
                ->  Custom Scan (DynamicTableScan)
                      Filter: ((a >= 1) AND (a <= 500))
                      Root Table: p
                      Partitions Selected: 1
-         ->  Sort
-               Sort Key: q.a
-               ->  Custom Scan (DynamicTableScan)
-                     Filter: ((a >= 1) AND (a <= 500))
-                     Root Table: q
-                     Partitions Selected: 1
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: p
+                           ->  Custom Scan (DynamicTableScan)
+                                 Filter: ((a >= 1) AND (a <= 500))
+                                 Root Table: q
+                                 Partitions Selected: 1
  Optimizer: pg_orca
-(16 rows)
+(17 rows)
 
 SELECT p.a, p.b, q.c
 FROM   p JOIN q ON p.a = q.a
@@ -316,8 +320,9 @@ ANALYZE band_drv;
 -- If the exponential-context blowup is ever reintroduced, fail this
 -- statement quickly instead of hanging the whole test run.
 SET statement_timeout = '60s';
--- The plan must keep one partition selector per UNION ALL branch, nested in
--- ascending scan-id order (band_t1 outermost).
+-- The plan must keep one partition selector per UNION ALL branch.  With
+-- statistics on the partitioned roots ORCA pushes the join below the UNION
+-- ALL, so each branch gets its own Hash Join and selector (no nesting).
 EXPLAIN (costs off)
 SELECT count(*), sum(t.val)
 FROM (          SELECT eqp_id, evt_dtm, val FROM band_t1
@@ -334,57 +339,91 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt;
                                                QUERY PLAN                                                
 ---------------------------------------------------------------------------------------------------------
  Aggregate
-   ->  Hash Join
-         Hash Cond: (evt_dtm = ap.from_dt)
-         ->  Append
+   ->  Append
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t1
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t1
+                           ->  Seq Scan on band_drv ap
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_1.from_dt)
                ->  Custom Scan (DynamicTableScan)
                      Root Table: band_t2
-               ->  Custom Scan (DynamicTableScan)
-                     Root Table: band_t3
-               ->  Custom Scan (DynamicTableScan)
-                     Root Table: band_t4
-               ->  Custom Scan (DynamicTableScan)
-                     Root Table: band_t5
-               ->  Custom Scan (DynamicTableScan)
-                     Root Table: band_t6
-               ->  Custom Scan (DynamicTableScan)
-                     Root Table: band_t7
-               ->  Custom Scan (DynamicTableScan)
-                     Root Table: band_t8
-               ->  Custom Scan (DynamicTableScan)
-                     Root Table: band_t9
-               ->  Custom Scan (DynamicTableScan)
-                     Root Table: band_t10
-         ->  Hash
-               ->  Custom Scan (PartitionSelector)
-                     Root Table: band_t1
+               ->  Hash
                      ->  Custom Scan (PartitionSelector)
                            Root Table: band_t2
-                           ->  Custom Scan (PartitionSelector)
-                                 Root Table: band_t3
-                                 ->  Custom Scan (PartitionSelector)
-                                       Root Table: band_t4
-                                       ->  Custom Scan (PartitionSelector)
-                                             Root Table: band_t5
-                                             ->  Custom Scan (PartitionSelector)
-                                                   Root Table: band_t6
-                                                   ->  Custom Scan (PartitionSelector)
-                                                         Root Table: band_t7
-                                                         ->  Custom Scan (PartitionSelector)
-                                                               Root Table: band_t8
-                                                               ->  Custom Scan (PartitionSelector)
-                                                                     Root Table: band_t9
-                                                                     ->  Custom Scan (PartitionSelector)
-                                                                           Root Table: band_t10
-                                                                           ->  Seq Scan on band_drv ap
+                           ->  Seq Scan on band_drv ap_1
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_2.from_dt)
+               ->  Custom Scan (DynamicTableScan)
+                     Root Table: band_t3
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t3
+                           ->  Seq Scan on band_drv ap_2
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_3.from_dt)
+               ->  Custom Scan (DynamicTableScan)
+                     Root Table: band_t4
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t4
+                           ->  Seq Scan on band_drv ap_3
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_4.from_dt)
+               ->  Custom Scan (DynamicTableScan)
+                     Root Table: band_t5
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t5
+                           ->  Seq Scan on band_drv ap_4
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_5.from_dt)
+               ->  Custom Scan (DynamicTableScan)
+                     Root Table: band_t6
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t6
+                           ->  Seq Scan on band_drv ap_5
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_6.from_dt)
+               ->  Custom Scan (DynamicTableScan)
+                     Root Table: band_t7
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t7
+                           ->  Seq Scan on band_drv ap_6
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_7.from_dt)
+               ->  Custom Scan (DynamicTableScan)
+                     Root Table: band_t8
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t8
+                           ->  Seq Scan on band_drv ap_7
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_8.from_dt)
+               ->  Custom Scan (DynamicTableScan)
+                     Root Table: band_t9
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t9
+                           ->  Seq Scan on band_drv ap_8
+         ->  Hash Join
+               Hash Cond: (evt_dtm = ap_9.from_dt)
+               ->  Custom Scan (DynamicTableScan)
+                     Root Table: band_t10
+               ->  Hash
+                     ->  Custom Scan (PartitionSelector)
+                           Root Table: band_t10
+                           ->  Seq Scan on band_drv ap_9
  Optimizer: pg_orca
-(47 rows)
+(83 rows)
 
--- Run-time pruning: every branch but the first scans 2 of its 5 partitions.
--- (The first scan id is not pruned at run time; that is a separate
--- pre-existing pg_orca gap, unchanged by the canonical-order fix.)
+-- Run-time pruning: every branch scans 2 of its 5 partitions.
 -- Counted from EXPLAIN ANALYZE rather than diffed directly, so the Hash
 -- node's memory-usage line cannot make the test machine-dependent.
 CREATE FUNCTION band_plan_summary(q text)
@@ -425,7 +464,7 @@ JOIN band_drv ap ON t.evt_dtm = ap.from_dt
 $q$);
  selectors | dyn_scans | scanned_2 | scanned_5 
 -----------+-----------+-----------+-----------
-        10 |        10 |         9 |         1
+        10 |        10 |        10 |         0
 (1 row)
 
 SELECT count(*), sum(t.val)
