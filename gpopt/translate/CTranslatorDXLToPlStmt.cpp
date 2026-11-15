@@ -4329,7 +4329,35 @@ CTranslatorDXLToPlStmt::TranslateDXLPartSelector(
 		 * creating a shared-subtree (DAG) in the plan tree. */
 		cs->custom_plans = NIL;
 		cs->scan.plan.lefttree = child_plan;
-		cs->scan.plan.targetlist = child_plan->targetlist;
+		// Passthrough targetlist: OUTER_VAR references to the child's output
+		// columns, as setrefs.c set_dummy_tlist_references builds them.
+		// Copying child_plan->targetlist instead only works when the child is
+		// a scan: a join child's tlist holds its own INNER_VAR/OUTER_VAR
+		// references, which mean nothing one level up (EXPLAIN then fails
+		// with "bogus varno" while deparsing the parent's hash clause).
+		{
+			List *passthrough_tlist = NIL;
+			ListCell *lc_te;
+			foreach (lc_te, child_plan->targetlist)
+			{
+				TargetEntry *child_te = (TargetEntry *) lfirst(lc_te);
+				Var *var = makeVarFromTargetEntry(OUTER_VAR, child_te);
+				if (IsA(child_te->expr, Var))
+				{
+					var->varnosyn = ((Var *) child_te->expr)->varnosyn;
+					var->varattnosyn = ((Var *) child_te->expr)->varattnosyn;
+				}
+				else
+				{
+					var->varnosyn = 0;
+					var->varattnosyn = 0;
+				}
+				TargetEntry *te = flatCopyTargetEntry(child_te);
+				te->expr = (Expr *) var;
+				passthrough_tlist = lappend(passthrough_tlist, te);
+			}
+			cs->scan.plan.targetlist = passthrough_tlist;
+		}
 
 		Plan *plan = &cs->scan.plan;
 		plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
