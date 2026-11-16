@@ -566,8 +566,16 @@ CStatistics::AppendStats(CMemoryPool *mp, IStatistics *input_stats)
 		m_colid_to_attno_mapping = attnos_new;
 	}
 
+	// Attnos are only meaningful relative to m_ext_stats' base relation, so
+	// merging is only valid for stats objects describing the same relation;
+	// all callers merge stats of the same memo group / expression today.
+	GPOS_ASSERT(nullptr == m_ext_stats || nullptr == stats->m_ext_stats ||
+				m_ext_stats == stats->m_ext_stats);
+
 	if (nullptr == m_ext_stats)
 	{
+		// non-owning pointer, kept alive by the MD cache (never released by
+		// ~CStatistics and never AddRef'd)
 		m_ext_stats = stats->m_ext_stats;
 	}
 	GPOS_CHECK_ABORT;

@@ -34,6 +34,20 @@
 using namespace gpopt;
 
 /*
+ * A colid -> attno mapping entry is usable for extended-statistics estimation
+ * only if it exists and refers to a user column. Unlike the backend, ORCA has
+ * to translate its column ids back to attnos and the mapping is not
+ * guaranteed to cover every column. System columns (attno <= 0) are never
+ * covered by extended statistics and cannot be represented in a CBitSet; the
+ * backend rejects them too (dependency_is_compatible_clause()).
+ */
+static BOOL
+FUsableAttno(const INT *attnum)
+{
+	return nullptr != attnum && 0 < *attnum;
+}
+
+/*
  * A functional dependency states that equal values of the determining
  * columns imply an equal value of the implied column, so only an equality
  * comparison against a non-null constant can be matched to one; a range
@@ -391,13 +405,11 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
 		{
 			ULONG colid = child_pred->GetColId();
 			INT *attnum = colid_to_attno_mapping->Find(&colid);
-			if (nullptr == attnum)
+			if (!FUsableAttno(attnum))
 			{
 				/*
-				 * Unlike the backend, ORCA has to translate its column ids
-				 * back to attnos and the mapping is not guaranteed to cover
-				 * every column of the statistics object. Skip such clauses;
-				 * they fall back to the independence assumption.
+				 * Skip such clauses; they fall back to the independence
+				 * assumption.
 				 */
 				continue;
 			}
@@ -482,9 +494,10 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
 
 			ULONG colid = child_pred->GetColId();
 			INT *attnum = colid_to_attno_mapping->Find(&colid);
-			if (nullptr == attnum)
+			if (!FUsableAttno(attnum))
 			{
-				/* no colid -> attno mapping for this clause; see above */
+				/* no usable attno for this clause; it was never collected
+				 * into clauses_attnums by the pre-processing loop above */
 				continue;
 			}
 
@@ -679,10 +692,21 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToNDistinctCalculation(
 		ULONG colid = *(*src_grouping_cols)[ul];
 
 		INT *attnum = colid_to_attno_mapping->Find(&colid);
-		if (!attnum)
+		if (nullptr == attnum)
 		{
+			/* no colid -> attno mapping; extended stats are unusable */
 			attnums->Release();
 			return false;
+		}
+		if (0 >= *attnum)
+		{
+			/*
+			 * System column: extended statistics never cover it and CBitSet
+			 * cannot represent it. Skip just this column; it never enters
+			 * 'attnums', so it stays unmatched below and is kept for the
+			 * regular per-column ndistinct path.
+			 */
+			continue;
 		}
 		attnums->ExchangeSet(*attnum);
 	}
