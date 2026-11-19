@@ -34,18 +34,21 @@ using namespace gpopt;
 CPhysicalTVF::CPhysicalTVF(CMemoryPool *mp, IMDId *mdid_func,
 						   IMDId *mdid_return_type, CWStringConst *str,
 						   CColumnDescriptorArray *pdrgpcoldesc,
-						   CColRefSet *pcrsOutput)
+						   CColRefArray *pdrgpcrOutput)
 	: CPhysical(mp),
 	  m_func_mdid(mdid_func),
 	  m_return_type_mdid(mdid_return_type),
 	  m_pstr(str),
 	  m_pdrgpcoldesc(pdrgpcoldesc),
-	  m_pcrsOutput(pcrsOutput)
+	  m_pdrgpcrOutput(pdrgpcrOutput),
+	  m_pcrsOutput(nullptr)
 {
 	GPOS_ASSERT(m_return_type_mdid->IsValid());
 	GPOS_ASSERT(nullptr != m_pstr);
 	GPOS_ASSERT(nullptr != m_pdrgpcoldesc);
-	GPOS_ASSERT(nullptr != m_pcrsOutput);
+	GPOS_ASSERT(nullptr != m_pdrgpcrOutput);
+
+	m_pcrsOutput = GPOS_NEW(mp) CColRefSet(mp, m_pdrgpcrOutput);
 
 	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
 	if (m_func_mdid->IsValid())
@@ -72,6 +75,7 @@ CPhysicalTVF::~CPhysicalTVF()
 	m_func_mdid->Release();
 	m_return_type_mdid->Release();
 	m_pdrgpcoldesc->Release();
+	m_pdrgpcrOutput->Release();
 	m_pcrsOutput->Release();
 	GPOS_DELETE(m_pstr);
 }
@@ -94,7 +98,7 @@ CPhysicalTVF::Matches(COperator *pop) const
 		return m_func_mdid->Equals(popTVF->FuncMdId()) &&
 			   m_return_type_mdid->Equals(popTVF->ReturnTypeMdId()) &&
 			   m_pdrgpcoldesc == popTVF->Pdrgpcoldesc() &&
-			   m_pcrsOutput->Equals(popTVF->DeriveOutputColumns());
+			   m_pdrgpcrOutput->Equals(popTVF->PdrgpcrOutput());
 	}
 
 	return false;

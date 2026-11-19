@@ -1982,7 +1982,6 @@ CTranslatorDXLToPlStmt::TranslateDXLTvf(
 	const CDXLNode *tvf_dxlnode, CDXLTranslateContext *output_context,
 	CDXLTranslationContextArray * /*ctxt_translation_prev_siblings*/)
 {
-	CDXLPhysicalTVF *dxlop = CDXLPhysicalTVF::Cast(tvf_dxlnode->GetOperator());
 	// translation context for column mappings
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
@@ -2019,10 +2018,10 @@ CTranslatorDXLToPlStmt::TranslateDXLTvf(
 	List *target_list = TranslateDXLProjList(
 		project_list_dxlnode, &base_table_context, nullptr, output_context);
 
-	if (dxlop->FuncMdId()->IsValid())
-	{
-		target_list = gpdb::ProcessRecordFuncTargetList(CMDIdGPDB::CastMdid(dxlop->FuncMdId())->Oid(), target_list);
-	}
+	// ORCA lists the columns in the order of the function's result row, so
+	// the n-th target entry is the n-th result attribute; no renumbering
+	// (matching resnames against OUT parameter names misplaced columns whose
+	// alias reuses another OUT parameter's name)
 	plan->targetlist = target_list;
 
 	ListCell *lc_target_entry = nullptr;

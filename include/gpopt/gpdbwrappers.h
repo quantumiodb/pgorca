@@ -315,9 +315,6 @@ char *GetFuncName(Oid funcid);
 // output argument types of the given function
 List *GetFuncOutputArgTypes(Oid funcid);
 
-// process targetlist when function return type is record
-List *ProcessRecordFuncTargetList(Oid funcid, List *targetList);
-
 // argument types of the given function
 List *GetFuncArgTypes(Oid funcid);
 
