@@ -676,6 +676,67 @@ CTranslatorDXLToPlStmt::SetParamIds(Plan *plan)
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CTranslatorDXLToPlStmt::GetAggParams
+//
+//	@doc:
+//		Collect the PARAM_EXEC params referenced in the arguments and FILTER
+//		clauses of the aggregate calls of a hashed Agg, as PostgreSQL's
+//		finalize_plan() / finalize_agg_primnode() do for Agg.aggParams.
+//
+//		On rescan, ExecReScanAgg() keeps a filled hash table when the Agg's
+//		input has no changed params and no changed param is in aggParams.  If
+//		an outer reference appears only inside an aggregate, as in
+//
+//		  generate_series(1, 3) s1,
+//		  lateral (select s2, sum(s1 + s2) from generate_series(1, 3) s2
+//		           group by s2)
+//
+//		the input (generate_series s2) never changes, so with aggParams left
+//		NULL every rescan returned the sums computed for the first s1.
+//		Direct arguments of ordered-set aggregates are skipped, as in PG:
+//		they are evaluated per group, not folded into the hash table.
+//
+//---------------------------------------------------------------------------
+Bitmapset *
+CTranslatorDXLToPlStmt::GetAggParams(Agg *agg)
+{
+	Bitmapset *aggparams = nullptr;
+	List *exprs = gpdb::LAppend(
+		gpdb::LAppend(NIL, agg->plan.targetlist), agg->plan.qual);
+
+	ListCell *lc_expr;
+	ForEach(lc_expr, exprs)
+	{
+		List *aggrefs = gpdb::ExtractNodesExpression(
+			(Node *) lfirst(lc_expr), T_Aggref,
+			false /* descend_into_subqueries */);
+		ListCell *lc_aggref;
+		ForEach(lc_aggref, aggrefs)
+		{
+			Aggref *aggref = (Aggref *) lfirst(lc_aggref);
+			List *params = gpdb::ListConcat(
+				gpdb::ExtractNodesExpression((Node *) aggref->args, T_Param,
+											 true /* descend_into_subqueries */),
+				gpdb::ExtractNodesExpression((Node *) aggref->aggfilter,
+											 T_Param,
+											 true /* descend_into_subqueries */));
+			ListCell *lc_param;
+			ForEach(lc_param, params)
+			{
+				Param *param = (Param *) lfirst(lc_param);
+				if (PARAM_EXEC == param->paramkind)
+				{
+					aggparams = gpdb::BmsAddMember(aggparams, param->paramid);
+				}
+			}
+		}
+	}
+
+	return aggparams;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CTranslatorDXLToPlStmt::FinalizeParamIds
 //
 //	@doc:
@@ -761,6 +822,15 @@ CTranslatorDXLToPlStmt::FinalizeParamIds(Plan *plan)
 		{
 			foreach (lc, ((CustomScan *) plan)->custom_plans)
 				FinalizeParamIds((Plan *) lfirst(lc));
+			break;
+		}
+		case T_Agg:
+		{
+			Agg *agg = (Agg *) plan;
+			if (AGG_HASHED == agg->aggstrategy)
+			{
+				agg->aggParams = GetAggParams(agg);
+			}
 			break;
 		}
 		default:
