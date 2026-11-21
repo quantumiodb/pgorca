@@ -29,8 +29,8 @@ SELECT count(*) FROM lt1,
            LATERAL (SELECT lt2.c AS x OFFSET 0) s0
            JOIN lt3 ON lt3.k = lt1.a
            WHERE lt3.v = lt2.b % 100 + s0.x) ss;
-                           QUERY PLAN                            
------------------------------------------------------------------
+                       QUERY PLAN                       
+--------------------------------------------------------
  Aggregate
    ->  Hash Join
          Hash Cond: (((lt2.b % 100) + (lt2.c)) = lt3.v)
@@ -45,14 +45,10 @@ SELECT count(*) FROM lt1,
                      Join Filter: true
                      ->  Seq Scan on lt1
                      ->  Materialize
-                           ->  Result
-                                 Filter: (lt1.a = lt3.k)
-                                 ->  Result
-                                       Filter: (lt1.a = lt3.k)
-                                       ->  Seq Scan on lt3
-                                             Filter: (k = lt1.a)
+                           ->  Seq Scan on lt3
+                                 Filter: (k = lt1.a)
  Optimizer: pg_orca
-(21 rows)
+(17 rows)
 
 SELECT count(*), sum(a + b + k + v) FROM lt1,
   LATERAL (SELECT * FROM lt2,
@@ -62,6 +58,31 @@ SELECT count(*), sum(a + b + k + v) FROM lt1,
  count |  sum   
 -------+--------
    200 | 992100
+(1 row)
+
+-- the predicates inferred from "lt3.k = lt1.a" ("lt1.a = lt3.k") are merged
+-- into the scan's filter instead of stacking one Result filter per round
+-- of predicate inference
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM lt1,
+  LATERAL (SELECT * FROM lt3 WHERE lt3.k = lt1.a OFFSET 0) s;
+               QUERY PLAN                
+-----------------------------------------
+ Aggregate
+   ->  Nested Loop
+         Join Filter: true
+         ->  Seq Scan on lt1
+         ->  Materialize
+               ->  Seq Scan on lt3
+                     Filter: (k = lt1.a)
+ Optimizer: pg_orca
+(8 rows)
+
+SELECT count(*) FROM lt1,
+  LATERAL (SELECT * FROM lt3 WHERE lt3.k = lt1.a OFFSET 0) s;
+ count 
+-------
+     5
 (1 row)
 
 -- LEFT JOIN whose ON clause uses the LATERAL reference

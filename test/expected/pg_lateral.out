@@ -220,24 +220,20 @@ explain (costs off)
   select * from generate_series(100,200) g,
     lateral (select * from int8_tbl a where g = q1 union all
              select * from int8_tbl b where g = q2) ss;
-                      QUERY PLAN                      
-------------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Nested Loop
    Join Filter: true
    ->  Function Scan on generate_series g
    ->  Append
          ->  Materialize
-               ->  Result
-                     Filter: (g.g = a.q1)
-                     ->  Result
-                           Filter: (g.g = a.q1)
-                           ->  Seq Scan on int8_tbl a
-                                 Filter: (g.g = q1)
+               ->  Seq Scan on int8_tbl a
+                     Filter: (g.g = q1)
          ->  Materialize
                ->  Seq Scan on int8_tbl b
                      Filter: (g.g = q2)
  Optimizer: pg_orca
-(15 rows)
+(11 rows)
 
 select * from generate_series(100,200) g,
   lateral (select * from int8_tbl a where g = q1 union all
@@ -724,11 +720,11 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
              QUERY PLAN              
 -------------------------------------
  Nested Loop Left Join
-   Output: i.f1, (COALESCE(i.*))
+   Output: i.f1, (i.*)
    ->  Seq Scan on public.int4_tbl i
          Output: i.f1, i.*
    ->  Seq Scan on public.int2_tbl j
-         Output: j.f1, COALESCE(i.*)
+         Output: j.f1, i.*
          Filter: (i.f1 = j.f1)
 (7 rows)
 
