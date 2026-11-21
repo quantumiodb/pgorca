@@ -28,9 +28,16 @@
 #include "gpopt/operators/CLogicalSequenceProject.h"
 #include "gpopt/operators/CLogicalSetOp.h"
 #include "gpopt/operators/CPredicateUtils.h"
+#include "gpopt/operators/CScalarArrayCmp.h"
+#include "gpopt/operators/CScalarCast.h"
+#include "gpopt/operators/CScalarCmp.h"
+#include "gpopt/operators/CScalarIdent.h"
+#include "gpopt/operators/CScalarOp.h"
 #include "gpopt/operators/CScalarNAryJoinPredList.h"
 #include "gpopt/operators/CScalarProjectElement.h"
 #include "gpopt/operators/CScalarProjectList.h"
+#include "naucrates/md/IMDScalarOp.h"
+#include "naucrates/md/IMDType.h"
 
 using namespace gpopt;
 
@@ -56,6 +63,168 @@ CNormalizer::FPushThruOuterChild(CExpression *pexprLogical)
 		   COperator::EopLogicalLeftOuterCorrelatedApply == op_id ||
 		   CUtils::FLeftAntiSemiApply(pexprLogical->Pop()) ||
 		   CUtils::FLeftSemiApply(pexprLogical->Pop());
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CNormalizer::FOpCompatibleWithGrouping
+//
+//	@doc:
+//		Check if operator 'mdid_op', applied directly to grouping column
+//		'colref', agrees with the equality the grouping uses for that column.
+//
+//		Grouping (GROUP BY, DISTINCT, window PARTITION BY, set operations)
+//		compares a column with its type's default equality, that is the
+//		equality of the type's default btree or hash opfamily.  An operator
+//		that is a member of neither family may draw finer distinctions: for
+//		example record_image_ops' *= tells row(1.0) from row(1.00), which
+//		record_ops' = considers equal.  Such a predicate cannot be evaluated
+//		below the grouping, because it would filter rows the grouping merges
+//		with rows it keeps.
+//
+//		As in PostgreSQL's expression_has_grouping_conflict(), only operators
+//		that belong to some opfamily are treated as comparisons; any other
+//		operator or function over the column is accepted.  ORCA does not
+//		record the access method of an opfamily, so an operator that is only
+//		in, say, a GiST family is also checked here.  That only costs a
+//		pushdown, never a wrong result.
+//
+//---------------------------------------------------------------------------
+BOOL
+CNormalizer::FOpCompatibleWithGrouping(IMDId *mdid_op, const CColRef *colref)
+{
+	GPOS_ASSERT(nullptr != mdid_op);
+	GPOS_ASSERT(nullptr != colref);
+
+	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
+	const IMDScalarOp *md_op = md_accessor->RetrieveScOp(mdid_op);
+	const ULONG num_opfamilies = md_op->OpfamiliesCount();
+	if (0 == num_opfamilies)
+	{
+		return true;
+	}
+
+	const IMDType *md_type = colref->RetrieveType();
+	IMDId *mdid_btree_opfamily = md_type->GetPartOpfamilyMdid();
+	IMDId *mdid_hash_opfamily = md_type->GetDistrOpfamilyMdid();
+	for (ULONG ul = 0; ul < num_opfamilies; ul++)
+	{
+		IMDId *mdid_opfamily = md_op->OpfamilyMdidAt(ul);
+		if ((nullptr != mdid_btree_opfamily &&
+			 mdid_btree_opfamily->Equals(mdid_opfamily)) ||
+			(nullptr != mdid_hash_opfamily &&
+			 mdid_hash_opfamily->Equals(mdid_opfamily)))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CNormalizer::FGroupingOperandConflict
+//
+//	@doc:
+//		Check one operand of a comparison using operator 'mdid_op'.  A
+//		grouping column, possibly under binary-coercible casts, is a direct
+//		operand and is checked against the operator; anything else is walked
+//		as an ordinary expression.
+//
+//---------------------------------------------------------------------------
+BOOL
+CNormalizer::FGroupingOperandConflict(CExpression *pexprOperand,
+									  IMDId *mdid_op, CColRefSet *pcrsGrouping)
+{
+	CExpression *pexpr = pexprOperand;
+	while (COperator::EopScalarCast == pexpr->Pop()->Eopid() &&
+		   CScalarCast::PopConvert(pexpr->Pop())->IsBinaryCoercible() &&
+		   1 == pexpr->Arity())
+	{
+		pexpr = (*pexpr)[0];
+	}
+
+	if (COperator::EopScalarIdent == pexpr->Pop()->Eopid())
+	{
+		const CColRef *colref =
+			CScalarIdent::PopConvert(pexpr->Pop())->Pcr();
+		if (pcrsGrouping->FMember(colref))
+		{
+			return !FOpCompatibleWithGrouping(mdid_op, colref);
+		}
+		return false;
+	}
+
+	return FHasGroupingConflict(pexprOperand, pcrsGrouping);
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CNormalizer::FHasGroupingConflict
+//
+//	@doc:
+//		Check if predicate 'pexprPred' would tell apart rows that a grouping
+//		on 'pcrsGrouping' considers equal, so that it must stay above the
+//		grouping.  This is ORCA's counterpart of PostgreSQL's
+//		expression_has_grouping_conflict() (commit 98d5d7ee641), minus the
+//		nondeterministic-collation half: queries with non-default collations
+//		never reach ORCA.
+//
+//---------------------------------------------------------------------------
+BOOL
+CNormalizer::FHasGroupingConflict(CExpression *pexprPred,
+								  CColRefSet *pcrsGrouping)
+{
+	GPOS_CHECK_STACK_SIZE;
+	GPOS_ASSERT(nullptr != pexprPred);
+	GPOS_ASSERT(nullptr != pcrsGrouping);
+
+	COperator *pop = pexprPred->Pop();
+	if (!pop->FScalar())
+	{
+		// subquery: its own grouping is not ours to check, and a grouping
+		// column used inside it is an outer reference, not a comparison
+		// operand we can see here
+		return false;
+	}
+
+	IMDId *mdid_op = nullptr;
+	switch (pop->Eopid())
+	{
+		case COperator::EopScalarCmp:
+		case COperator::EopScalarIsDistinctFrom:
+			// CScalarIsDistinctFrom derives from CScalarCmp
+			mdid_op = dynamic_cast<CScalarCmp *>(pop)->MdIdOp();
+			break;
+		case COperator::EopScalarArrayCmp:
+			mdid_op = CScalarArrayCmp::PopConvert(pop)->MdIdOp();
+			break;
+		case COperator::EopScalarOp:
+			mdid_op = CScalarOp::PopConvert(pop)->MdIdOp();
+			break;
+		default:
+			break;
+	}
+
+	const ULONG arity = pexprPred->Arity();
+	for (ULONG ul = 0; ul < arity; ul++)
+	{
+		CExpression *pexprChild = (*pexprPred)[ul];
+		BOOL conflict = (nullptr != mdid_op && mdid_op->IsValid())
+							? FGroupingOperandConflict(pexprChild, mdid_op,
+													   pcrsGrouping)
+							: FHasGroupingConflict(pexprChild, pcrsGrouping);
+		if (conflict)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 
@@ -90,9 +259,12 @@ CNormalizer::FPushableThruSeqPrjChild(CExpression *pexprSeqPrj,
 		CColRefSet *pcrsUsed = pexprPred->DeriveUsedColumns();
 		CColRefSet *pcrsPartCols = CUtils::PcrsExtractColumns(
 			mp, CDistributionSpecHashed::PdsConvert(pds)->Pdrgpexpr());
-		if (pcrsPartCols->ContainsAll(pcrsUsed))
+		if (pcrsPartCols->ContainsAll(pcrsUsed) &&
+			!FHasGroupingConflict(pexprPred, pcrsPartCols))
 		{
-			// predicate is pushable if used columns are included in partition-by expression
+			// predicate is pushable if used columns are included in
+			// partition-by expression, and it compares them the way the
+			// partitioning does
 			fPushable = true;
 		}
 		pcrsPartCols->Release();
@@ -137,6 +309,23 @@ CNormalizer::FPushable(CExpression *pexprLogical, CExpression *pexprPred)
 		0 == CLogicalGbAgg::PopConvert(pexprLogical->Pop())->Pdrgpcr()->Size())
 	{
 		return false;
+	}
+
+	// do not push a predicate below a grouping if it compares a grouping
+	// column with an equality other than the grouping's own (e.g. HAVING
+	// a *= x over GROUP BY a, or WHERE a *= x over SELECT DISTINCT a)
+	if (COperator::EopLogicalGbAgg == pexprLogical->Pop()->Eopid())
+	{
+		CAutoMemoryPool amp;
+		CColRefSet *pcrsGrouping = GPOS_NEW(amp.Pmp()) CColRefSet(
+			amp.Pmp(),
+			CLogicalGbAgg::PopConvert(pexprLogical->Pop())->Pdrgpcr());
+		BOOL conflict = FHasGroupingConflict(pexprPred, pcrsGrouping);
+		pcrsGrouping->Release();
+		if (conflict)
+		{
+			return false;
+		}
 	}
 
 	CColRefSet *pcrsUsed = pexprPred->DeriveUsedColumns();
@@ -793,6 +982,47 @@ CNormalizer::PushThruSetOp(CMemoryPool *mp, CExpression *pexprSetOp,
 	CLogicalSetOp *popSetOp = CLogicalSetOp::PopConvert(pexprSetOp->Pop());
 	CColRefArray *pdrgpcrOutput = popSetOp->PdrgpcrOutput();
 	CColRefSet *pcrsOutput = GPOS_NEW(mp) CColRefSet(mp, pdrgpcrOutput);
+
+	// every set operation but UNION ALL matches rows by equality on all
+	// output columns; keep conjuncts that compare an output column with a
+	// different equality above it
+	CExpressionArray *pdrgpexprUnpushable = GPOS_NEW(mp) CExpressionArray(mp);
+	if (COperator::EopLogicalUnionAll != pexprSetOp->Pop()->Eopid())
+	{
+		CExpressionArray *pdrgpexprConjuncts =
+			CPredicateUtils::PdrgpexprConjuncts(mp, pexprConj);
+		CExpressionArray *pdrgpexprPushable = GPOS_NEW(mp) CExpressionArray(mp);
+		const ULONG num_conjuncts = pdrgpexprConjuncts->Size();
+		for (ULONG ul = 0; ul < num_conjuncts; ul++)
+		{
+			CExpression *pexprPred = (*pdrgpexprConjuncts)[ul];
+			pexprPred->AddRef();
+			if (FHasGroupingConflict(pexprPred, pcrsOutput))
+			{
+				pdrgpexprUnpushable->Append(pexprPred);
+			}
+			else
+			{
+				pdrgpexprPushable->Append(pexprPred);
+			}
+		}
+		pdrgpexprConjuncts->Release();
+
+		if (0 < pdrgpexprUnpushable->Size())
+		{
+			// PexprConjunction yields constant true for an empty array
+			pexprConj = CPredicateUtils::PexprConjunction(mp, pdrgpexprPushable);
+		}
+		else
+		{
+			pdrgpexprPushable->Release();
+			pexprConj->AddRef();
+		}
+	}
+	else
+	{
+		pexprConj->AddRef();
+	}
 	CColRef2dArray *pdrgpdrgpcrInput = popSetOp->PdrgpdrgpcrInput();
 	CExpressionArray *pdrgpexprNewChildren = GPOS_NEW(mp) CExpressionArray(mp);
 	const ULONG arity = pexprSetOp->Arity();
@@ -835,9 +1065,11 @@ CNormalizer::PushThruSetOp(CMemoryPool *mp, CExpression *pexprSetOp,
 	}
 
 	pcrsOutput->Release();
+	pexprConj->Release();
 	popSetOp->AddRef();
-	*ppexprResult =
-		GPOS_NEW(mp) CExpression(mp, popSetOp, pdrgpexprNewChildren);
+	*ppexprResult = PexprSelect(
+		mp, GPOS_NEW(mp) CExpression(mp, popSetOp, pdrgpexprNewChildren),
+		pdrgpexprUnpushable);
 }
 
 

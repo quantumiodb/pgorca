@@ -27,4 +27,5 @@ test: join_no_hash_opfamily
 test: not_in_null_array
 test: not_in_antijoin
 test: rls_security_quals
+test: grouping_qual_pushdown
 test: cte_function_scan_order
