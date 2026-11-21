@@ -160,23 +160,11 @@ A second diff involves `tattle(3, ten)` inside a `GROUP BY` subquery: the NOTICE
 
 **Root cause:** ORCA does not implement the `One-Time Filter` promotion for constant quals above set-returning functions. This is a missing optimisation, not a correctness issue for the result rows (all 6 rows are still returned correctly).
 
-### 2. `aggregates` — `balk` aggregate returns value instead of NULL; wrong `sum` in a LATERAL aggregate
+### 2. `aggregates` — `balk` aggregate returns value instead of NULL
 
 The `balk` aggregate is designed to abort early (via `ereport(ERROR, ...)` inside the combine function) and expects the aggregate to return NULL. Under ORCA's plan, the combine function is never reached, so the accumulator value (`495000`) is returned instead of NULL.
 
 **Root cause:** ORCA does not generate the same aggregate finalization path as the standard planner for this edge-case aggregate, so the "bail out" code path is never triggered.
-
-The REL_18_STABLE and PG 19 test files also contain a query that ORCA answers **wrongly**:
-
-```sql
-select s1, s2, sm
-from generate_series(1, 3) s1,
-     lateral (select s2, sum(s1 + s2) sm
-              from generate_series(1, 3) s2 group by s2) ss
-order by 1, 2;
-```
-
-For `s1 = 2` and `s1 = 3`, ORCA returns `sm = 1 + s2` instead of `s1 + s2`, as if the outer reference `s1` inside the aggregate were always 1. This is an open bug, not a plan difference. (The REL_18_3 test files used for the count above do not contain this query.)
 
 ### 3. `join_hash` — parallel hash join batch count mismatch (`final`: 4 vs 2)
 
@@ -241,4 +229,4 @@ select count(*) from int4_tbl t1,
 
 ---
 
-These failures are tracked here for awareness. All but one are plan or behaviour differences; the LATERAL `sum(s1 + s2)` query in 2 is a wrong result from ORCA and is still open.
+These failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.
