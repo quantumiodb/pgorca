@@ -171,7 +171,7 @@ private:
 											   CDXLScalarIdent **ident,
 											   Expr **expr);
 
-	CHAR *GetSubplanAlias(ULONG plan_id);
+	CHAR *GetSubplanAlias(ULONG plan_id, SubLinkType slink);
 
 	static Param *TranslateParamFromMapping(
 		const CMappingElementColIdParamId *colid_to_param_id_map);

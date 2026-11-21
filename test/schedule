@@ -5,6 +5,7 @@ test: query_window
 test: query_uniontypes
 test: query_aggfunc
 test: orca_agg_order_by
+test: agg_distinct_multikey
 test: nullable_unique_key
 test: percentile
 test: query_regexp
@@ -26,4 +27,7 @@ test: join_no_hash_opfamily
 test: not_in_null_array
 test: not_in_antijoin
 test: rls_security_quals
+test: grouping_qual_pushdown
+test: hashagg_rescan_params
+test: lateral_outer_ref_pushdown
 test: cte_function_scan_order

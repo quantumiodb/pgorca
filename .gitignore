@@ -1,5 +1,6 @@
 build/
 build-release/
+build-pg19/
 test/results/
 test/bench/results/
 __pycache__/

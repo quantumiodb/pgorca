@@ -207,10 +207,7 @@ jobs:
 
     steps:
       - name: Install OS packages
-        # PG19 is still in development (19devel/19-alpha) so it lives in
-        # pgdg-yum-testing, not the stable PGDG repo.  pgdg-redhat-repo-latest
-        # ships a /etc/yum.repos.d/pgdg-redhat-all.repo with a disabled
-        # `pgdg19-updates-testing` section -- enable it before installing.
+        # PG19 is released, so it comes from the stable PGDG repo (pgdg19).
         # perl-IPC-Run is needed by pg_regress.
         run: |
           set -eux
@@ -226,7 +223,6 @@ jobs:
           # generic rhel-$releasever tree, which PGDG still publishes.
           sed -i 's/\$releasever_major\.\$releasever_minor/$releasever/g' \
             /etc/yum.repos.d/pgdg-redhat-all.repo
-          dnf -y config-manager --set-enabled pgdg19-updates-testing
           dnf -y install \
             postgresql19 postgresql19-server postgresql19-contrib postgresql19-devel \
             xerces-c-devel \

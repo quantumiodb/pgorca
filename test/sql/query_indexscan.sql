@@ -149,7 +149,7 @@ set enable_seqscan=off;
 set enable_bitmapscan=off;
 set enable_indexscan=on;
 
-explain analyze select a, b from test where b=10 order by b desc;
+explain (costs off) select a, b from test where b=10 order by b desc;
 -- end_ignore
 
 -- order 2

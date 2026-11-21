@@ -9,17 +9,17 @@ export PG_CONFIG=/Users/jianghua/pg-install/bin/pg_config
 export PG_REGRESS_SQL=/Users/jianghua/code/postgresql/src/test/regress
 ```
 
-- `PG_CONFIG` — points to the `pg_config` binary of the PostgreSQL 18 installation that pg_orca was built and installed into.
+- `PG_CONFIG` — points to the `pg_config` binary of the PostgreSQL 18 or 19 installation that pg_orca was built and installed into.
 - `PG_REGRESS_SQL` — points to the PostgreSQL source tree's `src/test/regress` directory. The SQL and expected-output files for the standard regression tests are **not** installed by `make install`, so they must be read from the source tree at test time.
 
 If either variable is unset, `test/test.sh` will abort with an explicit error message.
 
 ### `PG_REGRESS_SQL` must match the server's version
 
-The expected outputs change between PostgreSQL versions. For example, PG 19 splits many `HINT` lines into `DETAIL` + `HINT`. Pointing `PG_REGRESS_SQL` at a tree on `master` (19devel/19beta) while the server is PG 18 makes about 90 of the PG tests fail for reasons that have nothing to do with pg_orca. Check which branch the tree is on:
+The expected outputs change between PostgreSQL versions. For example, PG 19 splits many `HINT` lines into `DETAIL` + `HINT`. Pointing `PG_REGRESS_SQL` at a PG 19 tree while the server is PG 18 makes about 90 of the PG tests fail for reasons that have nothing to do with pg_orca. Check which branch the tree is on:
 
 ```bash
-git -C /Users/jianghua/code/postgresql describe --tags   # e.g. REL_18_3, or REL_19_BETA1-... on master
+git -C /Users/jianghua/code/postgresql describe --tags   # e.g. REL_18_3; a REL_19_STABLE tree for PG 19
 "$PG_CONFIG" --version                                   # e.g. PostgreSQL 18.3
 ```
 
@@ -29,6 +29,16 @@ If they don't match, you can export the matching tag's test files without switch
 mkdir -p /tmp/pg18_regress
 git -C /Users/jianghua/code/postgresql archive REL_18_3 src/test/regress | tar -x -C /tmp/pg18_regress
 export PG_REGRESS_SQL=/tmp/pg18_regress/src/test/regress
+```
+
+For PG 19, use a `REL_19_STABLE` checkout (e.g. a worktree: `git -C /Users/jianghua/code/postgresql worktree add ../postgresql-19 origin/REL_19_STABLE`) and point `PG_REGRESS_SQL` at its `src/test/regress`.
+
+To keep a second build (e.g. against PG 19) from sharing `build/test_parallel` and `build/tmp_check_parallel` with the default build, set `BUILD_DIR` to that build's directory:
+
+```bash
+export PG_CONFIG=/Users/jianghua/pg19-install/bin/pg_config
+export PG_REGRESS_SQL=/Users/jianghua/code/postgresql-19/src/test/regress
+BUILD_DIR=$PWD/build-pg19 test/test.sh --pg-tests
 ```
 
 The tests' C helpers (`regress.so`) are loaded from the installation's library directory, so only the SQL and expected files come from this directory.
@@ -177,9 +187,9 @@ Window functions over `ROWS BETWEEN n PRECEDING AND n FOLLOWING` return differen
 
 ### 6. `stats` — `check_estimated_rows` function not found
 
-The `stats` test calls `check_estimated_rows(text)`, a helper function defined earlier in the same test session. Under ORCA, a prior statement in the test fails or rolls back in a way that prevents the function from being visible when this call is reached.
+The `stats` test calls `check_estimated_rows(text)`, a helper function that PostgreSQL's schedule creates in the `stats_ext` test, which runs earlier.
 
-**Root cause:** A transaction/savepoint boundary or error earlier in the `stats` test leaves the session in a state where the helper function created by a prior `CREATE FUNCTION` is not visible. Likely ORCA rejects a query that the standard planner accepts, causing an unexpected error that aborts the defining transaction.
+**Root cause:** `test/parallel_schedule` leaves out `stats_ext` (ORCA's estimates differ from the ones that test checks), so the function never exists. This is a property of pg_orca's schedule, not of ORCA. It is not related to ORCA rejecting a query either.
 
 ### 7. `alter_table` — extra lock on the referenced primary-key index (not ORCA)
 
@@ -193,6 +203,20 @@ The expected output lists two locks: `ShareRowExclusiveLock` on `alterlock` and 
 
 The lock is taken by the `ALTER TABLE` itself, whichever planner plans the `my_locks` query. Running the PG 18.3 `parallel_schedule` with plain `pg_regress` and pg_orca not loaded fails only `alter_table`, with the identical diff. The REL_18_3 and REL_18_4 expected files both show two locks, so this server build behaves differently from the tagged sources. The cause has not been tracked down.
 
+### PG 19.0
+
+Running `test/test.sh --pg-tests --ignore-plans` against PG 19.0 with the `REL_19_STABLE` test files also leaves 7 of 223 tests failing, with no server crashes (checked 2026-11-20): `subselect`, `join`, `aggregates`, `join_hash`, `select_parallel`, `window`, `stats`.
+
+- `subselect`, `aggregates`, `join_hash`, `select_parallel`, `window`, `stats` fail as described in 1–6.
+- `alter_table` passes; its failure above is specific to the local PG 18.3 build.
+- `join` is new. It expects `ERROR: FULL JOIN is only supported with merge-joinable or hash-joinable join conditions` for `(int4_tbl a cross join int4_tbl b) full join int4_tbl c on a.f1 = b.f1 where coalesce(a.f1, b.f1) = 0`. ORCA can plan that FULL JOIN and returns the 9 rows the query defines, so the difference is that ORCA succeeds where the PG planner refuses.
+
+Without `--ignore-plans`, 48 tests fail, all with plan-shape differences. Three of these are specific to PG19:
+
+- `case`: no `Replaces: Scan on case_tbl` line on ORCA's empty `Result` (see the PostgreSQL 19 section of README.md).
+- `create_aggregate`: ORCA does not generate a `Run Condition` for WindowAgg.
+- `stats`: as in 6.
+
 ---
 
-These 7 failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.
+These failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.

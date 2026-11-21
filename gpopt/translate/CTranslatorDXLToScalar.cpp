@@ -659,6 +659,13 @@ CTranslatorDXLToScalar::TranslateDXLScalarAggrefToScalar(
 		ForEachWithCount(lc, aggref->aggorder, i)
 		{
 			SortGroupClause *gc = (SortGroupClause *) lfirst(lc);
+			if (gc->tleSortGroupRef >= (Index) gpdb::ListLength(args))
+			{
+				GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+						   GPOS_WSZ_LIT(
+							   "AGGREF: ORDER BY key does not reference an "
+							   "aggregate input"));
+			}
 			indexes[gc->tleSortGroupRef] = gc->tleSortGroupRef;
 
 			// 'indexes' values are zero-based, but zero means TargetEntry
@@ -672,16 +679,23 @@ CTranslatorDXLToScalar::TranslateDXLScalarAggrefToScalar(
 		List *aggdistinct = TranslateScalarListChildren(
 			(*aggref_node)[EdxlscalaraggrefIndexAggDistinct], colid_var);
 
-		ULONG i;
+		// An aggregate's DISTINCT list may hold more items than it has
+		// inputs: when ORDER BY lists the same input with several sort
+		// operators (e.g. "distinct r order by r using <, r using *<"),
+		// transformDistinctClause() copies each of them.  Keep them all;
+		// nodeAgg asserts that DISTINCT covers every ORDER BY key.
 		ListCell *lc;
-		ForEachWithCount(lc, aggdistinct, i)
+		ForEach(lc, aggdistinct)
 		{
-			if (i >= gpdb::ListLength(args))
+			SortGroupClause *gc = (SortGroupClause *) lfirst(lc);
+			if (gc->tleSortGroupRef >= (Index) gpdb::ListLength(args))
 			{
-				break;
+				GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+						   GPOS_WSZ_LIT(
+							   "AGGREF: DISTINCT key does not reference an "
+							   "aggregate input"));
 			}
 
-			SortGroupClause *gc = (SortGroupClause *) lfirst(lc);
 			indexes[gc->tleSortGroupRef] = gc->tleSortGroupRef;
 
 			// 'indexes' values are zero-based, but zero means TargetEntry
@@ -1233,7 +1247,7 @@ CTranslatorDXLToScalar::TranslateSubplanFromChildPlan(
 	SubPlan *subplan = MakeNode(SubPlan);
 	subplan->plan_id =
 		gpdb::ListLength(dxl_to_plstmt_ctxt->GetSubplanEntriesList());
-	subplan->plan_name = GetSubplanAlias(subplan->plan_id);
+	subplan->plan_name = GetSubplanAlias(subplan->plan_id, slink);
 	/* is_initplan removed from PG18's SubPlan */
 	subplan->firstColType = gpdb::ExprType(
 		(Node *) ((TargetEntry *) gpdb::ListNth(plan->targetlist, 0))->expr);
@@ -1254,12 +1268,51 @@ CTranslatorDXLToScalar::TranslateSubplanFromChildPlan(
 //	@doc:
 //		build plan name, for explain purposes
 //
+//		PG19 EXPLAIN and ruleutils prepend "SubPlan "/"InitPlan " to
+//		plan_name themselves and expect a name like "exists_1" (see
+//		choose_plan_name() and sublinktype_to_string() in PG19), so build
+//		the same shape there; plan_id keeps the suffix unique.  PG18
+//		prints plan_name as is, so it gets the full "SubPlan N".
+//
 //---------------------------------------------------------------------------
 CHAR *
-CTranslatorDXLToScalar::GetSubplanAlias(ULONG plan_id)
+CTranslatorDXLToScalar::GetSubplanAlias(ULONG plan_id, SubLinkType slink)
 {
 	CWStringDynamic *plan_name = GPOS_NEW(m_mp) CWStringDynamic(m_mp);
+#if PG_VERSION_NUM >= 190000
+	const WCHAR *kind;
+	switch (slink)
+	{
+		case EXISTS_SUBLINK:
+			kind = GPOS_WSZ_LIT("exists");
+			break;
+		case ALL_SUBLINK:
+			kind = GPOS_WSZ_LIT("all");
+			break;
+		case ANY_SUBLINK:
+			kind = GPOS_WSZ_LIT("any");
+			break;
+		case ROWCOMPARE_SUBLINK:
+			kind = GPOS_WSZ_LIT("rowcompare");
+			break;
+		case MULTIEXPR_SUBLINK:
+			kind = GPOS_WSZ_LIT("multiexpr");
+			break;
+		case ARRAY_SUBLINK:
+			kind = GPOS_WSZ_LIT("array");
+			break;
+		case CTE_SUBLINK:
+			kind = GPOS_WSZ_LIT("cte");
+			break;
+		case EXPR_SUBLINK:
+		default:
+			kind = GPOS_WSZ_LIT("expr");
+			break;
+	}
+	plan_name->AppendFormat(GPOS_WSZ_LIT("%ls_%d"), kind, plan_id);
+#else
 	plan_name->AppendFormat(GPOS_WSZ_LIT("SubPlan %d"), plan_id);
+#endif
 	const WCHAR *buf = plan_name->GetBuffer();
 
 	ULONG max_length = (GPOS_WSZ_LENGTH(buf) + 1) * GPOS_SIZEOF(WCHAR);

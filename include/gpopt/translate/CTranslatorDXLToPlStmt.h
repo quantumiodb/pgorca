@@ -180,6 +180,11 @@ private:
 	// (critical for correctness inside correlated SubPlans).
 	static void FinalizeParamIds(Plan *plan);
 
+	// PARAM_EXEC params used in a hashed Agg's aggregate arguments and
+	// FILTERs (Agg.aggParams), so a rescan rebuilds the hash table when
+	// one of them changes
+	static Bitmapset *GetAggParams(Agg *agg);
+
 	static List *TranslatePartOids(IMdIdArray *parts, INT lockmode);
 
 	static List *TranslateJoinPruneParamids(
