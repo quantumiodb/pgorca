@@ -19,6 +19,7 @@
 #include "gpopt/base/CDistributionSpecAny.h"
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/operators/CLogicalLimit.h"
+#include "gpopt/operators/CPredicateUtils.h"
 
 using namespace gpopt;
 
@@ -96,6 +97,88 @@ CQueryContext::~CQueryContext()
 	m_pdrgpcr->Release();
 	m_pdrgpmdname->Release();
 	CRefCount::SafeRelease(m_pdrgpcrSystemCols);
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		PexprDropConstantOrderCols
+//
+//	@doc:
+//		Drop from the order spec of the top-level Limit (the query's ORDER
+//		BY), looking through CTE anchors, the columns its input fixes to a
+//		single value, e.g. b in "WHERE b = 10 ORDER BY b DESC, a", or b in
+//		"WHERE b IS NULL ORDER BY b".  Sorting on such a column orders
+//		nothing, but ORCA compared order specs column by column and put a
+//		Sort on top of the filter for it.  PG's planner drops these keys
+//		too: their equivalence class holds a constant.
+//
+//		Returns the expression to optimize (a new one if the Limit changed)
+//		and sets *ppos to the order spec the query must satisfy.
+//
+//---------------------------------------------------------------------------
+static CExpression *
+PexprDropConstantOrderCols(CMemoryPool *mp, CExpression *pexpr,
+						   COrderSpec **ppos)
+{
+	COperator *pop = pexpr->Pop();
+	if (COperator::EopLogicalCTEAnchor == pop->Eopid())
+	{
+		CExpression *pexprChild =
+			PexprDropConstantOrderCols(mp, (*pexpr)[0], ppos);
+		if (pexprChild == (*pexpr)[0])
+		{
+			pexprChild->Release();
+			pexpr->AddRef();
+			return pexpr;
+		}
+		pop->AddRef();
+		return GPOS_NEW(mp) CExpression(mp, pop, pexprChild);
+	}
+
+	GPOS_ASSERT(COperator::EopLogicalLimit == pop->Eopid());
+	CLogicalLimit *popLimit = CLogicalLimit::PopConvert(pop);
+	COrderSpec *pos = popLimit->Pos();
+
+	CConstraint *pcnstr = (*pexpr)[0]->DerivePropertyConstraint()->Pcnstr();
+	CColRefSet *pcrsConst = GPOS_NEW(mp) CColRefSet(mp);
+	if (nullptr != pcnstr)
+	{
+		for (ULONG ul = 0; ul < pos->UlSortColumns(); ul++)
+		{
+			const CColRef *colref = pos->Pcr(ul);
+			CConstraint *pcnstrCol = pcnstr->Pcnstr(mp, colref);
+			if (CPredicateUtils::FConstColumn(pcnstrCol, colref))
+			{
+				pcrsConst->Include(colref);
+			}
+			CRefCount::SafeRelease(pcnstrCol);
+		}
+	}
+
+	if (0 == pcrsConst->Size())
+	{
+		pcrsConst->Release();
+		pos->AddRef();
+		*ppos = pos;
+		pexpr->AddRef();
+		return pexpr;
+	}
+
+	COrderSpec *posNew = pos->PosExcludeColumns(mp, pcrsConst);
+	pcrsConst->Release();
+	posNew->AddRef();
+	*ppos = posNew;
+
+	(*pexpr)[0]->AddRef();
+	(*pexpr)[1]->AddRef();
+	(*pexpr)[2]->AddRef();
+	return GPOS_NEW(mp) CExpression(
+		mp,
+		GPOS_NEW(mp) CLogicalLimit(mp, posNew, popLimit->FGlobal(),
+								   popLimit->FHasCount(),
+								   popLimit->IsTopLimitUnderDMLorCTAS()),
+		(*pexpr)[0], (*pexpr)[1], (*pexpr)[2]);
 }
 
 
@@ -197,14 +280,15 @@ CQueryContext::PqcGenerate(CMemoryPool *mp, CExpression *pexpr,
 	COperator *popTop = PopTop(pexpr);
 	if (COperator::EopLogicalLimit == popTop->Eopid())
 	{
-		// top level operator is a limit, copy order spec to query context
-		pos = CLogicalLimit::PopConvert(popTop)->Pos();
-		pos->AddRef();
+		// top level operator is a limit, copy order spec to query context,
+		// without the columns that are constant in its input
+		pexprResult = PexprDropConstantOrderCols(mp, pexpr, &pos);
 	}
 	else
 	{
 		// no order required
 		pos = GPOS_NEW(mp) COrderSpec(mp);
+		pexprResult->AddRef();
 	}
 
 	CDistributionSpec *pds = nullptr;
@@ -253,8 +337,10 @@ CQueryContext::PqcGenerate(CMemoryPool *mp, CExpression *pexpr,
 
 	// Finally, create the CQueryContext
 	pdrgpmdname->AddRef();
-	return GPOS_NEW(mp) CQueryContext(mp, pexprResult, prpp, colref_array,
-									  pdrgpmdname, fDeriveStats);
+	CQueryContext *pqc = GPOS_NEW(mp) CQueryContext(
+		mp, pexprResult, prpp, colref_array, pdrgpmdname, fDeriveStats);
+	pexprResult->Release();
+	return pqc;
 }
 
 #ifdef GPOS_DEBUG

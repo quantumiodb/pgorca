@@ -442,14 +442,12 @@ set enable_seqscan=off;
 set enable_bitmapscan=off;
 set enable_indexscan=on;
 explain (costs off) select a, b from test where b=10 order by b desc;
-              QUERY PLAN               
----------------------------------------
- Sort
-   Sort Key: b DESC
-   ->  Index Scan using test_b on test
-         Index Cond: (b = 10)
+           QUERY PLAN            
+---------------------------------
+ Index Scan using test_b on test
+   Index Cond: (b = 10)
  Optimizer: pg_orca
-(5 rows)
+(3 rows)
 
 -- end_ignore
 -- order 2

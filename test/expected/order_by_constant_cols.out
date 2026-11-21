@@ -1,0 +1,110 @@
+--
+-- ORDER BY keys that the query fixes to a single value need no sort.
+--
+-- ORCA compared the required order with the input's order column by column,
+-- so "WHERE b = 10 ORDER BY b DESC" got a Sort on b although its constraint
+-- was b = 10.  CQueryContext now drops such columns (a single non-null
+-- value, or IS NULL) from the top-level ORDER BY, as PG's planner does for
+-- pathkeys whose equivalence class holds a constant.
+--
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+CREATE SCHEMA order_by_constant_cols;
+SET search_path = order_by_constant_cols;
+CREATE TABLE t (a int, b int);
+INSERT INTO t SELECT g, g % 25 FROM generate_series(1, 100) g;
+INSERT INTO t VALUES (101, NULL), (102, NULL);
+ANALYZE t;
+-- no sort at all
+EXPLAIN (COSTS OFF) SELECT a, b FROM t WHERE b = 10 ORDER BY b DESC;
+     QUERY PLAN     
+--------------------
+ Seq Scan on t
+   Filter: (b = 10)
+ Optimizer: pg_orca
+(3 rows)
+
+SELECT a, b FROM t WHERE b = 10 ORDER BY b DESC, a;
+ a  | b  
+----+----
+ 10 | 10
+ 35 | 10
+ 60 | 10
+ 85 | 10
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT a, b FROM t WHERE b IS NULL ORDER BY b;
+      QUERY PLAN       
+-----------------------
+ Seq Scan on t
+   Filter: (b IS NULL)
+ Optimizer: pg_orca
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT a, b FROM t WHERE b = 10 ORDER BY b DESC LIMIT 2;
+        QUERY PLAN        
+--------------------------
+ Limit
+   ->  Seq Scan on t
+         Filter: (b = 10)
+ Optimizer: pg_orca
+(4 rows)
+
+-- only the non-constant key is sorted on
+EXPLAIN (COSTS OFF) SELECT a, b FROM t WHERE b = 10 ORDER BY b DESC, a DESC;
+        QUERY PLAN        
+--------------------------
+ Sort
+   Sort Key: a DESC
+   ->  Seq Scan on t
+         Filter: (b = 10)
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT a, b FROM t WHERE b = 10 ORDER BY b DESC, a DESC;
+ a  | b  
+----+----
+ 85 | 10
+ 60 | 10
+ 35 | 10
+ 10 | 10
+(4 rows)
+
+-- not constant: still sorted
+EXPLAIN (COSTS OFF) SELECT a, b FROM t WHERE b IN (10, 11) ORDER BY b DESC, a;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Sort
+   Sort Key: b DESC, a
+   ->  Seq Scan on t
+         Filter: (b = ANY ('{10,11}'::integer[]))
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT a, b FROM t WHERE b IN (10, 11) ORDER BY b DESC, a;
+ a  | b  
+----+----
+ 11 | 11
+ 36 | 11
+ 61 | 11
+ 86 | 11
+ 10 | 10
+ 35 | 10
+ 60 | 10
+ 85 | 10
+(8 rows)
+
+EXPLAIN (COSTS OFF) SELECT a, b FROM t WHERE b >= 10 AND b <= 10 OR b IS NULL
+ORDER BY b, a;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Sort
+   Sort Key: b, a
+   ->  Seq Scan on t
+         Filter: (((b >= 10) AND (b <= 10)) OR (b IS NULL))
+ Optimizer: pg_orca
+(5 rows)
+
+RESET search_path;
+DROP SCHEMA order_by_constant_cols CASCADE;
