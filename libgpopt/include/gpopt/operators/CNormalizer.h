@@ -52,6 +52,19 @@ private:
 	// check if a scalar predicate can be pushed through a logical expression
 	static BOOL FPushable(CExpression *pexprLogical, CExpression *pexprPred);
 
+	// check if a predicate compares a grouping column with an operator whose
+	// notion of equality differs from the grouping's
+	static BOOL FHasGroupingConflict(CExpression *pexprPred,
+									 CColRefSet *pcrsGrouping);
+
+	// check if an operator is compatible with the grouping equality of a column
+	static BOOL FOpCompatibleWithGrouping(IMDId *mdid_op, const CColRef *colref);
+
+	// check one operand of a comparison against the grouping columns
+	static BOOL FGroupingOperandConflict(CExpression *pexprOperand,
+										 IMDId *mdid_op,
+										 CColRefSet *pcrsGrouping);
+
 	// check if a scalar predicate can be pushed through the child of a sequence project expression
 	static BOOL FPushableThruSeqPrjChild(CExpression *pexprSeqPrj,
 										 CExpression *pexprPred);

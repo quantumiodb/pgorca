@@ -1,0 +1,302 @@
+--
+-- A predicate must not be pushed below a grouping (GROUP BY / HAVING,
+-- DISTINCT, window PARTITION BY, UNION / INTERSECT / EXCEPT) when it compares
+-- a grouping column with an equality other than the grouping's own.
+--
+-- record_ops' = (the default, used by grouping) treats row(1.0) and
+-- row(1.00) as equal; record_image_ops' *= tells them apart.  Evaluated
+-- below the grouping, "a *= row(1.0)" drops row(1.00) before the grouping
+-- can merge it with row(1.0), changing counts and turning empty results
+-- into non-empty ones.  Mirrors PostgreSQL commit 98d5d7ee641
+-- (fe5d62951b3 on REL_18_STABLE).
+--
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+CREATE SCHEMA grouping_qual_pushdown;
+SET search_path = grouping_qual_pushdown;
+CREATE TYPE t_rec AS (x numeric);
+CREATE TABLE pdt (id int, a t_rec);
+INSERT INTO pdt VALUES (1, ROW(1.00)::t_rec), (2, ROW(1.0)::t_rec),
+                       (3, ROW(2)::t_rec);
+CREATE TABLE u1 (a t_rec);
+CREATE TABLE u2 (a t_rec);
+INSERT INTO u1 VALUES (ROW(1.00)::t_rec), (ROW(1.0)::t_rec);
+INSERT INTO u2 VALUES (ROW(1.0)::t_rec);
+ANALYZE pdt, u1, u2;
+-- HAVING: stays above the aggregate
+EXPLAIN (COSTS OFF)
+SELECT a, count(*) FROM pdt GROUP BY a HAVING a *= ROW(1.0)::t_rec;
+           QUERY PLAN            
+---------------------------------
+ Result
+   Filter: (a *= '(1.0)'::t_rec)
+   ->  HashAggregate
+         Group Key: a
+         ->  Seq Scan on pdt
+ Optimizer: pg_orca
+(6 rows)
+
+SELECT a, count(*) FROM pdt GROUP BY a HAVING a *= ROW(1.0)::t_rec;
+ a | count 
+---+-------
+(0 rows)
+
+EXPLAIN (COSTS OFF)
+SELECT a, count(*) FROM pdt GROUP BY a
+HAVING a *= ANY (ARRAY[ROW(1.0)::t_rec]);
+                QUERY PLAN                 
+-------------------------------------------
+ Result
+   Filter: (a *= ANY ('{(1.0)}'::t_rec[]))
+   ->  HashAggregate
+         Group Key: a
+         ->  Seq Scan on pdt
+ Optimizer: pg_orca
+(6 rows)
+
+SELECT a, count(*) FROM pdt GROUP BY a
+HAVING a *= ANY (ARRAY[ROW(1.0)::t_rec]);
+ a | count 
+---+-------
+(0 rows)
+
+-- the grouping's own equality is still pushed down
+EXPLAIN (COSTS OFF)
+SELECT a, count(*) FROM pdt GROUP BY a HAVING a = ROW(1.0)::t_rec;
+              QUERY PLAN              
+--------------------------------------
+ HashAggregate
+   Group Key: a
+   ->  Seq Scan on pdt
+         Filter: (a = '(1.0)'::t_rec)
+ Optimizer: pg_orca
+(5 rows)
+
+SELECT a, count(*) FROM pdt GROUP BY a HAVING a = ROW(1.0)::t_rec;
+   a    | count 
+--------+-------
+ (1.00) |     2
+(1 row)
+
+-- DISTINCT
+EXPLAIN (COSTS OFF)
+SELECT * FROM (SELECT DISTINCT a FROM pdt) s WHERE a *= ROW(1.0)::t_rec;
+           QUERY PLAN            
+---------------------------------
+ Result
+   Filter: (a *= '(1.0)'::t_rec)
+   ->  HashAggregate
+         Group Key: a
+         ->  Seq Scan on pdt
+ Optimizer: pg_orca
+(6 rows)
+
+SELECT * FROM (SELECT DISTINCT a FROM pdt) s WHERE a *= ROW(1.0)::t_rec;
+ a 
+---
+(0 rows)
+
+-- window PARTITION BY
+EXPLAIN (COSTS OFF)
+SELECT * FROM (SELECT id, a, count(*) OVER (PARTITION BY a) AS cnt FROM pdt) s
+WHERE a *= ROW(1.0)::t_rec;
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Result
+   Filter: (a *= '(1.0)'::t_rec)
+   ->  WindowAgg
+         Window: w1 AS (PARTITION BY a RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         ->  Sort
+               Sort Key: a
+               ->  Seq Scan on pdt
+ Optimizer: pg_orca
+(8 rows)
+
+SELECT * FROM (SELECT id, a, count(*) OVER (PARTITION BY a) AS cnt FROM pdt) s
+WHERE a *= ROW(1.0)::t_rec;
+ id |   a   | cnt 
+----+-------+-----
+  2 | (1.0) |   2
+(1 row)
+
+-- UNION, also under an outer UNION ALL
+EXPLAIN (COSTS OFF)
+SELECT * FROM (SELECT a FROM u1 UNION SELECT a FROM u2) s
+WHERE a *= ROW(1.0)::t_rec;
+             QUERY PLAN             
+------------------------------------
+ Result
+   Filter: (u1.a *= '(1.0)'::t_rec)
+   ->  HashAggregate
+         Group Key: u1.a
+         ->  Append
+               ->  Seq Scan on u1
+               ->  Seq Scan on u2
+ Optimizer: pg_orca
+(8 rows)
+
+SELECT * FROM (SELECT a FROM u1 UNION SELECT a FROM u2) s
+WHERE a *= ROW(1.0)::t_rec;
+ a 
+---
+(0 rows)
+
+EXPLAIN (COSTS OFF)
+SELECT * FROM ((SELECT a FROM u1 UNION SELECT a FROM u2)
+               UNION ALL SELECT a FROM u2) s
+WHERE a *= ROW(1.0)::t_rec;
+                QUERY PLAN                
+------------------------------------------
+ Append
+   ->  Result
+         Filter: (u1.a *= '(1.0)'::t_rec)
+         ->  HashAggregate
+               Group Key: u1.a
+               ->  Append
+                     ->  Seq Scan on u1
+                     ->  Seq Scan on u2
+   ->  Seq Scan on u2 u2_1
+         Filter: (a *= '(1.0)'::t_rec)
+ Optimizer: pg_orca
+(11 rows)
+
+SELECT * FROM ((SELECT a FROM u1 UNION SELECT a FROM u2)
+               UNION ALL SELECT a FROM u2) s
+WHERE a *= ROW(1.0)::t_rec;
+   a   
+-------
+ (1.0)
+(1 row)
+
+-- UNION ALL alone does not group: pushed down
+EXPLAIN (COSTS OFF)
+SELECT * FROM (SELECT a FROM u1 UNION ALL SELECT a FROM u2) s
+WHERE a *= ROW(1.0)::t_rec;
+              QUERY PLAN               
+---------------------------------------
+ Append
+   ->  Seq Scan on u1
+         Filter: (a *= '(1.0)'::t_rec)
+   ->  Seq Scan on u2
+         Filter: (a *= '(1.0)'::t_rec)
+ Optimizer: pg_orca
+(6 rows)
+
+SELECT * FROM (SELECT a FROM u1 UNION ALL SELECT a FROM u2) s
+WHERE a *= ROW(1.0)::t_rec;
+   a   
+-------
+ (1.0)
+ (1.0)
+(2 rows)
+
+-- EXCEPT and INTERSECT ALL, with an operator from a user-defined btree
+-- opfamily over numeric whose equality is finer than numeric's (it compares
+-- the text form, so 1.0 and 1.00 differ).  plpgsql keeps the functions from
+-- being inlined, so the predicate stays an operator over the column.
+CREATE FUNCTION nimg_cmp(numeric, numeric) RETURNS int IMMUTABLE STRICT
+  LANGUAGE plpgsql AS $$ BEGIN RETURN bttextcmp($1::text, $2::text); END $$;
+CREATE FUNCTION nimg_eq(numeric, numeric) RETURNS bool IMMUTABLE STRICT
+  LANGUAGE plpgsql AS $$ BEGIN RETURN $1::text = $2::text; END $$;
+CREATE FUNCTION nimg_lt(numeric, numeric) RETURNS bool IMMUTABLE STRICT
+  LANGUAGE plpgsql AS $$ BEGIN RETURN $1::text < $2::text; END $$;
+CREATE FUNCTION nimg_le(numeric, numeric) RETURNS bool IMMUTABLE STRICT
+  LANGUAGE plpgsql AS $$ BEGIN RETURN $1::text <= $2::text; END $$;
+CREATE FUNCTION nimg_gt(numeric, numeric) RETURNS bool IMMUTABLE STRICT
+  LANGUAGE plpgsql AS $$ BEGIN RETURN $1::text > $2::text; END $$;
+CREATE FUNCTION nimg_ge(numeric, numeric) RETURNS bool IMMUTABLE STRICT
+  LANGUAGE plpgsql AS $$ BEGIN RETURN $1::text >= $2::text; END $$;
+CREATE OPERATOR *= (FUNCTION = nimg_eq, LEFTARG = numeric, RIGHTARG = numeric);
+CREATE OPERATOR *< (FUNCTION = nimg_lt, LEFTARG = numeric, RIGHTARG = numeric);
+CREATE OPERATOR *<= (FUNCTION = nimg_le, LEFTARG = numeric, RIGHTARG = numeric);
+CREATE OPERATOR *> (FUNCTION = nimg_gt, LEFTARG = numeric, RIGHTARG = numeric);
+CREATE OPERATOR *>= (FUNCTION = nimg_ge, LEFTARG = numeric, RIGHTARG = numeric);
+CREATE OPERATOR CLASS numeric_image_ops FOR TYPE numeric USING btree AS
+  OPERATOR 1 *<, OPERATOR 2 *<=, OPERATOR 3 *=, OPERATOR 4 *>=, OPERATOR 5 *>,
+  FUNCTION 1 nimg_cmp(numeric, numeric);
+CREATE TABLE n1 (a numeric);
+CREATE TABLE n2 (a numeric);
+INSERT INTO n1 VALUES (1.00), (2);
+INSERT INTO n2 VALUES (1.0), (2);
+ANALYZE n1, n2;
+-- 1.00 EXCEPT 1.0 is empty, as 1.00 = 1.0
+EXPLAIN (COSTS OFF)
+SELECT * FROM (SELECT a FROM n1 EXCEPT SELECT a FROM n2) s WHERE a *= 1.00;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Result
+   Filter: (n1.a *= 1.00)
+   ->  HashAggregate
+         Group Key: n1.a
+         ->  Hash Anti Join
+               Hash Cond: (NOT (n1.a IS DISTINCT FROM n2.a))
+               ->  Seq Scan on n1
+               ->  Hash
+                     ->  Seq Scan on n2
+ Optimizer: pg_orca
+(10 rows)
+
+SELECT * FROM (SELECT a FROM n1 EXCEPT SELECT a FROM n2) s WHERE a *= 1.00;
+ a 
+---
+(0 rows)
+
+EXPLAIN (COSTS OFF)
+SELECT * FROM (SELECT a FROM n1 INTERSECT ALL SELECT a FROM n2) s
+WHERE a *= 1.00;
+                                                             QUERY PLAN                                                             
+------------------------------------------------------------------------------------------------------------------------------------
+ Result
+   Filter: (n1.a *= 1.00)
+   ->  Hash Semi Join
+         Hash Cond: ((NOT (n1.a IS DISTINCT FROM n2.a)) AND (NOT ((row_number() OVER w1) IS DISTINCT FROM (row_number() OVER w1))))
+         ->  WindowAgg
+               Window: w1 AS (PARTITION BY n1.a)
+               ->  Sort
+                     Sort Key: n1.a
+                     ->  Seq Scan on n1
+         ->  Hash
+               ->  WindowAgg
+                     Window: w1 AS (PARTITION BY n2.a)
+                     ->  Sort
+                           Sort Key: n2.a
+                           ->  Seq Scan on n2
+ Optimizer: pg_orca
+(16 rows)
+
+SELECT * FROM (SELECT a FROM n1 INTERSECT ALL SELECT a FROM n2) s
+WHERE a *= 1.00;
+  a   
+------
+ 1.00
+(1 row)
+
+-- a conjunct with numeric's own ordering is still pushed down
+EXPLAIN (COSTS OFF)
+SELECT * FROM (SELECT a FROM n1 EXCEPT SELECT a FROM n2) s
+WHERE a *= 1.00 AND a > 0;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Result
+   Filter: (n1.a *= 1.00)
+   ->  HashAggregate
+         Group Key: n1.a
+         ->  Hash Anti Join
+               Hash Cond: (NOT (n1.a IS DISTINCT FROM n2.a))
+               ->  Seq Scan on n1
+                     Filter: (a > '0'::numeric)
+               ->  Hash
+                     ->  Seq Scan on n2
+                           Filter: (a > '0'::numeric)
+ Optimizer: pg_orca
+(12 rows)
+
+SELECT * FROM (SELECT a FROM n1 EXCEPT SELECT a FROM n2) s
+WHERE a *= 1.00 AND a > 0;
+ a 
+---
+(0 rows)
+
+RESET search_path;
+DROP SCHEMA grouping_qual_pushdown CASCADE;
