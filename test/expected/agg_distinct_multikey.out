@@ -1,0 +1,51 @@
+--
+-- Aggregate DISTINCT with more keys than inputs.
+--
+-- An aggregate's ORDER BY may list the same input with several sort
+-- operators, and transformDistinctClause() copies each of them into the
+-- DISTINCT list, so a single-input aggregate can have several DISTINCT keys.
+-- CTranslatorDXLToScalar used to cut aggdistinct down to the number of
+-- inputs, which tripped nodeAgg's "numSortCols >= list_length(aggorder)"
+-- assertion (and silently dropped a sort key without asserts).
+--
+-- The servers themselves crashed on these queries until upstream commit
+-- 1c087e61685 ("Fix crash with single-input aggregates with multiple sort
+-- keys"), which is not in PG 18.3, so only run them on PG 19 and later.
+-- agg_distinct_multikey_1.out is the output when they are skipped.
+--
+LOAD 'pg_orca';
+SET pg_orca.enable_orca = on;
+SET client_min_messages = warning;
+SELECT current_setting('server_version_num')::int >= 190000 AS has_fix \gset
+\if :has_fix
+-- 0 and -0 differ only for *<
+EXPLAIN (COSTS OFF)
+SELECT array_agg(DISTINCT r ORDER BY r USING <, r USING *<)
+FROM (VALUES (row(-0.0::float8)), (row(0.0::float8))) v(r),
+     generate_series(1, 2) i;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Nested Loop
+         Join Filter: true
+         ->  Values Scan on "Values"
+         ->  Function Scan on generate_series i
+ Optimizer: pg_orca
+(6 rows)
+
+SELECT array_agg(DISTINCT r ORDER BY r USING <, r USING *<)
+FROM (VALUES (row(-0.0::float8)), (row(0.0::float8))) v(r),
+     generate_series(1, 2) i;
+ array_agg  
+------------
+ {(0),(-0)}
+(1 row)
+
+SELECT array_agg(r ORDER BY r USING <, r USING *<)
+FROM (VALUES (row(-0.0::float8)), (row(0.0::float8))) v(r);
+ array_agg  
+------------
+ {(0),(-0)}
+(1 row)
+
+\endif
