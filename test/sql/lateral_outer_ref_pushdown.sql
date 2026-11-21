@@ -38,6 +38,15 @@ SELECT count(*), sum(a + b + k + v) FROM lt1,
            JOIN lt3 ON lt3.k = lt1.a
            WHERE lt3.v = lt2.b % 100 + s0.x) ss;
 
+-- the predicates inferred from "lt3.k = lt1.a" ("lt1.a = lt3.k") are merged
+-- into the scan's filter instead of stacking one Result filter per round
+-- of predicate inference
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM lt1,
+  LATERAL (SELECT * FROM lt3 WHERE lt3.k = lt1.a OFFSET 0) s;
+SELECT count(*) FROM lt1,
+  LATERAL (SELECT * FROM lt3 WHERE lt3.k = lt1.a OFFSET 0) s;
+
 -- LEFT JOIN whose ON clause uses the LATERAL reference
 SELECT count(*), sum(coalesce(k, -1) + a + b) FROM lt1,
   LATERAL (SELECT * FROM lt2

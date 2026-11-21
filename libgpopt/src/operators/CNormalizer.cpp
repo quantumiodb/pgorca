@@ -745,12 +745,34 @@ CNormalizer::PushThruSelect(CMemoryPool *mp, CExpression *pexprSelect,
 		// unpushable predicates, if any, into a top Select node
 		CExpressionArray *pdrgpexprConjuncts =
 			CPredicateUtils::PdrgpexprConjuncts(mp, pexprPred);
+
+		// When the child is another Select, merge into it the predicates
+		// that also use outer references.  A predicate here applies to the
+		// child's output, so a column it uses that the child does not
+		// produce can only be bound from outside, and the same holds below
+		// the child Select.  Without this, a predicate inferred from an
+		// equivalence class with an outer reference (e.g. "a = k" from
+		// "k = a" with a LATERAL "a") was left in a Select of its own on
+		// top of the original one, out of reach of duplicate removal, and
+		// every round of predicate inference stacked another copy.  Only
+		// done for a Select child: pushing through a set operation remaps
+		// columns its output lacks to fresh copies, which would break an
+		// outer reference.
+		CColRefSet *pcrsOuterRefs = nullptr;
+		if (COperator::EopLogicalSelect == op_id)
+		{
+			pcrsOuterRefs =
+				GPOS_NEW(mp) CColRefSet(mp, *pexprPred->DeriveUsedColumns());
+			pcrsOuterRefs->Exclude(pexprLogicalChild->DeriveOutputColumns());
+		}
+
 		CExpressionArray *pdrgpexprRemaining = nullptr;
 		CExpression *pexpr = nullptr;
 		PushThru(mp, pexprLogicalChild, pdrgpexprConjuncts, &pexpr,
-				 &pdrgpexprRemaining);
+				 &pdrgpexprRemaining, pcrsOuterRefs);
 		*ppexprResult = PexprSelect(mp, pexpr, pdrgpexprRemaining);
 		pdrgpexprConjuncts->Release();
+		CRefCount::SafeRelease(pcrsOuterRefs);
 	}
 
 	pexprPred->Release();
