@@ -9,14 +9,14 @@ export PG_CONFIG=/Users/jianghua/pg-install/bin/pg_config
 export PG_REGRESS_SQL=/Users/jianghua/code/postgresql/src/test/regress
 ```
 
-- `PG_CONFIG` — points to the `pg_config` binary of the PostgreSQL 18 installation that pg_orca was built and installed into.
+- `PG_CONFIG` — points to the `pg_config` binary of the PostgreSQL 18 or 19 installation that pg_orca was built and installed into.
 - `PG_REGRESS_SQL` — points to the PostgreSQL source tree's `src/test/regress` directory. The SQL and expected-output files for the standard regression tests are **not** installed by `make install`, so they must be read from the source tree at test time.
 
 If either variable is unset, `test/test.sh` will abort with an explicit error message.
 
 ### `PG_REGRESS_SQL` must match the server's version
 
-The expected outputs change between PostgreSQL versions. For example, PG 19 splits many `HINT` lines into `DETAIL` + `HINT`. Pointing `PG_REGRESS_SQL` at a tree on `master` (19devel/19beta) while the server is PG 18 makes about 90 of the PG tests fail for reasons that have nothing to do with pg_orca. Check which branch the tree is on:
+The expected outputs change between PostgreSQL versions. For example, PG 19 splits many `HINT` lines into `DETAIL` + `HINT`. Pointing `PG_REGRESS_SQL` at a PG 19 tree while the server is PG 18 makes about 90 of the PG tests fail for reasons that have nothing to do with pg_orca. Check which branch the tree is on:
 
 ```bash
 git -C /Users/jianghua/code/postgresql describe --tags   # e.g. REL_18_3, or REL_19_BETA1-... on master
@@ -29,6 +29,16 @@ If they don't match, you can export the matching tag's test files without switch
 mkdir -p /tmp/pg18_regress
 git -C /Users/jianghua/code/postgresql archive REL_18_3 src/test/regress | tar -x -C /tmp/pg18_regress
 export PG_REGRESS_SQL=/tmp/pg18_regress/src/test/regress
+```
+
+For PG 19, use a `REL_19_STABLE` checkout (e.g. a worktree: `git -C /Users/jianghua/code/postgresql worktree add ../postgresql-19 origin/REL_19_STABLE`) and point `PG_REGRESS_SQL` at its `src/test/regress`.
+
+To keep a second build (e.g. against PG 19) from sharing `build/test_parallel` and `build/tmp_check_parallel` with the default build, set `BUILD_DIR` to that build's directory:
+
+```bash
+export PG_CONFIG=/Users/jianghua/pg19-install/bin/pg_config
+export PG_REGRESS_SQL=/Users/jianghua/code/postgresql-19/src/test/regress
+BUILD_DIR=$PWD/build-pg19 test/test.sh --pg-tests
 ```
 
 The tests' C helpers (`regress.so`) are loaded from the installation's library directory, so only the SQL and expected files come from this directory.
