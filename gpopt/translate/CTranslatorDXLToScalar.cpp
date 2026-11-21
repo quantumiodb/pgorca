@@ -1247,7 +1247,7 @@ CTranslatorDXLToScalar::TranslateSubplanFromChildPlan(
 	SubPlan *subplan = MakeNode(SubPlan);
 	subplan->plan_id =
 		gpdb::ListLength(dxl_to_plstmt_ctxt->GetSubplanEntriesList());
-	subplan->plan_name = GetSubplanAlias(subplan->plan_id);
+	subplan->plan_name = GetSubplanAlias(subplan->plan_id, slink);
 	/* is_initplan removed from PG18's SubPlan */
 	subplan->firstColType = gpdb::ExprType(
 		(Node *) ((TargetEntry *) gpdb::ListNth(plan->targetlist, 0))->expr);
@@ -1268,12 +1268,51 @@ CTranslatorDXLToScalar::TranslateSubplanFromChildPlan(
 //	@doc:
 //		build plan name, for explain purposes
 //
+//		PG19 EXPLAIN and ruleutils prepend "SubPlan "/"InitPlan " to
+//		plan_name themselves and expect a name like "exists_1" (see
+//		choose_plan_name() and sublinktype_to_string() in PG19), so build
+//		the same shape there; plan_id keeps the suffix unique.  PG18
+//		prints plan_name as is, so it gets the full "SubPlan N".
+//
 //---------------------------------------------------------------------------
 CHAR *
-CTranslatorDXLToScalar::GetSubplanAlias(ULONG plan_id)
+CTranslatorDXLToScalar::GetSubplanAlias(ULONG plan_id, SubLinkType slink)
 {
 	CWStringDynamic *plan_name = GPOS_NEW(m_mp) CWStringDynamic(m_mp);
+#if PG_VERSION_NUM >= 190000
+	const WCHAR *kind;
+	switch (slink)
+	{
+		case EXISTS_SUBLINK:
+			kind = GPOS_WSZ_LIT("exists");
+			break;
+		case ALL_SUBLINK:
+			kind = GPOS_WSZ_LIT("all");
+			break;
+		case ANY_SUBLINK:
+			kind = GPOS_WSZ_LIT("any");
+			break;
+		case ROWCOMPARE_SUBLINK:
+			kind = GPOS_WSZ_LIT("rowcompare");
+			break;
+		case MULTIEXPR_SUBLINK:
+			kind = GPOS_WSZ_LIT("multiexpr");
+			break;
+		case ARRAY_SUBLINK:
+			kind = GPOS_WSZ_LIT("array");
+			break;
+		case CTE_SUBLINK:
+			kind = GPOS_WSZ_LIT("cte");
+			break;
+		case EXPR_SUBLINK:
+		default:
+			kind = GPOS_WSZ_LIT("expr");
+			break;
+	}
+	plan_name->AppendFormat(GPOS_WSZ_LIT("%ls_%d"), kind, plan_id);
+#else
 	plan_name->AppendFormat(GPOS_WSZ_LIT("SubPlan %d"), plan_id);
+#endif
 	const WCHAR *buf = plan_name->GetBuffer();
 
 	ULONG max_length = (GPOS_WSZ_LENGTH(buf) + 1) * GPOS_SIZEOF(WCHAR);
