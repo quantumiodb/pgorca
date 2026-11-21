@@ -19,7 +19,7 @@ If either variable is unset, `test/test.sh` will abort with an explicit error me
 The expected outputs change between PostgreSQL versions. For example, PG 19 splits many `HINT` lines into `DETAIL` + `HINT`. Pointing `PG_REGRESS_SQL` at a PG 19 tree while the server is PG 18 makes about 90 of the PG tests fail for reasons that have nothing to do with pg_orca. Check which branch the tree is on:
 
 ```bash
-git -C /Users/jianghua/code/postgresql describe --tags   # e.g. REL_18_3, or REL_19_BETA1-... on master
+git -C /Users/jianghua/code/postgresql describe --tags   # e.g. REL_18_3; a REL_19_STABLE tree for PG 19
 "$PG_CONFIG" --version                                   # e.g. PostgreSQL 18.3
 ```
 
@@ -160,11 +160,23 @@ A second diff involves `tattle(3, ten)` inside a `GROUP BY` subquery: the NOTICE
 
 **Root cause:** ORCA does not implement the `One-Time Filter` promotion for constant quals above set-returning functions. This is a missing optimisation, not a correctness issue for the result rows (all 6 rows are still returned correctly).
 
-### 2. `aggregates` — `balk` aggregate returns value instead of NULL
+### 2. `aggregates` — `balk` aggregate returns value instead of NULL; wrong `sum` in a LATERAL aggregate
 
 The `balk` aggregate is designed to abort early (via `ereport(ERROR, ...)` inside the combine function) and expects the aggregate to return NULL. Under ORCA's plan, the combine function is never reached, so the accumulator value (`495000`) is returned instead of NULL.
 
 **Root cause:** ORCA does not generate the same aggregate finalization path as the standard planner for this edge-case aggregate, so the "bail out" code path is never triggered.
+
+The REL_18_STABLE and PG 19 test files also contain a query that ORCA answers **wrongly**:
+
+```sql
+select s1, s2, sm
+from generate_series(1, 3) s1,
+     lateral (select s2, sum(s1 + s2) sm
+              from generate_series(1, 3) s2 group by s2) ss
+order by 1, 2;
+```
+
+For `s1 = 2` and `s1 = 3`, ORCA returns `sm = 1 + s2` instead of `s1 + s2`, as if the outer reference `s1` inside the aggregate were always 1. This is an open bug, not a plan difference. (The REL_18_3 test files used for the count above do not contain this query.)
 
 ### 3. `join_hash` — parallel hash join batch count mismatch (`final`: 4 vs 2)
 
@@ -187,9 +199,9 @@ Window functions over `ROWS BETWEEN n PRECEDING AND n FOLLOWING` return differen
 
 ### 6. `stats` — `check_estimated_rows` function not found
 
-The `stats` test calls `check_estimated_rows(text)`, a helper function defined earlier in the same test session. Under ORCA, a prior statement in the test fails or rolls back in a way that prevents the function from being visible when this call is reached.
+The `stats` test calls `check_estimated_rows(text)`, a helper function that PostgreSQL's schedule creates in the `stats_ext` test, which runs earlier.
 
-**Root cause:** A transaction/savepoint boundary or error earlier in the `stats` test leaves the session in a state where the helper function created by a prior `CREATE FUNCTION` is not visible. Likely ORCA rejects a query that the standard planner accepts, causing an unexpected error that aborts the defining transaction.
+**Root cause:** `test/parallel_schedule` leaves out `stats_ext` (ORCA's estimates differ from the ones that test checks), so the function never exists. This is a property of pg_orca's schedule, not of ORCA. It is not related to ORCA rejecting a query either.
 
 ### 7. `alter_table` — extra lock on the referenced primary-key index (not ORCA)
 
@@ -203,6 +215,30 @@ The expected output lists two locks: `ShareRowExclusiveLock` on `alterlock` and 
 
 The lock is taken by the `ALTER TABLE` itself, whichever planner plans the `my_locks` query. Running the PG 18.3 `parallel_schedule` with plain `pg_regress` and pg_orca not loaded fails only `alter_table`, with the identical diff. The REL_18_3 and REL_18_4 expected files both show two locks, so this server build behaves differently from the tagged sources. The cause has not been tracked down.
 
+### PG 19.0
+
+Running `test/test.sh --pg-tests --ignore-plans` against PG 19.0 with the `REL_19_STABLE` test files also leaves 7 of 223 tests failing, with no server crashes (checked 2026-11-20): `subselect`, `join`, `aggregates`, `join_hash`, `select_parallel`, `window`, `stats`.
+
+- `subselect`, `aggregates`, `join_hash`, `select_parallel`, `window`, `stats` fail as described in 1–6.
+- `alter_table` passes; its failure above is specific to the local PG 18.3 build.
+- `join` is new. It expects `ERROR: FULL JOIN is only supported with merge-joinable or hash-joinable join conditions` for `(int4_tbl a cross join int4_tbl b) full join int4_tbl c on a.f1 = b.f1 where coalesce(a.f1, b.f1) = 0`. ORCA can plan that FULL JOIN and returns the 9 rows the query defines, so the difference is that ORCA succeeds where the PG planner refuses.
+
+Without `--ignore-plans`, 48 tests fail, all with plan-shape differences. Three of these are specific to PG19:
+
+- `case`: no `Replaces: Scan on case_tbl` line on ORCA's empty `Result` (see the PostgreSQL 19 section of README.md).
+- `create_aggregate`: ORCA does not generate a `Run Condition` for WindowAgg.
+- `stats`: as in 6.
+
+`join` also runs for about two minutes under ORCA. The query below is new in PG 19 (upstream 7c620d2bf87). ORCA leaves `t3.unique2 = t1.f1` above a nested loop instead of pushing it into the scan of `t3`, so it rescans `tenk1` 50,000 times (about 120 s of execution against 36 ms of planning). This plan predates the PG19 work.
+
+```sql
+select count(*) from int4_tbl t1,
+  lateral (select * from tenk1 t2,
+           lateral (select t2.ten as x offset 0) s0
+           join tenk1 t3 on t3.unique2 = t1.f1
+           where t3.unique1 = t2.hundred + s0.x) ss1;
+```
+
 ---
 
-These 7 failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.
+These failures are tracked here for awareness. All but one are plan or behaviour differences; the LATERAL `sum(s1 + s2)` query in 2 is a wrong result from ORCA and is still open.

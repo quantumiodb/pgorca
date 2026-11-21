@@ -72,7 +72,8 @@ The ORCA optimizer is the work of many people from the Greenplum, Pivotal/VMware
 The same source tree builds against both majors — version differences are handled
 with `#if PG_VERSION_NUM >= 190000` guards, there is no separate branch. CI builds
 PG18 on Ubuntu (gcc/clang, Debug/Release), Ubuntu arm64, CentOS Stream 9, Rocky 9
-and macOS, and builds + runs the ORCA regression tests against PG19 on Rocky 9.
+and macOS, and builds + runs the ORCA regression tests against PG 19.0 (stable PGDG
+packages) on Rocky 9.
 See [PostgreSQL 19](#postgresql-19) for what is PG19-specific.
 
 On macOS with Homebrew:
@@ -264,4 +265,13 @@ Everything version-dependent is behind `#if PG_VERSION_NUM >= 190000`:
   `CScalarWindowFunc` and round-tripped through DXL.
 - **`Int8GetDatum()`** — removed from `postgres.h` in PG19; `gpdbwrappers.cpp` supplies a
   byte-identical `#ifndef`-guarded replacement so call sites are unchanged on both versions.
+- **SubPlan names** — PG19's EXPLAIN and ruleutils prepend `SubPlan `/`InitPlan ` to
+  `SubPlan.plan_name` themselves, so on PG19 the translator emits PG19-style names
+  (`expr_1`, `exists_2`, `any_3`, ...) instead of PG18's `SubPlan N`. `test/init_file`
+  maps both back to `SubPlan N`, so one expected file serves both versions.
+- **`Result.result_type`** — new in PG19. A childless ORCA `Result` (e.g. a scan folded
+  to `One-Time Filter: false`) is marked `RESULT_TYPE_SCAN`. ORCA drops the folded
+  relation from the plan's range table, so `relids` stays empty and EXPLAIN prints no
+  `Replaces: Scan on ...` line where the PG planner does (PG19's `case` test shows the
+  difference). This only affects EXPLAIN output.
 
