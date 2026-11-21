@@ -64,7 +64,7 @@ The ORCA optimizer is the work of many people from the Greenplum, Pivotal/VMware
 
 ## Requirements
 
-- PostgreSQL 18 (primary target), or PostgreSQL 19 beta
+- PostgreSQL 18 or PostgreSQL 19
 - [xerces-c](https://xerces.apache.org/xerces-c/) (XML parsing for DXL)
 - CMake ≥ 3.20
 - C++17 compiler (clang or gcc)
@@ -252,18 +252,16 @@ Many ORCA configuration knobs were GPDB-specific GUCs. They are re-defined as re
 
 ### PostgreSQL 19
 
-PG19 is still a moving target, so treat it as preview support: it builds and passes
-`test/test.sh --orca-tests`, but the PG18 path is the one that gets the benchmark and
-regression mileage. Everything version-dependent is behind `#if PG_VERSION_NUM >= 190000`:
+Supported against the PG 19.0 release (`REL_19_STABLE`): it builds cleanly, passes
+`test/test.sh --orca-tests`, and runs PG19's standard regression suite with no crashes
+(the remaining `--pg-tests` diffs are the same ORCA plan-shape differences seen on PG18).
+Everything version-dependent is behind `#if PG_VERSION_NUM >= 190000`:
 
 - **`planner_hook` signature** — PG19 passes an extra `ExplainState *` argument; the hook
   and both `standard_planner()` fallback paths are conditionally compiled (`pg_orca.cpp`).
 - **`RESPECT`/`IGNORE NULLS` window functions** (SQL:2003, new in PG19) — supported
   natively rather than falling back: the null treatment is carried on
   `CScalarWindowFunc` and round-tripped through DXL.
-- **SQL/PGQ `GRAPH_TABLE`** — the PG rewriter expands it into a LATERAL-joined subquery
-  before `planner_hook` runs, so these queries go through ORCA on the normal LATERAL path.
-  A defensive check falls back cleanly if an `RTE_GRAPH_TABLE` ever reaches the translator.
 - **`Int8GetDatum()`** — removed from `postgres.h` in PG19; `gpdbwrappers.cpp` supplies a
   byte-identical `#ifndef`-guarded replacement so call sites are unchanged on both versions.
 

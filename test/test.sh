@@ -10,7 +10,7 @@ PG_REGRESS=${PG_REGRESS:-$_PGXS_REGRESS/pg_regress}
 # e.g.: export PG_REGRESS_SQL=/path/to/postgresql/src/test/regress
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/../build"
+BUILD_DIR="${BUILD_DIR:-$SCRIPT_DIR/../build}"
 TEMP_INSTANCE="$BUILD_DIR/tmp_check_parallel"
 OUTPUT_DIR="$BUILD_DIR/test_parallel"
 
