@@ -217,16 +217,6 @@ Without `--ignore-plans`, 48 tests fail, all with plan-shape differences. Three 
 - `create_aggregate`: ORCA does not generate a `Run Condition` for WindowAgg.
 - `stats`: as in 6.
 
-`join` also runs for about two minutes under ORCA. The query below is new in PG 19 (upstream 7c620d2bf87). ORCA leaves `t3.unique2 = t1.f1` above a nested loop instead of pushing it into the scan of `t3`, so it rescans `tenk1` 50,000 times (about 120 s of execution against 36 ms of planning). This plan predates the PG19 work.
-
-```sql
-select count(*) from int4_tbl t1,
-  lateral (select * from tenk1 t2,
-           lateral (select t2.ten as x offset 0) s0
-           join tenk1 t3 on t3.unique2 = t1.f1
-           where t3.unique1 = t2.hundred + s0.x) ss1;
-```
-
 ---
 
 These failures are tracked here for awareness. None affect correctness of queries that ORCA successfully plans.

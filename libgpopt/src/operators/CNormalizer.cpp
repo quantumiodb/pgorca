@@ -281,10 +281,34 @@ CNormalizer::FPushableThruSeqPrjChild(CExpression *pexprSeqPrj,
 //	@doc:
 //		Check if a predicate can be pushed through a logical expression
 //
+//		A predicate is normally pushable when the expression produces every
+//		column it uses.  When pexprLogical is a child of a join, the caller
+//		may also pass the join's outer references (pcrsOuterRefs): columns
+//		used inside the join that no part of it produces, such as a LATERAL
+//		reference to an earlier FROM item or a correlated subquery's outer
+//		column.  They are fixed for each evaluation of the join, so a
+//		predicate that otherwise uses only the child's columns, like
+//		"t3.unique2 = t1.f1" in
+//
+//		  int4_tbl t1,
+//		  lateral (select * from tenk1 t2,
+//		           lateral (select t2.ten as x offset 0) s0
+//		           join tenk1 t3 on t3.unique2 = t1.f1 ...)
+//
+//		can be pushed into that child (t3).  Left behind on the join, such
+//		predicates also kept the join from being collapsed into its parent
+//		(the predicates inferred from them wrap it in Selects), forcing a
+//		correlated nested loop that rescanned t3 once per outer row.
+//
+//		Columns from the join's other children are not outer references, so
+//		join predicates still stay on the join.  The predicate must use at
+//		least one of the child's own columns, so that a predicate over outer
+//		references alone is not pushed into an arbitrary child.
 //
 //---------------------------------------------------------------------------
 BOOL
-CNormalizer::FPushable(CExpression *pexprLogical, CExpression *pexprPred)
+CNormalizer::FPushable(CExpression *pexprLogical, CExpression *pexprPred,
+					   CColRefSet *pcrsOuterRefs)
 {
 	GPOS_ASSERT(nullptr != pexprLogical);
 	GPOS_ASSERT(nullptr != pexprPred);
@@ -334,8 +358,31 @@ CNormalizer::FPushable(CExpression *pexprLogical, CExpression *pexprPred)
 	//	In case of a Union or UnionAll the predicate might get pushed
 	//	to multiple children In such cases we will end up with duplicate
 	//	CTEProducers having the same cte_id.
-	return pcrsOutput->ContainsAll(pcrsUsed) &&
-		   !CUtils::FHasCTEAnchor(pexprPred);
+	if (CUtils::FHasCTEAnchor(pexprPred))
+	{
+		return false;
+	}
+
+	if (pcrsOutput->ContainsAll(pcrsUsed))
+	{
+		return true;
+	}
+
+	if (nullptr == pcrsOuterRefs || !pcrsUsed->FIntersects(pcrsOutput))
+	{
+		return false;
+	}
+
+	// every column the child does not produce must be an outer reference of
+	// the enclosing join
+	CAutoMemoryPool amp;
+	CColRefSet *pcrsMissing =
+		GPOS_NEW(amp.Pmp()) CColRefSet(amp.Pmp(), *pcrsUsed);
+	pcrsMissing->Exclude(pcrsOutput);
+	BOOL fPushable = pcrsOuterRefs->ContainsAll(pcrsMissing);
+	pcrsMissing->Release();
+
+	return fPushable;
 }
 
 
@@ -1145,6 +1192,22 @@ CNormalizer::PushThruJoin(CMemoryPool *mp, CExpression *pexprJoin,
 		CPredicateUtils::PdrgpexprConjuncts(mp, pexprPred);
 	pexprPred->Release();
 
+	// columns bound outside the join, which predicates pushed into a child
+	// may use besides the child's own columns (see FPushable); only for
+	// plain inner joins: pushed into the inner side of an outer join, such
+	// a predicate made ORCA put it under the build side of a hash join that
+	// takes the referenced column from its probe side, which the
+	// DXL-to-PlStmt translator rejects.  The hash join implementation does
+	// not check for that, so it can still happen for inner joins; the query
+	// then falls back to the PG planner, as it did before.
+	CColRefSet *pcrsJoinOuterRefs = nullptr;
+	if (!fOuterJoin && !fMixedInnerOuterJoin && !fLASApply &&
+		(COperator::EopLogicalInnerJoin == op_id ||
+		 COperator::EopLogicalNAryJoin == op_id))
+	{
+		pcrsJoinOuterRefs = pexprJoin->DeriveOuterReferences();
+	}
+
 	// push predicates through children and compute new child expressions
 	CExpressionArray *pdrgpexprChildren = GPOS_NEW(mp) CExpressionArray(mp);
 
@@ -1181,7 +1244,7 @@ CNormalizer::PushThruJoin(CMemoryPool *mp, CExpression *pexprJoin,
 
 		CExpressionArray *pdrgpexprRemaining = nullptr;
 		PushThru(mp, pexprChild, pdrgpexprConjuncts, &pexprNewChild,
-				 &pdrgpexprRemaining);
+				 &pdrgpexprRemaining, pcrsJoinOuterRefs);
 		pdrgpexprChildren->Append(pexprNewChild);
 
 		pdrgpexprConjuncts->Release();
@@ -1390,7 +1453,8 @@ void
 CNormalizer::PushThru(CMemoryPool *mp, CExpression *pexprLogical,
 					  CExpressionArray *pdrgpexprConjuncts,
 					  CExpression **ppexprResult,
-					  CExpressionArray **ppdrgpexprRemaining)
+					  CExpressionArray **ppdrgpexprRemaining,
+					  CColRefSet *pcrsOuterRefs)
 {
 	GPOS_ASSERT(nullptr != pexprLogical);
 	GPOS_ASSERT(nullptr != pdrgpexprConjuncts);
@@ -1405,7 +1469,7 @@ CNormalizer::PushThru(CMemoryPool *mp, CExpression *pexprLogical,
 		CExpression *pexprConj = (*pdrgpexprConjuncts)[ul];
 		pexprConj->AddRef();
 
-		if (FPushable(pexprLogical, pexprConj))
+		if (FPushable(pexprLogical, pexprConj, pcrsOuterRefs))
 		{
 			pdrgpexprPushable->Append(pexprConj);
 		}

@@ -29,4 +29,5 @@ test: not_in_antijoin
 test: rls_security_quals
 test: grouping_qual_pushdown
 test: hashagg_rescan_params
+test: lateral_outer_ref_pushdown
 test: cte_function_scan_order
