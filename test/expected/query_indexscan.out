@@ -441,23 +441,15 @@ analyze test;
 set enable_seqscan=off;
 set enable_bitmapscan=off;
 set enable_indexscan=on;
-explain analyze select a, b from test where b=10 order by b desc;
-                                                      QUERY PLAN                                                      
-----------------------------------------------------------------------------------------------------------------------
- Sort  (cost=0.00..8.26 rows=4 width=8) (actual time=0.020..0.021 rows=4.00 loops=1)
+explain (costs off) select a, b from test where b=10 order by b desc;
+              QUERY PLAN               
+---------------------------------------
+ Sort
    Sort Key: b DESC
-   Sort Method: quicksort  Memory: 25kB
-   Buffers: shared hit=1 read=1
-   ->  Index Scan using test_b on test  (cost=0.00..8.21 rows=4 width=8) (actual time=0.015..0.016 rows=4.00 loops=1)
+   ->  Index Scan using test_b on test
          Index Cond: (b = 10)
-         Index Searches: 1
-         Buffers: shared hit=1 read=1
- Planning:
-   Buffers: shared hit=30 read=1
- Planning Time: 2.833 ms
  Optimizer: pg_orca
- Execution Time: 0.030 ms
-(13 rows)
+(5 rows)
 
 -- end_ignore
 -- order 2
