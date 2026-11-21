@@ -659,6 +659,13 @@ CTranslatorDXLToScalar::TranslateDXLScalarAggrefToScalar(
 		ForEachWithCount(lc, aggref->aggorder, i)
 		{
 			SortGroupClause *gc = (SortGroupClause *) lfirst(lc);
+			if (gc->tleSortGroupRef >= (Index) gpdb::ListLength(args))
+			{
+				GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+						   GPOS_WSZ_LIT(
+							   "AGGREF: ORDER BY key does not reference an "
+							   "aggregate input"));
+			}
 			indexes[gc->tleSortGroupRef] = gc->tleSortGroupRef;
 
 			// 'indexes' values are zero-based, but zero means TargetEntry
@@ -672,16 +679,23 @@ CTranslatorDXLToScalar::TranslateDXLScalarAggrefToScalar(
 		List *aggdistinct = TranslateScalarListChildren(
 			(*aggref_node)[EdxlscalaraggrefIndexAggDistinct], colid_var);
 
-		ULONG i;
+		// An aggregate's DISTINCT list may hold more items than it has
+		// inputs: when ORDER BY lists the same input with several sort
+		// operators (e.g. "distinct r order by r using <, r using *<"),
+		// transformDistinctClause() copies each of them.  Keep them all;
+		// nodeAgg asserts that DISTINCT covers every ORDER BY key.
 		ListCell *lc;
-		ForEachWithCount(lc, aggdistinct, i)
+		ForEach(lc, aggdistinct)
 		{
-			if (i >= gpdb::ListLength(args))
+			SortGroupClause *gc = (SortGroupClause *) lfirst(lc);
+			if (gc->tleSortGroupRef >= (Index) gpdb::ListLength(args))
 			{
-				break;
+				GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+						   GPOS_WSZ_LIT(
+							   "AGGREF: DISTINCT key does not reference an "
+							   "aggregate input"));
 			}
 
-			SortGroupClause *gc = (SortGroupClause *) lfirst(lc);
 			indexes[gc->tleSortGroupRef] = gc->tleSortGroupRef;
 
 			// 'indexes' values are zero-based, but zero means TargetEntry
