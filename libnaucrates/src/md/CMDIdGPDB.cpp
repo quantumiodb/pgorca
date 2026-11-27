@@ -128,7 +128,7 @@ CMDIdGPDB::CMDIdGPDB(CSystemId sysid, OID oid)
 	  m_minor_version(0),
 	  m_str(m_mdid_array, GPOS_ARRAY_SIZE(m_mdid_array))
 {
-	if (CMDIdGPDB::m_mdid_invalid_key.Oid() == oid)
+	if (0 == oid)
 	{
 		// construct an invalid mdid 0.0.0
 		m_major_version = 0;
@@ -146,7 +146,7 @@ CMDIdGPDB::CMDIdGPDB(EMDIdType mdIdType, OID oid, ULONG version_major,
 	GPOS_RTL_ASSERT(
 		mdIdType == IMDId::EmdidGeneral ||
 		(mdIdType >= IMDId::EmdidRel && mdIdType < IMDId::EmdidSentinel));
-	if (CMDIdGPDB::m_mdid_invalid_key.Oid() == oid)
+	if (0 == oid)
 	{
 		// construct an invalid mdid 0.0.0
 		m_major_version = 0;
